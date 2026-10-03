@@ -308,6 +308,27 @@ impl Resolver {
         }
     }
 
+    /// Copy resolver state and shared rule functions, with fresh decision routing.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            initiative_order: self.initiative_order.clone(),
+            seating_order: self.seating_order.clone(),
+            active_player: self.active_player.clone(),
+            speaker: self.speaker.clone(),
+            phase: self.phase,
+            table: Table::new(),
+            log: self.log.clone(),
+            applied_events: self.applied_events.clone(),
+            relation_being_resolved: self.relation_being_resolved,
+            emission_stack: self.emission_stack.clone(),
+            maximum_depth: self.maximum_depth,
+            used: self.used.clone(),
+            round_number: self.round_number,
+            turn_number: self.turn_number,
+        }
+    }
+
     /// Configure the game phase used to select window priority order.
     pub fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
@@ -995,6 +1016,82 @@ mod tests {
     use ti4_model::content_types::POK;
 
     type GeneratedAbility = (u8, bool, bool, bool, u8, bool);
+
+    #[test]
+    fn fork_preserves_frequency_usage_and_resets_its_decision_table() {
+        let mut timing = resolver(&["sol"], "sol");
+        timing.sync_lifecycle(3, 7);
+        timing.table = Table::with_default(Box::new(AlwaysDecline));
+        timing.register([
+            Ability::new(
+                "turn",
+                player("sol"),
+                "E",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.payload.insert("turn".to_owned(), true.into());
+                    Ok(())
+                }),
+            )
+            .with_frequency(Frequency::OncePerTurn),
+            Ability::new(
+                "round",
+                player("sol"),
+                "E",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.payload.insert("round".to_owned(), true.into());
+                    Ok(())
+                }),
+            )
+            .with_frequency(Frequency::OncePerRound),
+            Ability::new(
+                "optional",
+                player("sol"),
+                "OPTIONAL",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.cancel();
+                    Ok(())
+                }),
+            )
+            .with_optional(true),
+        ]);
+        let event = |id, kind| Event::new(id, kind, BTreeMap::new());
+        assert_eq!(timing.emit(event(1, "E"), |_| {}).unwrap().payload.len(), 2);
+        assert!(!timing.emit(event(2, "OPTIONAL"), |_| {}).unwrap().cancelled);
+
+        let mut fork = timing.fork();
+        assert_eq!(fork.log(), timing.log());
+        assert_eq!(fork.applied_events(), timing.applied_events());
+        assert!(fork.table.log.is_empty());
+        assert!(fork.emit(event(3, "E"), |_| {}).unwrap().payload.is_empty());
+        assert!(
+            timing
+                .emit(event(3, "E"), |_| {})
+                .unwrap()
+                .payload
+                .is_empty()
+        );
+
+        // Fresh first-option input takes the optional ability; the original still declines it.
+        assert!(fork.emit(event(4, "OPTIONAL"), |_| {}).unwrap().cancelled);
+        assert!(!timing.emit(event(4, "OPTIONAL"), |_| {}).unwrap().cancelled);
+
+        fork.begin_turn(player("sol")).unwrap();
+        let next_turn = fork.emit(event(5, "E"), |_| {}).unwrap();
+        assert_eq!(next_turn.payload.len(), 1);
+        assert_eq!(next_turn.payload["turn"], true);
+        fork.begin_round().unwrap();
+        assert_eq!(fork.emit(event(6, "E"), |_| {}).unwrap().payload.len(), 2);
+        assert!(
+            timing
+                .emit(event(6, "E"), |_| {})
+                .unwrap()
+                .payload
+                .is_empty()
+        );
+    }
 
     fn generated_registry() -> impl Strategy<Value = Vec<GeneratedAbility>> {
         prop::collection::vec(
