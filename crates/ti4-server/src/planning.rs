@@ -14,7 +14,11 @@
 //! the engine sometimes catches an answer error and continues. Once replay fails,
 //! it refuses to answer any more questions, but it cannot undo earlier changes.
 //! A planning copy must never replace the live game. This code also does not stop
-//! the engine from rolling dice or revealing hidden information.
+//! the engine from rolling dice or revealing hidden information. The [`runner`]
+//! module adds that publication boundary around these adapters and an ordinary
+//! disposable engine fork.
+
+pub mod runner;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
