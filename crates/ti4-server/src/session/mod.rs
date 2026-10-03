@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod decider;
+mod planning;
 pub mod registry;
 pub mod replay;
 pub mod transport;
@@ -20,6 +21,14 @@ use crate::session::decider::ChoiceSubmission;
 use crate::session::worker::{
     PendingSubmissionState, SessionShared, Subscriber, spawn_session_worker,
 };
+
+/// Player, controller, credential and seed details for a running lobby.
+pub type LobbyDetails = (
+    Vec<PlayerId>,
+    BTreeMap<PlayerId, SeatController>,
+    BTreeMap<PlayerId, String>,
+    Option<u64>,
+);
 
 /// Transport-neutral bounded subscription that unregisters itself when dropped.
 pub struct SessionSubscription {
@@ -55,6 +64,7 @@ impl Drop for SessionSubscription {
 use serde::{Deserialize, Serialize};
 
 pub use decider::RemoteHumanDecider;
+pub use planning::PlanningError;
 pub use registry::{BotServiceConfig, GameRegistry};
 pub use replay::{ReplayError, ReplayReport, replay_session};
 pub use transport::MockClient;
@@ -75,6 +85,8 @@ pub enum SeatController {
 /// Configuration used to spawn an authoritative game session.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
+    /// In-memory drafts carried across session replacement (undo/redo).
+    pub plans: BTreeMap<PlayerId, crate::planning::runner::PlayerPlan>,
     pub game_id: String,
     pub state: GameState,
     pub seats: BTreeMap<PlayerId, SeatController>,
@@ -102,6 +114,7 @@ impl SessionConfig {
     #[must_use]
     pub fn new(game_id: impl Into<String>, state: GameState) -> Self {
         Self {
+            plans: BTreeMap::new(),
             game_id: game_id.into(),
             state,
             seats: BTreeMap::new(),
@@ -417,14 +430,7 @@ impl GameSession {
 
     /// Returns immutable lifecycle metadata needed to represent a running session as a lobby.
     #[must_use]
-    pub fn lobby_details(
-        &self,
-    ) -> (
-        Vec<PlayerId>,
-        BTreeMap<PlayerId, SeatController>,
-        BTreeMap<PlayerId, String>,
-        Option<u64>,
-    ) {
+    pub fn lobby_details(&self) -> LobbyDetails {
         let lock = self.shared.lock().expect("shared lock");
         (
             lock.player_ids.clone(),
@@ -508,8 +514,84 @@ impl GameSession {
         self.shared.lock().expect("shared lock").game_version
     }
 
+    /// Starts an inactive human seat's draft from the last completed live step.
+    /// This transport-neutral API takes a seat already authorized by its caller,
+    /// just like submit_choice. It does not alter the live pending decision.
+    pub fn start_planning(&self, player: &PlayerId) -> Result<(), PlanningError> {
+        let mut lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+            return Err(PlanningError::Unavailable);
+        }
+        if lock.seats.get(player) != Some(&SeatController::Human) {
+            return Err(PlanningError::UnknownSeat);
+        }
+        if lock.latest_state.active.as_ref() == Some(player) {
+            return Err(PlanningError::ActivePlayer);
+        }
+        lock.planning.start(player)
+    }
+
+    pub fn submit_planning_choice(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+        option_id: &str,
+    ) -> Result<(), PlanningError> {
+        let lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() {
+            return Err(PlanningError::Unavailable);
+        }
+        lock.planning
+            .runners
+            .get(player)
+            .ok_or(PlanningError::NotStarted)?
+            .submit(identity, option_id)
+            .map_err(PlanningError::Submission)
+    }
+
+    /// Wait without holding the session lock: the live worker must remain free
+    /// to refresh or cancel the runner whose output we are waiting for.
+    pub fn recv_planning_timeout(
+        &self,
+        player: &PlayerId,
+        timeout: std::time::Duration,
+    ) -> Result<crate::planning::runner::PlanningEnvelope, mpsc::RecvTimeoutError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            {
+                let lock = self.shared.lock().expect("shared lock");
+                if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+                    return Err(mpsc::RecvTimeoutError::Disconnected);
+                }
+                let runner = lock
+                    .planning
+                    .runners
+                    .get(player)
+                    .ok_or(mpsc::RecvTimeoutError::Disconnected)?;
+                match runner.try_recv() {
+                    Ok(envelope) => return Ok(envelope),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        return Err(mpsc::RecvTimeoutError::Disconnected);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
+        }
+    }
+
+    /// Scripts survive stopped attempts and session replacement.
+    pub fn plans(&self) -> BTreeMap<PlayerId, crate::planning::runner::PlayerPlan> {
+        self.shared.lock().expect("shared lock").planning.plans()
+    }
+
     pub fn restart_config(&self) -> SessionConfig {
         let mut config = self.initial_config.clone();
+        config.plans = self.plans();
         // Callers can replace the decision prefix (batch commit, undo, redo).
         // The old speculative view must never be reused for a different cursor.
         config.replay_boundary_state = None;
@@ -579,6 +661,7 @@ impl GameSession {
         {
             let mut lock = self.shared.lock().expect("shared lock");
             lock.stopped = true;
+            lock.planning.close();
             // Dropping inboxes unblocks any waiting RemoteHumanDecider
             lock.seat_inboxes.clear();
         }

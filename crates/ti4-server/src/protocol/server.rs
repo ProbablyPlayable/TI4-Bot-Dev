@@ -428,20 +428,22 @@ fn public_choice_detail(
     Some(detail)
 }
 
-#[must_use]
-pub fn decision_grouping(
-    record: &ti4_engine::choice::DecisionRecord,
-    offered: Option<&ChoiceOption>,
-    records: &[ti4_engine::choice::DecisionRecord],
-    cursor: usize,
-) -> (
+pub type DecisionGrouping = (
     Option<PlayerId>,
     Option<u32>,
     Option<Phase>,
     Option<String>,
     Option<PlayerId>,
     Option<String>,
-) {
+);
+
+#[must_use]
+pub fn decision_grouping(
+    record: &ti4_engine::choice::DecisionRecord,
+    offered: Option<&ChoiceOption>,
+    records: &[ti4_engine::choice::DecisionRecord],
+    cursor: usize,
+) -> DecisionGrouping {
     let context = record.context.as_ref();
     let selection = records
         .iter()
@@ -982,9 +984,14 @@ mod fact_tests {
             Some("p1 played Diplomacy")
         );
         assert_eq!(
-            decision_grouping(&selection, Some(&action), &[selection.clone()], 1)
-                .5
-                .as_deref(),
+            decision_grouping(
+                &selection,
+                Some(&action),
+                std::slice::from_ref(&selection),
+                1
+            )
+            .5
+            .as_deref(),
             Some("action selection")
         );
         let effect = ChoiceOption::new("unknown", "effect").with("card", "hidden_card");
@@ -1347,7 +1354,7 @@ mod fact_tests {
             ..record("select_action", &ChoiceOption::new("tactical", "action"))
         };
         assert_eq!(
-            action_id_for(&[action.clone()], 1).as_deref(),
+            action_id_for(std::slice::from_ref(&action), 1).as_deref(),
             Some("action_1")
         );
         assert_eq!(
@@ -1377,7 +1384,7 @@ mod fact_tests {
     fn pending_turn_prompt_never_reopens_the_previous_action() {
         let player = PlayerId::new("p1");
         let mut state = GameState::new(
-            &[player.clone()],
+            std::slice::from_ref(&player),
             &[],
             std::collections::BTreeMap::new(),
             None,

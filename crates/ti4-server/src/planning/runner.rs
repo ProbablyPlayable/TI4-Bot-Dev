@@ -1,0 +1,1119 @@
+//! A disposable engine worker with one publication gate.
+//!
+//! `Game::step` can ask several questions before returning, and can catch an
+//! input error. The shared terminal latch, rather than the step's return value,
+//! decides whether its state is acceptable. Only completed, validated steps
+//! become checkpoints. An offer inside a step is just a safe publication.
+//!
+//! Start from a completed live-step checkpoint, receive a `SafeOffer`, and send
+//! its identity and one offered option ID to `submit`. `plan` returns the retained
+//! answers even after an uncertainty stop. `refresh` uses a newer checkpoint;
+//! `edit` replaces the script before reconstructing it. Neither installs any
+//! answers in the live game.
+
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice, SeatObservation, Table};
+use ti4_engine::decision_context::{CONTEXT_VERSION, DecisionSource};
+use ti4_engine::game::Game;
+use ti4_engine::observation::ExecutionObservation;
+use ti4_engine::preview::{Outcome, Quantity};
+use ti4_model::id::PlayerId;
+use ti4_model::state::GameState;
+
+use super::{DecisionRecording, RecordedDecision, RecordingDecider, ReplayDecider, ReplayStatus};
+use crate::projection::{project_game_view, project_game_view_full, project_pending_choice};
+use crate::protocol::status::ViewerRole;
+use crate::protocol::view::GameView;
+
+pub const ASSUMPTION: &str = "Other players take no optional reactions in this hypothetical turn.";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerPlan {
+    pub revision: u64,
+    pub base_checkpoint_id: u64,
+    pub recorded_decisions: Vec<RecordedDecision>,
+}
+
+impl PlayerPlan {
+    #[must_use]
+    pub const fn new(base_checkpoint_id: u64) -> Self {
+        Self {
+            revision: 0,
+            base_checkpoint_id,
+            recorded_decisions: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptIdentity {
+    pub checkpoint_id: u64,
+    pub plan_revision: u64,
+    pub generation_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    pub replayed: usize,
+    pub remaining: usize,
+    pub completed_steps: usize,
+    pub nested_answers_since_checkpoint: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StopReason {
+    Uncertainty,
+    UnsupportedOffer,
+    OtherPlayerRequired,
+    UnsupportedParticipation,
+    UnsupportedSegment,
+    KnowledgeChanged,
+    ReplayMismatch,
+    StepLimit,
+    MovementComplete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureCategory {
+    Preparation,
+    Engine,
+    Worker,
+}
+
+/// Contains only the server's player projection, never an internal GameState.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafePublication {
+    pub position: GameView,
+    pub choice: Option<Choice>,
+    // Driver event strings are not a redaction boundary. This slice publishes
+    // only the audited public movement event names listed in `safe_events`.
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanningUpdate {
+    SafeOffer(SafePublication),
+    SafeStep(SafePublication),
+    Stopped {
+        reason: StopReason,
+        last_safe_publication: Option<SafePublication>,
+    },
+    Failed(FailureCategory),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningEnvelope {
+    pub identity: AttemptIdentity,
+    pub assumptions: Vec<String>,
+    pub progress: Progress,
+    pub update: PlanningUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmissionError {
+    Retired,
+    NotWaiting,
+    UnknownOption,
+}
+
+enum Input {
+    Answer(String),
+    Cancel,
+}
+
+struct Shared {
+    plan: PlayerPlan,
+    generation: u64,
+    retired: bool,
+    terminal: bool,
+    pending: Option<Choice>,
+    last_safe: Option<SafePublication>,
+    progress: Progress,
+    output: mpsc::Sender<PlanningEnvelope>,
+}
+
+impl Shared {
+    fn identity(&self) -> AttemptIdentity {
+        AttemptIdentity {
+            checkpoint_id: self.plan.base_checkpoint_id,
+            plan_revision: self.plan.revision,
+            generation_id: self.generation,
+        }
+    }
+
+    fn active(&self, generation: u64) -> bool {
+        !self.retired && !self.terminal && self.generation == generation
+    }
+
+    fn publish(&self, update: PlanningUpdate) {
+        if self.retired {
+            return;
+        }
+        let _ = self.output.send(PlanningEnvelope {
+            identity: self.identity(),
+            assumptions: vec![ASSUMPTION.to_owned()],
+            progress: self.progress.clone(),
+            update,
+        });
+    }
+
+    fn stop(&mut self, reason: StopReason) {
+        self.terminal = true;
+        self.pending = None;
+        self.publish(PlanningUpdate::Stopped {
+            reason,
+            last_safe_publication: self.last_safe.clone(),
+        });
+    }
+
+    fn fail(&mut self, category: FailureCategory) {
+        self.terminal = true;
+        self.pending = None;
+        self.publish(PlanningUpdate::Failed(category));
+    }
+}
+
+/// The controller owns the script; the worker owns only a disposable copy.
+/// Refresh joins the old worker before starting a new one. Nothing here has a
+/// live session publisher, authoritative storage, or another player's inbox.
+pub struct PlanningRunner {
+    player: PlayerId,
+    shared: Arc<Mutex<Shared>>,
+    inbox: mpsc::Sender<Input>,
+    output: mpsc::Receiver<PlanningEnvelope>,
+    worker: Option<JoinHandle<()>>,
+    step_bound: usize,
+}
+
+impl PlanningRunner {
+    /// Content is shared for the worker's lifetime, as in the live server. The
+    /// supplied Game must be at a completed step, not paused inside a decider.
+    pub fn start(
+        checkpoint: &Game<'static>,
+        player: PlayerId,
+        plan: PlayerPlan,
+        step_bound: usize,
+    ) -> Self {
+        let (output_tx, output) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(Shared {
+            plan,
+            generation: 1,
+            retired: false,
+            terminal: false,
+            pending: None,
+            last_safe: None,
+            progress: Progress {
+                replayed: 0,
+                remaining: 0,
+                completed_steps: 0,
+                nested_answers_since_checkpoint: 0,
+            },
+            output: output_tx,
+        }));
+        let (inbox, worker) = spawn(
+            checkpoint.fork_for_worker(),
+            player.clone(),
+            shared.clone(),
+            step_bound,
+        );
+        Self {
+            player,
+            shared,
+            inbox,
+            output,
+            worker: Some(worker),
+            step_bound,
+        }
+    }
+
+    #[must_use]
+    pub fn plan(&self) -> PlayerPlan {
+        self.shared.lock().expect("planning lock").plan.clone()
+    }
+
+    /// The offer's full identity rejects stale answers, including answers to a
+    /// previous revision in the same generation. No default option is supplied.
+    pub fn submit(
+        &self,
+        identity: AttemptIdentity,
+        option_id: &str,
+    ) -> Result<(), SubmissionError> {
+        let mut shared = self.shared.lock().expect("planning lock");
+        if !shared.active(identity.generation_id) || shared.identity() != identity {
+            return Err(SubmissionError::Retired);
+        }
+        let pending = shared.pending.as_ref().ok_or(SubmissionError::NotWaiting)?;
+        if pending.option(option_id).is_none() {
+            return Err(SubmissionError::UnknownOption);
+        }
+        // Taking the pending offer reserves this answer. A duplicate submission
+        // cannot queue another answer for the following question.
+        shared.pending = None;
+        self.inbox
+            .send(Input::Answer(option_id.to_owned()))
+            .map_err(|_| SubmissionError::Retired)
+    }
+
+    /// Also filters queued output: retirement cannot leave old buffers visible.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<PlanningEnvelope, mpsc::RecvTimeoutError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let envelope = self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))?;
+            let shared = self.shared.lock().expect("planning lock");
+            if !shared.retired && envelope.identity.generation_id == shared.generation {
+                return Ok(envelope);
+            }
+        }
+    }
+
+    /// Discards queued updates from retired generations without blocking.
+    pub fn try_recv(&self) -> Result<PlanningEnvelope, mpsc::TryRecvError> {
+        loop {
+            let envelope = self.output.try_recv()?;
+            let shared = self.shared.lock().expect("planning lock");
+            if !shared.retired && envelope.identity.generation_id == shared.generation {
+                return Ok(envelope);
+            }
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        // Publication and retirement hold the same lock. A worker cannot pass
+        // the generation check and then publish after this retirement.
+        self.shared.lock().expect("planning lock").retired = true;
+        let _ = self.inbox.send(Input::Cancel);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+
+    /// Replay the whole retained script on a fresh hypothetical turn. Answers
+    /// within the old worker's unfinished step are included in that script.
+    pub fn refresh(&mut self, checkpoint: &Game<'static>, checkpoint_id: u64) {
+        self.rebuild(checkpoint, checkpoint_id, None);
+    }
+
+    pub fn edit(
+        &mut self,
+        checkpoint: &Game<'static>,
+        checkpoint_id: u64,
+        decisions: Vec<RecordedDecision>,
+    ) {
+        self.rebuild(checkpoint, checkpoint_id, Some(decisions));
+    }
+
+    fn rebuild(
+        &mut self,
+        checkpoint: &Game<'static>,
+        checkpoint_id: u64,
+        decisions: Option<Vec<RecordedDecision>>,
+    ) {
+        self.cancel();
+        {
+            let mut shared = self.shared.lock().expect("planning lock");
+            if let Some(decisions) = decisions {
+                shared.plan.recorded_decisions = decisions;
+            }
+            shared.plan.revision += 1;
+            shared.plan.base_checkpoint_id = checkpoint_id;
+            shared.generation += 1;
+            shared.retired = false;
+            shared.terminal = false;
+            shared.pending = None;
+            shared.last_safe = None;
+            shared.progress = Progress {
+                replayed: 0,
+                remaining: 0,
+                completed_steps: 0,
+                nested_answers_since_checkpoint: 0,
+            };
+        }
+        let (inbox, worker) = spawn(
+            checkpoint.fork_for_worker(),
+            self.player.clone(),
+            self.shared.clone(),
+            self.step_bound,
+        );
+        self.inbox = inbox;
+        self.worker = Some(worker);
+    }
+}
+
+impl Drop for PlanningRunner {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+struct Gate {
+    shared: Arc<Mutex<Shared>>,
+    generation: u64,
+    player: PlayerId,
+    observation: ExecutionObservation,
+    baseline: GameView,
+}
+
+impl Gate {
+    fn check(&self, shared: &mut Shared) -> bool {
+        if !shared.active(self.generation) {
+            return false;
+        }
+        let activity = self.observation.activity();
+        // Uncertainty wins over any speculative error or later unsupported path.
+        let reason = if activity.randomness || activity.hidden_information {
+            Some(StopReason::Uncertainty)
+        } else if activity.unsupported_participation {
+            Some(StopReason::UnsupportedParticipation)
+        } else if activity.unsupported_segment {
+            Some(StopReason::UnsupportedSegment)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            shared.stop(reason);
+            return false;
+        }
+        true
+    }
+
+    fn publication(
+        &self,
+        state: &GameState,
+        choice: Option<&Choice>,
+        events: &[String],
+    ) -> Result<SafePublication, StopReason> {
+        if choice.is_some_and(|choice| choice.player != self.player) {
+            return Err(StopReason::OtherPlayerRequired);
+        }
+        let enabled_options = choice.map(audit_offer).transpose()?.unwrap_or_default();
+        let viewer = ViewerRole::Player(self.player.clone());
+        let projected_choice =
+            project_pending_choice(&viewer, choice.map(|choice| (choice, "planning"))).map(
+                |pending| {
+                    let mut choice = pending.choice;
+                    // Unavailable component/contact options have not been audited. Do
+                    // not publish their labels, payloads or previews just to disable them.
+                    choice
+                        .options
+                        .retain(|option| enabled_options.contains(&option.id));
+                    choice
+                },
+            );
+        let publication = SafePublication {
+            position: project_game_view_full(state, &viewer, &[], projected_choice.as_ref(), &[]),
+            choice: projected_choice,
+            events: safe_events(events)?,
+        };
+        validate_knowledge(&self.baseline, &publication, &self.player)?;
+        Ok(publication)
+    }
+}
+
+struct InboxDecider {
+    inbox: mpsc::Receiver<Input>,
+    shared: Arc<Mutex<Shared>>,
+    generation: u64,
+}
+
+/// Resolver::emit can ask without a state observation. Give that second table
+/// an explicit stop source too, rather than leaving its first-option default.
+struct UnobservedDecider {
+    gate: Arc<Gate>,
+}
+
+impl Decider for UnobservedDecider {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        let mut shared = self.gate.shared.lock().expect("planning lock");
+        if self.gate.check(&mut shared) {
+            shared.stop(if choice.player == self.gate.player {
+                StopReason::UnsupportedOffer
+            } else {
+                StopReason::OtherPlayerRequired
+            });
+        }
+        Err(refused(choice))
+    }
+}
+
+impl Decider for InboxDecider {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        match self.inbox.recv() {
+            Ok(Input::Answer(id))
+                if self
+                    .shared
+                    .lock()
+                    .expect("planning lock")
+                    .active(self.generation) =>
+            {
+                choice.option(&id).cloned().ok_or_else(|| refused(choice))
+            }
+            _ => Err(refused(choice)),
+        }
+    }
+}
+
+struct PlanningDecider {
+    gate: Arc<Gate>,
+    // The callback buffer is consumed once. Plain choose() cannot reuse an
+    // earlier question's state and pretend it is a fresh observation.
+    buffer: Arc<Mutex<Option<GameState>>>,
+    replay: ReplayDecider,
+    replay_status: ReplayStatus,
+    recorder: RecordingDecider,
+    recording: DecisionRecording,
+}
+
+impl PlanningDecider {
+    fn answer(&mut self, choice: &Choice, observed: bool) -> Result<ChoiceOption, IllegalChoice> {
+        let state = self.buffer.lock().expect("offer buffer lock").take();
+        let replaying = !self
+            .replay_status
+            .lock()
+            .expect("replay lock")
+            .remaining()
+            .is_empty();
+        {
+            let mut shared = self.gate.shared.lock().expect("planning lock");
+            if !self.gate.check(&mut shared) {
+                return Err(refused(choice));
+            }
+            let publication = if observed {
+                state
+                    .as_ref()
+                    .ok_or(StopReason::UnsupportedOffer)
+                    .and_then(|state| self.gate.publication(state, Some(choice), &[]))
+            } else {
+                Err(StopReason::UnsupportedOffer)
+            };
+            match publication {
+                Ok(publication) => {
+                    shared.last_safe = Some(publication.clone());
+                    shared.pending = if replaying {
+                        None
+                    } else {
+                        publication.choice.clone()
+                    };
+                    shared.publish(PlanningUpdate::SafeOffer(publication));
+                }
+                Err(reason) => {
+                    shared.stop(reason);
+                    return Err(refused(choice));
+                }
+            }
+        }
+        if replaying {
+            let replay = self.replay_status.lock().expect("replay lock");
+            let expected = replay.remaining().front().expect("replay answer");
+            let mut shared = self.gate.shared.lock().expect("planning lock");
+            if !self.gate.check(&mut shared) {
+                return Err(refused(choice));
+            }
+            if !shared
+                .last_safe
+                .as_ref()
+                .and_then(|offer| offer.choice.as_ref())
+                .is_some_and(|choice| choice.option(&expected.option_id).is_some())
+            {
+                shared.stop(StopReason::ReplayMismatch);
+                return Err(refused(choice));
+            }
+        }
+        let answer = if replaying {
+            self.replay.choose(choice)
+        } else {
+            self.recorder.choose(choice)
+        };
+        let mut shared = self.gate.shared.lock().expect("planning lock");
+        if !self.gate.check(&mut shared) {
+            return Err(refused(choice));
+        }
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(_) => {
+                if replaying {
+                    shared.stop(StopReason::ReplayMismatch);
+                } else {
+                    shared.fail(FailureCategory::Engine);
+                }
+                return Err(refused(choice));
+            }
+        };
+        if !shared
+            .last_safe
+            .as_ref()
+            .and_then(|offer| offer.choice.as_ref())
+            .is_some_and(|choice| choice.option(&answer.id).is_some())
+        {
+            shared.stop(StopReason::UnsupportedOffer);
+            return Err(refused(choice));
+        }
+        if replaying {
+            let progress = self.replay_status.lock().expect("replay lock");
+            shared.progress.replayed = progress.consumed();
+            shared.progress.remaining = progress.remaining().len();
+        } else {
+            shared.plan.recorded_decisions.push(
+                self.recording
+                    .lock()
+                    .expect("recording lock")
+                    .last()
+                    .expect("recorded answer")
+                    .clone(),
+            );
+            shared.plan.revision += 1;
+        }
+        // The answer survives even if applying it rolls a rift or draws a card.
+        shared.progress.nested_answers_since_checkpoint += 1;
+        shared.pending = None;
+        Ok(answer)
+    }
+}
+
+impl Decider for PlanningDecider {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        self.answer(choice, false)
+    }
+    fn choose_seeing(
+        &mut self,
+        choice: &Choice,
+        _seen: &SeatObservation<'_>,
+    ) -> Result<ChoiceOption, IllegalChoice> {
+        self.answer(choice, true)
+    }
+}
+
+fn refused(choice: &Choice) -> IllegalChoice {
+    IllegalChoice::DeciderFailed {
+        player: choice.player.clone(),
+        prompt: choice.prompt.clone(),
+        reason: "disposable execution stopped".to_owned(),
+    }
+}
+
+fn spawn(
+    make_game: impl FnOnce() -> Game<'static> + Send + 'static,
+    player: PlayerId,
+    shared: Arc<Mutex<Shared>>,
+    step_bound: usize,
+) -> (mpsc::Sender<Input>, JoinHandle<()>) {
+    let (inbox_tx, inbox) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut game = make_game();
+        let observation = ExecutionObservation::default();
+        game.bind_observation(observation.clone());
+        let reaction_observation = observation.clone();
+        let planner = player.clone();
+        let planner_faction = ti4_engine::promissory::faction_name(&game.state, &player);
+        game.timing.set_participation(Arc::new(move |ability| {
+            if ability.owner != planner && ability.optional {
+                return false;
+            }
+            // No mandatory timing effects have been audited for this first slice.
+            // Do not evaluate even their conditions to find out whether they apply.
+            if !ability.optional {
+                reaction_observation.unsupported_participation();
+                return false;
+            }
+            // These standing slots check the planner's own hand and public event
+            // guards in reactions::playable_now. Their effects are never selected:
+            // the resulting reaction offer is outside the tactical allowlist.
+            let relation = match ability.relation {
+                ti4_engine::timing::Relation::When => "when",
+                ti4_engine::timing::Relation::After => "after",
+            };
+            let reaction = ability.id
+                == format!(
+                    "reaction:{planner_faction}:{}:{relation}",
+                    ability.event_type
+                );
+            // I48S's condition reads only public leader readiness and public units.
+            // It is registered for every seat, even those without the agent.
+            let agent = ability.event_type == "SYSTEM_ACTIVATED"
+                && relation == "after"
+                && ability.id
+                    == format!("leader:{planner_faction}:l1z1xagent:SYSTEM_ACTIVATED:after");
+            if !reaction && !agent {
+                reaction_observation.unsupported_participation();
+                return false;
+            }
+            true
+        }));
+        let aftermath_observation = observation.clone();
+        game.on_aftermath(move |state, content, sources| {
+            let (Some(system), Some(player)) = (&state.active_system, &state.active) else {
+                aftermath_observation.unsupported_segment();
+                return;
+            };
+            // Only empty, uncontested, non-producing aftermath is audited. Its
+            // windows do no work; frontier exploration still marks the ordered draw.
+            let tile = ti4_content::galaxy::system(content, system.as_str(), sources);
+            if tile.is_none_or(|tile| !tile.planets().is_empty())
+                || state
+                    .system_state(system)
+                    .units
+                    .iter()
+                    .any(|unit| &unit.owner != player)
+                || ti4_engine::production::capacity(state, content, sources, player, system) > 0
+            {
+                aftermath_observation.unsupported_segment();
+            }
+        });
+        let generation = shared.lock().expect("planning lock").generation;
+        let baseline = project_game_view(&game.state, &ViewerRole::Player(player.clone()));
+        let gate = Arc::new(Gate {
+            shared: shared.clone(),
+            generation,
+            player: player.clone(),
+            observation,
+            baseline,
+        });
+        *game.timing.table_mut() =
+            Table::with_default(Box::new(UnobservedDecider { gate: gate.clone() }));
+        let script = shared
+            .lock()
+            .expect("planning lock")
+            .plan
+            .recorded_decisions
+            .clone();
+        shared.lock().expect("planning lock").progress.remaining = script.len();
+        let (replay, replay_status) = ReplayDecider::new(script);
+        let (recorder, recording) = RecordingDecider::new(Box::new(InboxDecider {
+            inbox,
+            shared: shared.clone(),
+            generation,
+        }));
+        let buffer = Arc::new(Mutex::new(None));
+        game.table = Table::with_default(Box::new(PlanningDecider {
+            gate: gate.clone(),
+            buffer: buffer.clone(),
+            replay,
+            replay_status,
+            recorder,
+            recording,
+        }));
+        game.table.on_observed_offer(move |_, state| {
+            *buffer.lock().expect("offer buffer lock") = Some(state.clone());
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(game, player, &gate, step_bound)
+        }));
+        if result.is_err() {
+            let mut shared = shared.lock().expect("planning lock");
+            if gate.check(&mut shared) {
+                shared.fail(FailureCategory::Worker);
+            }
+        }
+    });
+    (inbox_tx, worker)
+}
+
+fn run(mut game: Game<'static>, player: PlayerId, gate: &Gate, step_bound: usize) {
+    if let Err(error) = game.prepare_hypothetical_turn(&player) {
+        tracing::debug!(?error, "planning preparation failed");
+        let mut shared = gate.shared.lock().expect("planning lock");
+        if gate.check(&mut shared) {
+            shared.fail(FailureCategory::Preparation);
+        }
+        return;
+    }
+    // Keep a real driver copy only at a completed-step boundary. The nested
+    // offer callback must never try to fork a suspended Rust call stack.
+    let mut last_checkpoint = game.fork();
+    let mut event_cursor = game.events.len();
+    for _ in 0..step_bound {
+        {
+            let mut shared = gate.shared.lock().expect("planning lock");
+            if !gate.check(&mut shared) {
+                return;
+            }
+        }
+        let result = game.step();
+        let mut shared = gate.shared.lock().expect("planning lock");
+        if !gate.check(&mut shared) {
+            return;
+        }
+        if let Some(error) = result.error {
+            tracing::debug!(?error, "disposable planning step failed");
+            shared.fail(FailureCategory::Engine);
+            return;
+        }
+        let publication = match gate.publication(&game.state, None, &game.events[event_cursor..]) {
+            Ok(publication) => publication,
+            Err(reason) => {
+                shared.stop(reason);
+                return;
+            }
+        };
+        let movement_complete = game.events[event_cursor..]
+            .iter()
+            .any(|event| event == "TACTICAL_ACTION_COMPLETE");
+        event_cursor = game.events.len();
+        shared.progress.completed_steps += 1;
+        shared.progress.nested_answers_since_checkpoint = 0;
+        // Replace only after validation. The previous copy remains valid even
+        // when a nested answer stops the next step before it returns.
+        drop(last_checkpoint);
+        last_checkpoint = game.fork();
+        shared.last_safe = Some(publication.clone());
+        shared.publish(PlanningUpdate::SafeStep(publication));
+        if movement_complete {
+            shared.stop(StopReason::MovementComplete);
+            return;
+        }
+    }
+    let mut shared = gate.shared.lock().expect("planning lock");
+    if gate.check(&mut shared) {
+        shared.stop(StopReason::StepLimit);
+    }
+}
+
+/// Exact producer identity and option semantics, never prompt text alone.
+///
+/// Game::turn_options makes the menu. Game::tactical_choice uses the normal
+/// activation and movement helpers; CargoWindow::pending_choice supplies loads.
+/// These options use public units, tokens and routes, plus the planner's known
+/// movement boosts. Applying a move uses Dice at a rift, so its outcome is
+/// marked before the next publication. Applying done_moving reaches on_aftermath,
+/// where we reject meaningful combat, invasion and production automatically.
+fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
+    let context = choice
+        .context
+        .as_ref()
+        .ok_or(StopReason::UnsupportedOffer)?;
+    if context.version != CONTEXT_VERSION
+        || context.actor != choice.player
+        || context.phase != ti4_model::state::Phase::Action
+        || context.space_battle
+        || context.invasion_seq.is_some()
+        || context.optional
+        || !context.outstanding.is_empty()
+    {
+        return Err(StopReason::UnsupportedOffer);
+    }
+    let DecisionSource::Rule(rule) = &context.source else {
+        return Err(StopReason::UnsupportedOffer);
+    };
+    let mut enabled = Vec::new();
+    for option in &choice.options {
+        let permitted = match (rule.as_str(), context.subtype.as_str()) {
+            ("22", "action_menu") => {
+                // Publish a tactical-only wrapper. Other menu options may carry
+                // unaudited previews, so `publication` removes them below.
+                option.kind == "action" && option.id == "tactical"
+            }
+            ("89.1", "activate_system") => option.kind == ti4_engine::tactical::ACTIVATE_KIND,
+            ("89.2", "movement_step") => {
+                option.kind == ti4_engine::tactical::MOVE_KIND
+                    || (option.kind == "decline" && option.id == "done_moving")
+            }
+            ("95", "load_cargo") => {
+                option.kind == ti4_engine::transit::LOAD_KIND
+                    || (option.kind == "decline" && option.id == "done_loading")
+            }
+            _ => return Err(StopReason::UnsupportedOffer),
+        };
+        if permitted {
+            // Payload keys are part of the audit too. A familiar option kind
+            // must not smuggle a card identity in a newly added field.
+            let keys: &[&str] = match context.subtype.as_str() {
+                "action_menu" | "activate_system" => &[],
+                "movement_step" if option.id == "done_moving" => &[],
+                "movement_step" => &[
+                    "origin",
+                    "unit",
+                    "damaged",
+                    "capacity",
+                    "gravity_drive",
+                    "ionian",
+                ],
+                "load_cargo" => &[
+                    "unit",
+                    "source",
+                    "damaged",
+                    "galvanized",
+                    "capacity_remaining",
+                    "loaded_ground",
+                    "loaded_fighters",
+                    "ground_available",
+                    "system",
+                ],
+                _ => return Err(StopReason::UnsupportedOffer),
+            };
+            if option
+                .payload
+                .keys()
+                .any(|key| !keys.contains(&key.as_str()))
+            {
+                return Err(StopReason::UnsupportedOffer);
+            }
+            audit_preview(&context.subtype, option)?;
+            enabled.push(option.id.clone());
+        } else if context.subtype != "action_menu"
+            && option.kind != ti4_engine::diplomacy::candidates::OPEN_KIND
+        {
+            return Err(StopReason::UnsupportedOffer);
+        }
+    }
+    if enabled.is_empty() {
+        return Err(StopReason::UnsupportedOffer);
+    }
+    Ok(enabled)
+}
+
+fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason> {
+    // A movement preview currently contains only public fleet/capacity numbers
+    // or the fixed rift warning. Do not admit a new chance label or quantity
+    // just because it was attached to an otherwise familiar move option.
+    let permitted = match option.preview.as_ref() {
+        None => {
+            subtype == "action_menu" || matches!(option.id.as_str(), "done_moving" | "done_loading")
+        }
+        Some(preview) if !preview.truncated => match &preview.outcome {
+            Outcome::Certain { deltas } => {
+                !deltas.is_empty()
+                    && deltas.iter().all(|delta| match subtype {
+                        "activate_system" => delta.quantity == Quantity::TacticTokens,
+                        "movement_step" => matches!(
+                            delta.quantity,
+                            Quantity::FleetSupplyHeadroom | Quantity::CapacityFree
+                        ),
+                        "load_cargo" => delta.quantity == Quantity::CapacityFree,
+                        _ => false,
+                    })
+            }
+            Outcome::Unknown { reason } => {
+                subtype == "movement_step" && *reason == "gravity-rift survival is unresolved"
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if permitted {
+        Ok(())
+    } else {
+        Err(StopReason::UnsupportedOffer)
+    }
+}
+
+fn safe_events(events: &[String]) -> Result<Vec<String>, StopReason> {
+    events
+        .iter()
+        .map(|event| {
+            if matches!(
+                event.as_str(),
+                "TURN_BEGAN"
+                    | "TACTICAL_ACTION_BEGAN"
+                    | "SHIP_MOVED"
+                    | "SYSTEM_ACTIVATED"
+                    | "TACTICAL_ACTION_COMPLETE"
+                    | "INVASION_BEGAN"
+                    | "INVASION_RESOLVED"
+                    | "PRODUCTION_RESOLVED"
+                    | "ACTION_COMPLETED"
+                    | "TURN_PASSED"
+                    | "TURN_CLOSING"
+            ) || event.starts_with("SYSTEM_ACTIVATED:")
+            {
+                Ok(event.clone())
+            } else {
+                Err(StopReason::UnsupportedSegment)
+            }
+        })
+        .collect()
+}
+
+fn validate_knowledge(
+    baseline: &GameView,
+    publication: &SafePublication,
+    actor: &PlayerId,
+) -> Result<(), StopReason> {
+    let view = &publication.position;
+    // Public movement and token costs may change. Newly learned identities may
+    // not. Counts use multisets so duplicating a known card is also rejected.
+    for player in &view.players {
+        let known = baseline
+            .players
+            .iter()
+            .find(|known| known.id == player.id)
+            .ok_or(StopReason::KnowledgeChanged)?;
+        if !contained(&player.held_action_cards, &known.held_action_cards)
+            || !contained(
+                &player.held_secret_objectives,
+                &known.held_secret_objectives,
+            )
+            || !contained(
+                &player.scored_secret_objectives,
+                &known.scored_secret_objectives,
+            )
+            || !contained(&player.relics, &known.relics)
+            || !player.technologies.is_subset(&known.technologies)
+            || player.action_cards_count > known.action_cards_count
+            || player.secret_objectives_count > known.secret_objectives_count
+            || (&player.id != actor
+                && (player.action_cards_count != known.action_cards_count
+                    || player.secret_objectives_count != known.secret_objectives_count))
+        {
+            return Err(StopReason::KnowledgeChanged);
+        }
+    }
+    for (system, current) in &view.board.systems {
+        for (planet, current) in &current.planets {
+            let known = baseline
+                .board
+                .systems
+                .get(system)
+                .and_then(|system| system.planets.get(planet));
+            if !contained(
+                &current.attachments,
+                known.map_or(&[], |planet| planet.attachments.as_slice()),
+            ) {
+                return Err(StopReason::KnowledgeChanged);
+            }
+        }
+    }
+    if view.table.revealed_objectives != baseline.table.revealed_objectives
+        || view.table.scored_objectives != baseline.table.scored_objectives
+        || view.board.combat.is_some()
+        || view.board.invasion.is_some()
+    {
+        return Err(StopReason::KnowledgeChanged);
+    }
+    Ok(())
+}
+
+fn contained<T: PartialEq>(values: &[T], known: &[T]) -> bool {
+    let mut available: Vec<&T> = known.iter().collect();
+    values.iter().all(|value| {
+        available
+            .iter()
+            .position(|known| *known == value)
+            .is_some_and(|index| {
+                available.remove(index);
+                true
+            })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ti4_content::ContentStore;
+    use ti4_engine::choice::Scripted;
+    use ti4_model::id::ActionCardId;
+
+    fn gate(state: &GameState) -> (Arc<Gate>, mpsc::Receiver<PlanningEnvelope>) {
+        let (output, receiver) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(Shared {
+            plan: PlayerPlan::new(1),
+            generation: 1,
+            retired: false,
+            terminal: false,
+            pending: None,
+            last_safe: None,
+            progress: Progress {
+                replayed: 0,
+                remaining: 0,
+                completed_steps: 0,
+                nested_answers_since_checkpoint: 0,
+            },
+            output,
+        }));
+        (
+            Arc::new(Gate {
+                shared,
+                generation: 1,
+                player: PlayerId::new("b"),
+                observation: ExecutionObservation::default(),
+                baseline: project_game_view(state, &ViewerRole::Player(PlayerId::new("b"))),
+            }),
+            receiver,
+        )
+    }
+
+    #[test]
+    fn actual_envelope_allows_public_changes_and_known_consumption_but_not_new_identities() {
+        let mut state = ti4_engine::fixtures::game(&["a", "b"]);
+        state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
+            vec![ActionCardId::new("sabo1")];
+        let (gate, _) = gate(&state);
+        let player = state.player_mut(&PlayerId::new("b")).unwrap();
+        player.trade_goods += 2;
+        player.action_cards.clear();
+        assert!(gate.publication(&state, None, &[]).is_ok());
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .push(ActionCardId::new("sabo2"));
+        assert_eq!(
+            gate.publication(&state, None, &[]),
+            Err(StopReason::KnowledgeChanged)
+        );
+    }
+
+    #[test]
+    fn plain_choose_cannot_reuse_a_buffer_or_consume_a_recorded_answer() {
+        let mut state = ti4_engine::fixtures::game(&["a", "b"]);
+        state.phase = ti4_model::state::Phase::Action;
+        state.active = Some(PlayerId::new("b"));
+        let game = Game::new(state, ContentStore::embedded())
+            .with_galaxy(ti4_engine::fixtures::plain_hub().galaxy);
+        let choice = game.legal_options().unwrap();
+        let expected = RecordedDecision::from_answer(&choice, choice.option("tactical").unwrap());
+        let (gate, output) = gate(&game.state);
+        let (replay, replay_status) = ReplayDecider::new(vec![expected]);
+        let (recorder, recording) = RecordingDecider::new(Box::new(Scripted::new(["tactical"])));
+        let buffer = Arc::new(Mutex::new(Some(game.state.clone())));
+        let mut decider = PlanningDecider {
+            gate,
+            buffer: buffer.clone(),
+            replay,
+            replay_status: replay_status.clone(),
+            recorder,
+            recording,
+        };
+        assert!(decider.choose(&choice).is_err());
+        assert!(buffer.lock().unwrap().is_none());
+        assert_eq!(replay_status.lock().unwrap().consumed(), 0);
+        assert!(matches!(
+            output.try_recv().unwrap().update,
+            PlanningUpdate::Stopped {
+                reason: StopReason::UnsupportedOffer,
+                ..
+            }
+        ));
+        assert!(output.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_familiar_move_does_not_admit_a_card_derived_preview() {
+        let choice = Choice::new(
+            PlayerId::new("b"),
+            "movement",
+            vec![ChoiceOption::new("move|19|0", "move").previewed(
+                ti4_engine::preview::Preview::certain(vec![ti4_engine::preview::Delta::new(
+                    Quantity::ActionCardsHeld,
+                    0,
+                    1,
+                )]),
+            )],
+        )
+        .contextualized(ti4_engine::decision_context::DecisionContext::new(
+            PlayerId::new("b"),
+            DecisionSource::Rule("89.2".into()),
+            "movement_step",
+            ti4_model::state::Phase::Action,
+            1,
+        ));
+        assert_eq!(audit_offer(&choice), Err(StopReason::UnsupportedOffer));
+    }
+}

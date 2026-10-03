@@ -1035,21 +1035,17 @@ fn advance_into_space_combat(
     Ok(())
 }
 
-fn setup_base_3p_game(
-    seed: u64,
-    game_prefix: &str,
-) -> Result<
-    (
-        SessionConfig,
-        PlayerLobbyRecord,
-        PlayerId,
-        String,
-        ti4_content::galaxy::Galaxy,
-        PlayerId,
-        PlayerId,
-    ),
+type Base3pGameSetup = (
+    SessionConfig,
+    PlayerLobbyRecord,
+    PlayerId,
     String,
-> {
+    ti4_content::galaxy::Galaxy,
+    PlayerId,
+    PlayerId,
+);
+
+fn setup_base_3p_game(seed: u64, game_prefix: &str) -> Result<Base3pGameSetup, String> {
     let content = ContentStore::embedded();
 
     let mut existing_players = BTreeMap::new();
@@ -1227,7 +1223,7 @@ fn build_tactical_scenario(
         .push(Unit::new(UnitTypeId::new("fighter"), p2.clone()));
 
     // If there are planets in border_system, place 1 Hacan Infantry on the first planet
-    if let Some(first_planet) = border_state.planet_units.keys().cloned().next() {
+    if let Some(first_planet) = border_state.planet_units.keys().next().cloned() {
         border_state.land(
             &first_planet,
             &[Unit::new(UnitTypeId::new("infantry"), p2.clone())],
@@ -1254,7 +1250,7 @@ fn build_tactical_scenario(
         Unit::new(UnitTypeId::new("infantry"), p1.clone()),
     ];
 
-    if let Some(first_planet) = second_state.planet_units.keys().cloned().next() {
+    if let Some(first_planet) = second_state.planet_units.keys().next().cloned() {
         second_state.land(&first_planet, &sol_infantry);
         second_state.set_control(first_planet, p1.clone());
     } else {

@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn project_table_view_calculates_objective_progress() {
         let p1 = PlayerId::new("player_1");
-        let mut state = GameState::new(&[p1.clone()], &[], BTreeMap::new(), None, 1);
+        let mut state = GameState::new(std::slice::from_ref(&p1), &[], BTreeMap::new(), None, 1);
         let mut player = Player::new(p1.clone());
         player.faction = FactionId::new("hacan");
         player.trade_goods = 7;

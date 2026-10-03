@@ -1,61 +1,80 @@
-- [x] technology tooltips and colors
-- [x] overlays for map (ressource/influence/space units/ground combat units)
-- [x] main game stats (total ressources/influence, remaining ressources/influence)
-- faction rules tooltips
-- test all strategy cards + secondaries
-- [x] test scoring objectives
-- test winning the game
-- test agenda phase
+### Bugs and rules
 
-### 1. Already in the Protocol Wire View (High-Value / Immediate Wins)
+- [ ] Replace broken initial map generation with balanced predefined maps; fix system rings and the mix of planet and empty systems.
+- [ ] Fix the bot crash when resolving Diplomacy.
+- [ ] Fix Hacan trading.
+- [ ] Fix picking up units along the movement route.
+- [ ] Fix faction technology displays: players currently see Player 1’s faction technologies.
+- [ ] Fully debug payment calculations and resolution, including command-token purchases, planet exhaustion, trade goods, and production requiring repeated payments.
+- [ ] Fix automatic payment exhausting planets unnecessarily when trade goods are available.
+- [ ] Fix resource-spending validation for Erect a Monument, including potentially stale eligibility.
+- [ ] Investigate Blitz being offered during an opponent’s turn when it would have no useful effect.
+- [ ] Restore the combat simulator.
+- [ ] Fix UI flashing and duplicate event-log keys, including round:2:action:action:action_295.
+- [ ] Update strategy cards to the latest expansion and official patch/errata.
 
-These fields already arrive from the server in PlayerView and TableView, but have no visual component:
-  • Leaders (Agents, Commanders, Heroes)
-      • Engine / Protocol: PlayerView.leaders: Record<string, string> tracks status (locked, unlocked, exhausted, purged).
-      • Web UI: Completely unrendered. There is no leader tray or indicator on PlayerSheet.tsx showing who has unlocked their commander, purged their hero, or readied their agent.
-  • Relics & Relic Exhaustion
-      • Engine / Protocol: PlayerView.relics and exhausted_relics.
-      • Web UI: Not displayed anywhere in PlayerSheet.tsx or any modal.
-  • Galactic Laws in Play (Agendas Passed):
-      • Engine / Protocol: TableView.laws: Record<string, string>.
-      • Web UI: Not rendered anywhere. Players cannot see which laws (e.g., Minister of War, Wormhole Research) are active in the galaxy.
-  • Unclaimed Strategy Cards & Accumulated Trade Goods:
-      • Engine / Protocol: TableView.unclaimed_strategy_cards and TableView.strategy_card_goods.
-      • Web UI: Neither the unpicked strategy cards nor the bonus trade goods placed on them are displayed.
-  • Strategy Card Exhausted / Played State:
-      • Engine / Protocol: PlayerView.exhausted_strategy_cards.
-      • Web UI: Strategy card badges in PlayerSheet.tsx:340-367 render identically regardless of whether the card's primary ability has already been exhausted.
-  
-  ──────
-  ### 2. Modeled in the Game Engine, but Missing from the Wire Protocol & UI
-  
-  These exist in ti4_model::state::GameState and Player, but are omitted from projection.rs and the UI:
-  
-  • Promissory Notes (Held & Face-Up in Play Area):
-      • Engine: GameState.promissory_notes, GameState.promissory_faceup, and Support for the Throne holders.
-      • Web UI: Promissory notes can be selected in TradeDeskModal.tsx, but there is no persistent view showing:
-          1. A player's private held promissory notes.
-          2. Face-up notes in play areas (crucially, who holds whose Support for the Throne or Alliance note).
-  • Relic Fragments:
-      • Engine: Player.relic_fragments: BTreeMap<String, i32> (Cultural, Hazardous, Industrial, Unknown).
-      • Web UI: Completely invisible (players cannot see their fragment counts towards forging relics).
-  • Captured Units (Vuil'raith Cabal / Vortex):
-      • Engine: Player.captured_units: Vec<(PlayerId, UnitTypeId)>.
-      • Web UI: Cabal players cannot see what plastic they have captured or available to consume.
-  • Dynamic Board Tokens (Frontier Tokens, Ion Storm, Creuss Wormholes, Custodians):
-      • Engine: GameState.frontier_tokens, GameState.ion_storm, GameState.wormhole_tokens, GameState.custodians_removed.
-      • Web UI: BoardTile.tsx only displays static printed tile data. Empty systems do not indicate whether a frontier token is present or explored, and dynamic tokens (Creuss alpha/beta, Ion storm) are
-      missing.
-  • Component Supply / Reinforcements Limit:
-      • Engine: ti4_engine::supply.
-      • Web UI: Players cannot see remaining unit plastic in their supply when building or planning fleets.
-  • Faction Reference & Faction Sheet:
-      • Currently, the UI only displays the faction name string. Faction abilities, faction-specific units, and faction promissory notes have no overview panel.
-  
-  ──────
-  ### Suggested Priorities After the Tech Overview
-  
-  1. [x] Scored Public Objectives Grid: Marking which players scored each revealed public objective on PlayerSheet.tsx (the backend data is already in TableView.scored_objectives).
-  2. Leaders & Relics Tray: Adding a collapsible section or badges to PlayerSheet.tsx using PlayerView.leaders and PlayerView.relics.
-  3. Face-Up Promissory Notes (Support for the Throne / Alliance): Projecting public promissory notes in TableView / PlayerView so table alliances and VP sources are transparent.
-  4. Active Laws Panel: Displaying TableView.laws near the public objectives.
+### Decisions and turn flow
+
+- [ ] Allow players to undo their own reversible actions during their turn, provided no randomness is involved.
+- [ ] Let players prepare strategy-card decisions simultaneously, then confirm or edit them when their turn arrives; resolve in the correct order.
+- [ ] Consolidate Trade strategy-card decisions into one workflow.
+- [ ] Show a summary of the active player’s current decision.
+- [ ] When waiting, show which player and decision are blocking progress.
+- [ ] Add an optional end-of-turn summary, configurable per player.
+- [ ] Play a turn-notification sound, with a per-player mute setting.
+- [ ] Audit single-option decisions, document them in a file, and choose which should resolve automatically; include forced strategy-card picks and cases with no available payment.
+- [ ] In the action menu, name the remaining strategic action when only one is available.
+- [ ] Replace generic “Decision resolved” messages with meaningful summaries, including command-token purchases.
+
+### Map and player interface
+
+- [ ] Preserve the selected map view throughout decisions, including invasions.
+- [ ] Use map-based planet selection wherever applicable, including exhaustion, Construction, the Xxcha agent, and agenda decisions.
+- [ ] During Warfare, select the command token to recall by clicking its system on the map.
+- [ ] Use consistent resource and influence icons throughout the UI.
+- [ ] Enlarge player-specific map markers, such as hexagons, squares, and circles.
+- [ ] Place the local player first and/or compact player cards to reduce scrolling.
+- [ ] Always show player names alongside faction names.
+- [ ] Add a faction reference panel and tooltips covering faction abilities, faction-specific units, mech abilities, and faction promissory notes.
+- [ ] Show leaders and their locked, unlocked, exhausted, or purged status.
+- [ ] Show owned relics and their exhaustion status.
+- [ ] Show relic-fragment counts by type.
+- [ ] Show privately held promissory notes and public face-up notes, including who holds whose Support for the Throne or Alliance.
+- [ ] Show captured units and which are available to consume.
+- [ ] Show dynamic map tokens and state: frontier tokens, Ion Storm, Creuss wormholes, and the Custodians token.
+- [ ] Add command-token tooltips identifying the tactical, fleet, and strategy pools.
+- [ ] Grey out used strategy cards.
+- [ ] Show unclaimed strategy cards and their accumulated trade goods.
+- [ ] Fix event-log scrolling when new events arrive.
+
+### Combat and production
+
+- [ ] Avoid showing noncombat invasions to uninvolved players.
+- [ ] Show planet resources during invasion.
+- [ ] Preselect an editable ground-force distribution across invasion planets, favoring planets with exploration events and/or higher resources.
+- [ ] Show post-combat results, including a ground-combat summary popup.
+- [ ] Add production tooltips with unit statistics and abilities, including movement, capacity, flagship abilities, and bombardment.
+- [ ] Show fleet supply during production.
+- [ ] Show remaining unit supply when building units or planning fleets.
+- [ ] Make production payment options and sequencing clear, including how to avoid wasting planet resources.
+- [ ] Add a command-token allocation/redistribution UI with pip bars, plus/minus controls, and an unassigned-token counter; enforce legal limits and require complete allocation before continuing.
+
+### Cards, trading, agendas, and scoring
+
+- [ ] Show timing/trigger text on every action card.
+- [ ] Show the played card and its full text in reaction windows, including the card targeted by Sabotage.
+- [ ] Highlight action-card names in the event log and show their text on hover.
+- [ ] Allow players to mute action-card reactions, automatically passing the muted reactions.
+- [ ] Allow players to select any action card for bluffing; make the server/engine offer timing windows as though they held that card.
+- [ ] Fix duplicated “Play play action card” wording and rename “Pin” to explain that it pauses automatic passing.
+- [ ] Simplify the exchange UI and show the effects of cards offered in a trade.
+- [ ] During Politics, show agenda-card text when choosing top or bottom of the deck.
+- [ ] Improve the agenda-phase presentation: show the current agenda, voting results, and resulting effects.
+- [ ] Show active laws and their effects.
+- [ ] Show a clear breakdown of victory-point sources, including objectives, Mecatol Rex, and Shard of the Throne.
+
+### Verification
+
+- [ ] Test every strategy card’s primary and secondary abilities.
+- [ ] Test the complete agenda phase.
+- [ ] Test winning the game and end-game resolution.

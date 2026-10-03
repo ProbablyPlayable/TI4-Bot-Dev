@@ -92,10 +92,6 @@ impl Board {
 /// what the rules *are*, and a caller that gains Nav Suite later should find the rule already
 /// written rather than have to reopen this search.
 #[derive(Debug, Clone)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "one field per printed ability, as the oracle has"
-)]
 pub struct MovementRules<'a> {
     galaxy: &'a Galaxy,
     /// Resolved once. Looking a system up per search step rebuilt an index over the whole

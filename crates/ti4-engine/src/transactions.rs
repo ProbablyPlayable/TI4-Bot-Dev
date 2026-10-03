@@ -719,10 +719,9 @@ pub fn available_actions(
         .seating_order
         .iter()
         .filter(|other| *other != player && may_transact(state, content, galaxy, player, other))
-        .cloned()
         .filter(|other| !already.contains(other))
         .map(|other| {
-            let name = faction_name(state, &other);
+            let name = faction_name(state, other);
             crate::choice::ChoiceOption::labelled(
                 format!("{OPEN_PREFIX}{name}"),
                 OPEN_KIND,
@@ -1369,6 +1368,7 @@ enum Stage {
 ///     .expect("there are deals to propose");
 /// assert!(choice.ids().contains(&"cc3"), "swap three commodities each");
 /// ```
+#[derive(Clone)]
 pub struct TradeWindow {
     proposer: PlayerId,
     partner: PlayerId,
