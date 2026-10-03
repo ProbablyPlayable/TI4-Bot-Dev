@@ -21,6 +21,14 @@ use crate::session::worker::{
     PendingSubmissionState, SessionShared, Subscriber, spawn_session_worker,
 };
 
+/// Player, controller, credential and seed details for a running lobby.
+pub type LobbyDetails = (
+    Vec<PlayerId>,
+    BTreeMap<PlayerId, SeatController>,
+    BTreeMap<PlayerId, String>,
+    Option<u64>,
+);
+
 /// Transport-neutral bounded subscription that unregisters itself when dropped.
 pub struct SessionSubscription {
     id: u64,
@@ -417,14 +425,7 @@ impl GameSession {
 
     /// Returns immutable lifecycle metadata needed to represent a running session as a lobby.
     #[must_use]
-    pub fn lobby_details(
-        &self,
-    ) -> (
-        Vec<PlayerId>,
-        BTreeMap<PlayerId, SeatController>,
-        BTreeMap<PlayerId, String>,
-        Option<u64>,
-    ) {
+    pub fn lobby_details(&self) -> LobbyDetails {
         let lock = self.shared.lock().expect("shared lock");
         (
             lock.player_ids.clone(),

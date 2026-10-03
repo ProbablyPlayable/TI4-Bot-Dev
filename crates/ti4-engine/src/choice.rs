@@ -1860,11 +1860,13 @@ impl DecisionLog {
 /// let mut table = Table::with_default(Box::new(Scripted::new(vec![String::new()])));
 /// table.seat(PlayerId::new("a"), Box::new(Scripted::new(vec!["first".to_owned()])));
 /// ```
+type ObservedOffer = Box<dyn FnMut(&[DecisionRecord], &ti4_model::state::GameState) + Send>;
+
 pub struct Table {
     deciders: BTreeMap<PlayerId, Box<dyn Decider>>,
     default: Box<dyn Decider>,
     pub log: DecisionLog,
-    observed_offer: Option<Box<dyn FnMut(&[DecisionRecord], &ti4_model::state::GameState) + Send>>,
+    observed_offer: Option<ObservedOffer>,
 }
 
 impl Default for Table {

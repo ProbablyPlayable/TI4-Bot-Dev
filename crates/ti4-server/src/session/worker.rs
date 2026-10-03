@@ -299,7 +299,7 @@ impl SessionShared {
         if !self.history_active {
             return;
         }
-        for entry in self.event_log[index..].iter().cloned() {
+        for entry in &self.event_log[index..] {
             self.subscribers.retain(|_, subscriber| {
                 entry
                     .for_viewer(&subscriber.viewer)
