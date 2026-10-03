@@ -275,6 +275,17 @@ impl PlanningRunner {
         }
     }
 
+    /// Discards queued updates from retired generations without blocking.
+    pub fn try_recv(&self) -> Result<PlanningEnvelope, mpsc::TryRecvError> {
+        loop {
+            let envelope = self.output.try_recv()?;
+            let shared = self.shared.lock().expect("planning lock");
+            if !shared.retired && envelope.identity.generation_id == shared.generation {
+                return Ok(envelope);
+            }
+        }
+    }
+
     pub fn cancel(&mut self) {
         // Publication and retirement hold the same lock. A worker cannot pass
         // the generation check and then publish after this retirement.

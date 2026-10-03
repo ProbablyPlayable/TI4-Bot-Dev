@@ -688,7 +688,7 @@ impl GameRegistry {
         {
             return Err(BatchError::simple("movement destination changed"));
         }
-        let config = session.restart_config();
+        let mut config = session.restart_config();
         let prior = session.decision_log();
         drop(state);
         let simulation = simulate(&config, &prior, &actor, &request.plan)?;
@@ -848,6 +848,7 @@ impl GameRegistry {
             return Err(BatchError::simple("game advanced during batch"));
         }
         session.stop();
+        config.plans = session.plans();
         if session.decision_log().len() != start_cursor {
             let replacement = Arc::new(GameSession::start_recovered(
                 config.clone(),
@@ -1078,7 +1079,7 @@ impl GameRegistry {
             return Err(HistoryError::InvalidTarget);
         }
         let all: Vec<_> = current.into_iter().chain(redo).collect();
-        let config = session.restart_config();
+        let mut config = session.restart_config();
         drop(state);
         let report = crate::session::replay::replay_session(
             &config.state,
@@ -1133,6 +1134,7 @@ impl GameRegistry {
             ));
         }
         session.stop();
+        config.plans = session.plans();
         if session.decision_log().len() != original_count {
             // This branch is only reachable for an autonomous bot decision; keep the
             // original timeline alive instead of committing an outdated cursor.
@@ -2815,6 +2817,7 @@ fn running_lobby_from_session_config(config: &SessionConfig) -> LobbyState {
 fn running_lobby_from_session(session: &GameSession) -> LobbyState {
     let (player_ids, seats, seat_tokens, seed) = session.lobby_details();
     running_lobby_from_session_config(&SessionConfig {
+        plans: BTreeMap::new(),
         game_id: session.id().to_owned(),
         state: session.current_state(),
         seats,
@@ -2927,6 +2930,7 @@ fn now_ms() -> u64 {
 
 fn legacy_running_lobby(init: &GameInitRecord) -> LobbyState {
     running_lobby_from_session_config(&SessionConfig {
+        plans: BTreeMap::new(),
         game_id: init.game_id.clone(),
         state: init.initial_state.clone(),
         seed: init.seed,

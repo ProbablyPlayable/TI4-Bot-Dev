@@ -63,6 +63,7 @@ pub struct Subscriber {
 
 /// Shared session state accessible across threads.
 pub struct SessionShared {
+    pub(crate) planning: super::planning::SessionPlanning,
     pub game_id: String,
     pub game_version: u64,
     pub latest_state: GameState,
@@ -120,6 +121,7 @@ impl SessionShared {
     #[must_use]
     pub fn new(game_id: String, initial_state: GameState) -> Self {
         Self {
+            planning: super::planning::SessionPlanning::new(BTreeMap::new()),
             game_id,
             game_version: 1,
             latest_state: initial_state,
@@ -462,6 +464,14 @@ struct ReplayingDecider {
     has_boundary_state: bool,
 }
 
+struct ClosePlanningOnExit(Arc<Mutex<SessionShared>>);
+
+impl Drop for ClosePlanningOnExit {
+    fn drop(&mut self) {
+        self.0.lock().expect("shared lock").planning.close();
+    }
+}
+
 /// Capture the actual offer for decisions made by either a human or a bot. Replay
 /// decisions bypass this wrapper and already have their historical events.
 struct ObservedDecider {
@@ -577,6 +587,7 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
     });
 
     let mut initial_shared = SessionShared::new(config.game_id.clone(), config.state.clone());
+    initial_shared.planning = super::planning::SessionPlanning::new(config.plans.clone());
     if let Some(state) = &boundary_state {
         initial_shared.latest_state = state.clone();
     }
@@ -622,6 +633,7 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
 
     let worker_shared = shared.clone();
     let handle = thread::spawn(move || {
+        let _planning_cleanup = ClosePlanningOnExit(worker_shared.clone());
         let mut table = Table::new();
 
         // Configure table deciders
@@ -790,6 +802,11 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
         if let Some(galaxy) = config.galaxy {
             game = game.with_galaxy(galaxy);
         }
+        worker_shared
+            .lock()
+            .expect("shared lock")
+            .planning
+            .completed_step(&game);
 
         if prior_count == 0 && config.prior_events.is_empty() {
             // Emit initial game initialization event
@@ -827,6 +844,11 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
                     lock.error = Some("recovery replay ended before all decisions".to_owned());
                     return;
                 }
+                worker_shared
+                    .lock()
+                    .expect("shared lock")
+                    .planning
+                    .completed_step(&game);
             }
             if game.table.log.records.get(..prior_count) != Some(prior_records.as_slice()) {
                 worker_shared.lock().expect("shared lock").error =
@@ -1125,6 +1147,7 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
                 }
                 lock.publish_history_events_since(event_start);
 
+                lock.planning.completed_step(&game);
                 for (reply_tx, accepted) in accepted_replies {
                     let _ = reply_tx.send(Ok(accepted));
                 }
