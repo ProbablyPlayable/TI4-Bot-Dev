@@ -1835,6 +1835,49 @@ impl GameRegistry {
             .unwrap_or(Err(RejectionReason::NoPendingChoice))
     }
 
+    /// Planning authorization shares the takeover/history gate with live answers.
+    pub fn submit_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str)>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        use super::PlanningError;
+        use crate::planning::runner::SubmissionError;
+        use crate::protocol::server::PlanningRejection as Rejection;
+        let gate = self.game_gate(game_id);
+        let _reservation = gate.lock().expect("game gate lock");
+        if self
+            .authenticate_player_session(game_id, credential)
+            .ok()
+            .as_ref()
+            != Some(player)
+        {
+            return Err(Rejection::Unauthorized);
+        }
+        if self
+            .get_game(game_id)
+            .is_none_or(|current| !std::ptr::eq(Arc::as_ptr(&current), session))
+        {
+            return Err(Rejection::Unavailable);
+        }
+        let result = match answer {
+            Some((identity, option)) => session.submit_planning_choice(player, identity, option),
+            None => session.start_planning(player),
+        };
+        result.map_err(|error| match error {
+            PlanningError::Unavailable => Rejection::Unavailable,
+            PlanningError::UnknownSeat => Rejection::UnknownSeat,
+            PlanningError::ActivePlayer => Rejection::ActivePlayer,
+            PlanningError::NotStarted => Rejection::NotStarted,
+            PlanningError::Submission(SubmissionError::Retired) => Rejection::Retired,
+            PlanningError::Submission(SubmissionError::NotWaiting) => Rejection::NotWaiting,
+            PlanningError::Submission(SubmissionError::UnknownOption) => Rejection::UnknownOption,
+        })
+    }
+
     /// Bind a private HTTP snapshot to the current credential under the same
     /// lock used to commit a takeover.
     pub fn player_snapshot(

@@ -50,6 +50,7 @@ impl PlayerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttemptIdentity {
     pub checkpoint_id: u64,
     pub plan_revision: u64,
@@ -108,6 +109,8 @@ pub enum PlanningUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanningEnvelope {
     pub identity: AttemptIdentity,
+    /// Replay offers are informative; only a waiting offer accepts an answer.
+    pub awaiting_answer: bool,
     pub assumptions: Vec<String>,
     pub progress: Progress,
     pub update: PlanningUpdate,
@@ -134,6 +137,8 @@ struct Shared {
     last_safe: Option<SafePublication>,
     progress: Progress,
     output: mpsc::Sender<PlanningEnvelope>,
+    subscribers: Vec<mpsc::SyncSender<PlanningEnvelope>>,
+    latest: Option<PlanningEnvelope>,
 }
 
 impl Shared {
@@ -149,16 +154,21 @@ impl Shared {
         !self.retired && !self.terminal && self.generation == generation
     }
 
-    fn publish(&self, update: PlanningUpdate) {
+    fn publish(&mut self, update: PlanningUpdate) {
         if self.retired {
             return;
         }
-        let _ = self.output.send(PlanningEnvelope {
+        let envelope = PlanningEnvelope {
             identity: self.identity(),
+            awaiting_answer: self.pending.is_some(),
             assumptions: vec![ASSUMPTION.to_owned()],
             progress: self.progress.clone(),
             update,
-        });
+        };
+        self.latest = Some(envelope.clone());
+        self.subscribers
+            .retain(|tx| tx.try_send(envelope.clone()).is_ok());
+        let _ = self.output.send(envelope);
     }
 
     fn stop(&mut self, reason: StopReason) {
@@ -213,6 +223,8 @@ impl PlanningRunner {
                 nested_answers_since_checkpoint: 0,
             },
             output: output_tx,
+            subscribers: Vec::new(),
+            latest: None,
         }));
         let (inbox, worker) = spawn(
             checkpoint.fork_for_worker(),
@@ -286,6 +298,27 @@ impl PlanningRunner {
         }
     }
 
+    /// Subscribe under the publication lock so reconnect sees the latest update
+    /// followed only by newer publications. Slow consumers are disconnected.
+    pub(crate) fn subscribe(&self) -> mpsc::Receiver<PlanningEnvelope> {
+        let (tx, rx) = mpsc::sync_channel(128);
+        let mut shared = self.shared.lock().expect("planning lock");
+        if let Some(mut envelope) = shared.latest.clone() {
+            envelope.awaiting_answer =
+                shared.pending.is_some() && envelope.identity == shared.identity();
+            let _ = tx.try_send(envelope);
+        }
+        shared.subscribers.push(tx);
+        rx
+    }
+
+    pub(crate) fn is_current_attempt(&self, identity: AttemptIdentity) -> bool {
+        let shared = self.shared.lock().expect("planning lock");
+        !shared.retired
+            && shared.identity().checkpoint_id == identity.checkpoint_id
+            && shared.generation == identity.generation_id
+    }
+
     pub fn cancel(&mut self) {
         // Publication and retirement hold the same lock. A worker cannot pass
         // the generation check and then publish after this retirement.
@@ -318,6 +351,8 @@ impl PlanningRunner {
         decisions: Option<Vec<RecordedDecision>>,
     ) {
         self.cancel();
+        // Captured test output from retired attempts has no further use.
+        while self.output.try_recv().is_ok() {}
         {
             let mut shared = self.shared.lock().expect("planning lock");
             if let Some(decisions) = decisions {
@@ -330,6 +365,7 @@ impl PlanningRunner {
             shared.terminal = false;
             shared.pending = None;
             shared.last_safe = None;
+            shared.latest = None;
             shared.progress = Progress {
                 replayed: 0,
                 remaining: 0,
@@ -1026,6 +1062,8 @@ mod tests {
                 nested_answers_since_checkpoint: 0,
             },
             output,
+            subscribers: Vec::new(),
+            latest: None,
         }));
         (
             Arc::new(Gate {

@@ -27,6 +27,55 @@ fn client_subscribe_round_trips() {
 }
 
 #[test]
+fn planning_updates_and_results_round_trip_without_a_live_game_version() {
+    use ti4_server::planning::runner::{
+        AttemptIdentity, FailureCategory, PlanningEnvelope, PlanningUpdate, Progress,
+    };
+    use ti4_server::protocol::server::{PlanningRejection, PlanningResultMsg, PlanningUpdateMsg};
+    let identity = AttemptIdentity {
+        checkpoint_id: 10,
+        plan_revision: 2,
+        generation_id: 3,
+    };
+    for message in [
+        ServerMessage::PlanningUpdate(PlanningUpdateMsg {
+            protocol_version: PROTOCOL_VERSION,
+            game_id: "game_abc".into(),
+            envelope: PlanningEnvelope {
+                identity,
+                awaiting_answer: false,
+                assumptions: vec![],
+                progress: Progress {
+                    replayed: 1,
+                    remaining: 2,
+                    completed_steps: 3,
+                    nested_answers_since_checkpoint: 0,
+                },
+                update: PlanningUpdate::Failed(FailureCategory::Engine),
+            },
+        }),
+        ServerMessage::PlanningResult(PlanningResultMsg {
+            protocol_version: PROTOCOL_VERSION,
+            game_id: "game_abc".into(),
+            identity: Some(identity),
+            rejection: Some(PlanningRejection::Retired),
+        }),
+        ServerMessage::PlanningResult(PlanningResultMsg {
+            protocol_version: PROTOCOL_VERSION,
+            game_id: "game_abc".into(),
+            identity: None,
+            rejection: None,
+        }),
+    ] {
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(parse_server_message(&json).unwrap(), message);
+        assert_eq!(message.protocol_version(), PROTOCOL_VERSION);
+        assert_eq!(message.game_id(), Some("game_abc"));
+        assert_eq!(message.game_version(), None);
+    }
+}
+
+#[test]
 fn client_submit_choice_round_trips() {
     let msg = ClientMessage::SubmitChoice {
         protocol_version: PROTOCOL_VERSION,

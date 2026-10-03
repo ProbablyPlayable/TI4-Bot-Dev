@@ -1517,10 +1517,46 @@ pub struct PongMsg {
     pub sequence: u64,
 }
 
+/// A gated planning publication delivered only to its owning player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningUpdateMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    pub envelope: crate::planning::runner::PlanningEnvelope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningRejection {
+    Unauthorized,
+    WrongGame,
+    Unavailable,
+    UnknownSeat,
+    ActivePlayer,
+    NotStarted,
+    Retired,
+    NotWaiting,
+    UnknownOption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningResultMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    /// None identifies a start request; Some identifies an answer request.
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    /// None means accepted by the controller, not committed to the live game.
+    pub rejection: Option<PlanningRejection>,
+}
+
 /// Messages emitted from server to client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerMessage {
+    PlanningUpdate(PlanningUpdateMsg),
+    PlanningResult(PlanningResultMsg),
     InitialSnapshot(InitialSnapshotMsg),
     StateUpdate(StateUpdateMsg),
     PendingChoice(PendingChoiceMsg),
@@ -1538,6 +1574,8 @@ impl ServerMessage {
     #[must_use]
     pub fn protocol_version(&self) -> u16 {
         match self {
+            Self::PlanningUpdate(m) => m.protocol_version,
+            Self::PlanningResult(m) => m.protocol_version,
             Self::InitialSnapshot(m) => m.protocol_version,
             Self::StateUpdate(m) => m.protocol_version,
             Self::PendingChoice(m) => m.protocol_version,
@@ -1555,6 +1593,8 @@ impl ServerMessage {
     #[must_use]
     pub fn game_id(&self) -> Option<&str> {
         match self {
+            Self::PlanningUpdate(m) => Some(&m.game_id),
+            Self::PlanningResult(m) => Some(&m.game_id),
             Self::InitialSnapshot(m) => Some(&m.game_id),
             Self::StateUpdate(m) => Some(&m.game_id),
             Self::PendingChoice(m) => Some(&m.game_id),
@@ -1579,7 +1619,9 @@ impl ServerMessage {
             Self::ActionRejected(m) => Some(m.game_version),
             Self::GameOver(m) => Some(m.game_version),
             Self::Event(m) => m.entry.version,
-            Self::Error(_) | Self::Pong(_) => None,
+            Self::Error(_) | Self::Pong(_) | Self::PlanningUpdate(_) | Self::PlanningResult(_) => {
+                None
+            }
         }
     }
 }

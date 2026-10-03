@@ -549,6 +549,35 @@ impl GameSession {
             .map_err(PlanningError::Submission)
     }
 
+    /// Private stream independent of the captured runner output used by tests.
+    pub(crate) fn subscribe_planning(
+        &self,
+        player: &PlayerId,
+    ) -> Option<mpsc::Receiver<crate::planning::runner::PlanningEnvelope>> {
+        let lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || !lock.replay_complete {
+            return None;
+        }
+        lock.planning
+            .runners
+            .get(player)
+            .map(|runner| runner.subscribe())
+    }
+
+    pub(crate) fn planning_attempt_is_current(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> bool {
+        let lock = self.shared.lock().expect("shared lock");
+        !lock.stopped
+            && lock
+                .planning
+                .runners
+                .get(player)
+                .is_some_and(|runner| runner.is_current_attempt(identity))
+    }
+
     /// Wait without holding the session lock: the live worker must remain free
     /// to refresh or cancel the runner whose output we are waiting for.
     pub fn recv_planning_timeout(

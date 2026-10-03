@@ -27,6 +27,18 @@ pub enum ClientMessage {
         expected_version: u64,
         option_id: String,
     },
+    /// Start an inactive authenticated player's tactical draft.
+    StartPlanning {
+        protocol_version: u16,
+        game_id: String,
+    },
+    /// Answer an offer from the player's current planning attempt.
+    SubmitPlanningChoice {
+        protocol_version: u16,
+        game_id: String,
+        identity: crate::planning::runner::AttemptIdentity,
+        option_id: String,
+    },
     /// Keep-alive ping message.
     Ping {
         protocol_version: u16,
@@ -37,6 +49,21 @@ pub enum ClientMessage {
 impl std::fmt::Debug for ClientMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StartPlanning { game_id, .. } => f
+                .debug_struct("StartPlanning")
+                .field("game_id", game_id)
+                .finish(),
+            Self::SubmitPlanningChoice {
+                game_id,
+                identity,
+                option_id,
+                ..
+            } => f
+                .debug_struct("SubmitPlanningChoice")
+                .field("game_id", game_id)
+                .field("identity", identity)
+                .field("option_id", option_id)
+                .finish(),
             Self::Subscribe {
                 protocol_version,
                 game_id,
@@ -89,6 +116,12 @@ impl ClientMessage {
             }
             | Self::Ping {
                 protocol_version, ..
+            }
+            | Self::StartPlanning {
+                protocol_version, ..
+            }
+            | Self::SubmitPlanningChoice {
+                protocol_version, ..
             } => *protocol_version,
         }
     }
@@ -96,6 +129,13 @@ impl ClientMessage {
     /// Rejects variable-length client fields before they reach session state.
     pub fn validate_bounds(&self) -> Result<(), &'static str> {
         match self {
+            Self::StartPlanning { game_id, .. } => bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?,
+            Self::SubmitPlanningChoice {
+                game_id, option_id, ..
+            } => {
+                bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
+                bounded(option_id, MAX_OPTION_ID_BYTES, "option_id")?;
+            }
             Self::Subscribe {
                 game_id,
                 player_session,
@@ -133,6 +173,56 @@ fn bounded(value: &str, limit: usize, field: &'static str) -> Result<(), &'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planning_messages_round_trip_and_validate_bounds() {
+        let identity = crate::planning::runner::AttemptIdentity {
+            checkpoint_id: 12,
+            plan_revision: 3,
+            generation_id: 2,
+        };
+        for message in [
+            ClientMessage::StartPlanning {
+                protocol_version: 1,
+                game_id: "game".into(),
+            },
+            ClientMessage::SubmitPlanningChoice {
+                protocol_version: 1,
+                game_id: "game".into(),
+                identity,
+                option_id: "tactical".into(),
+            },
+        ] {
+            let encoded = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                message
+            );
+            assert_eq!(message.validate_bounds(), Ok(()));
+            assert_eq!(message.protocol_version(), 1);
+        }
+        assert_eq!(
+            ClientMessage::StartPlanning {
+                protocol_version: 1,
+                game_id: String::new()
+            }
+            .validate_bounds(),
+            Err("game_id")
+        );
+        assert_eq!(
+            ClientMessage::SubmitPlanningChoice {
+                protocol_version: 1,
+                game_id: "game".into(),
+                identity,
+                option_id: "x".repeat(MAX_OPTION_ID_BYTES + 1)
+            }
+            .validate_bounds(),
+            Err("option_id")
+        );
+        assert!(serde_json::from_value::<ClientMessage>(serde_json::json!({
+            "type": "start_planning", "protocol_version": 1, "game_id": "game", "seat": "someone_else"
+        })).is_err());
+    }
 
     #[test]
     fn rejects_oversized_client_fields() {

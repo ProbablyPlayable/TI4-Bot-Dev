@@ -14,7 +14,10 @@ use tracing::{debug, warn};
 use crate::protocol::PROTOCOL_VERSION;
 use crate::protocol::client::ClientMessage;
 use crate::protocol::error::ErrorKind;
-use crate::protocol::server::{ActionRejectedMsg, PongMsg, ProtocolErrorMsg, ServerMessage};
+use crate::protocol::server::{
+    ActionRejectedMsg, PlanningRejection, PlanningResultMsg, PlanningUpdateMsg, PongMsg,
+    ProtocolErrorMsg, ServerMessage,
+};
 use crate::protocol::status::{RejectionReason, ViewerRole};
 use crate::session::{GameRegistry, GameSession};
 
@@ -56,6 +59,7 @@ async fn handle_socket(
     let outbound_game = game_id.clone();
     let outbound_credential = Arc::new(std::sync::Mutex::new(None::<String>));
     let credential_for_pump = outbound_credential.clone();
+    let session_for_pump = session.clone();
 
     // Outbound pump task: forwards ServerMessage as JSON text to WebSocket sink
     let outbound_task = tokio::spawn(async move {
@@ -79,6 +83,19 @@ async fn handle_socket(
                     .is_err()
             }) {
                 break;
+            }
+            if let ServerMessage::PlanningUpdate(update) = &msg {
+                let Some(player) = credential.as_deref().and_then(|token| {
+                    outbound_registry
+                        .authenticate_player_session(&outbound_game, token)
+                        .ok()
+                }) else {
+                    continue;
+                };
+                if !session_for_pump.planning_attempt_is_current(&player, update.envelope.identity)
+                {
+                    continue;
+                }
             }
             match serde_json::to_string(&msg) {
                 Ok(text) => {
@@ -187,6 +204,38 @@ async fn handle_socket(
         }
 
         match client_msg {
+            message @ (ClientMessage::StartPlanning { .. }
+            | ClientMessage::SubmitPlanningChoice { .. }) => {
+                let (message_game_id, answer) = match &message {
+                    ClientMessage::StartPlanning { game_id, .. } => (game_id, None),
+                    ClientMessage::SubmitPlanningChoice {
+                        game_id,
+                        identity,
+                        option_id,
+                        ..
+                    } => (game_id, Some((*identity, option_id.as_str()))),
+                    _ => unreachable!(),
+                };
+                let rejection = if message_game_id != &game_id {
+                    Some(PlanningRejection::WrongGame)
+                } else if let (Some(ViewerRole::Player(player)), Some(token)) =
+                    (&current_role, &current_token)
+                {
+                    registry
+                        .submit_player_planning(&game_id, token, player, &session, answer)
+                        .err()
+                } else {
+                    Some(PlanningRejection::Unauthorized)
+                };
+                let _ = outbound_tx
+                    .send(ServerMessage::PlanningResult(PlanningResultMsg {
+                        protocol_version: PROTOCOL_VERSION,
+                        game_id: game_id.clone(),
+                        identity: answer.map(|(identity, _)| identity),
+                        rejection,
+                    }))
+                    .await;
+            }
             ClientMessage::Ping { sequence, .. } => {
                 if let (Some(token), Some(connection)) = (&current_token, connection_id) {
                     if registry.ping_player(&game_id, token, connection).is_err() {
@@ -264,12 +313,51 @@ async fn handle_socket(
                 let registry_for_updates = registry.clone();
                 let game_for_updates = game_id.clone();
                 let token_for_updates = current_token.clone();
+                let session_for_updates = session.clone();
                 tokio::spawn(async move {
                     let mut check = tokio::time::interval(Duration::from_millis(50));
+                    let mut planning = None;
                     loop {
                         tokio::select! {
                             _ = check.tick() => {},
                             _ = tx_clone.closed() => return,
+                        }
+                        if let ViewerRole::Player(player) = &role {
+                            if planning.is_none() {
+                                planning = session_for_updates.subscribe_planning(player);
+                            }
+                            if let Some(receiver) = &mut planning {
+                                loop {
+                                    match receiver.try_recv() {
+                                        Ok(envelope) => {
+                                            if !session_for_updates.planning_attempt_is_current(
+                                                player,
+                                                envelope.identity,
+                                            ) {
+                                                continue;
+                                            }
+                                            if tx_clone
+                                                .send(ServerMessage::PlanningUpdate(
+                                                    PlanningUpdateMsg {
+                                                        protocol_version: PROTOCOL_VERSION,
+                                                        game_id: game_for_updates.clone(),
+                                                        envelope,
+                                                    },
+                                                ))
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                        }
+                                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                            planning = None;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                         }
                         loop {
                             match subscription.try_recv() {
