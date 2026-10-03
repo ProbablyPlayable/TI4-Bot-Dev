@@ -95,8 +95,11 @@ unused_variables = "warn"
 duplicate_macro_attributes = "deny"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
+# Keep Clippy focused on correctness and runtime performance; opt into type complexity explicitly.
+all = { level = "allow", priority = -2 }
+correctness = { level = "deny", priority = -1 }
+perf = { level = "warn", priority = -1 }
+type_complexity = "warn"
 # The `cargo` group checks publishability — description, license, keywords, categories. These
 # crates are a private workspace and are not published, so it only ever produces noise.
 cargo = { level = "allow", priority = -1 }
@@ -115,6 +118,7 @@ many_single_char_names = "allow"
 # attribute stops meaning anything once it is everywhere.
 must_use_candidate = "allow"
 struct_excessive_bools = "allow"
+too_many_lines = "allow"
 
 [profile.release]
 lto = "thin"

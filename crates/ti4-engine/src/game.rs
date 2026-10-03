@@ -3259,10 +3259,6 @@ impl<'a> Game<'a> {
         self.result(true, None)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "secondary resolution and its typed diplomacy hook share one atomic boundary"
-    )]
     fn step_secondary(&mut self) -> StepResult {
         let choice = self.secondary.as_mut().expect("checked above").next_choice(
             &mut self.state,
