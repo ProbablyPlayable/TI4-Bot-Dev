@@ -950,6 +950,9 @@ fn explore_drawn(
     planet: Option<&PlanetId>,
 ) -> Option<Explored> {
     let content = ctx.content;
+    // The deck is already ordered. A draw need not touch the RNG, but its
+    // identity and every reward it causes are still unknown to a preview.
+    ctx.rng.observe_hidden_information();
     let card = draw(state, deck)?;
     state
         .exploration_log

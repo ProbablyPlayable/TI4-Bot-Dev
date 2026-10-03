@@ -56,6 +56,7 @@ pub mod legendary;
 pub mod movement;
 pub mod neutral_units;
 pub mod objectives;
+pub mod observation;
 pub mod opening;
 pub mod payment;
 pub mod phase;

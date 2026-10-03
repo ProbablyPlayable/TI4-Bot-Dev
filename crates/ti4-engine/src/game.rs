@@ -873,6 +873,9 @@ pub struct Game<'a> {
     /// Turn sequence whose free start-of-turn technology choices have been resolved.
     prepared_turn_seq: Option<u32>,
     blocked: Option<GameError>,
+    /// Observe the automatic handoff after movement, before it runs any rules.
+    aftermath_observer:
+        Option<std::sync::Arc<dyn Fn(&GameState, &ContentStore, SourceSet) + Send + Sync>>,
 }
 
 impl<'a> Game<'a> {
@@ -945,6 +948,7 @@ impl<'a> Game<'a> {
             actions_this_turn: 0,
             prepared_turn_seq: None,
             blocked: None,
+            aftermath_observer: None,
         }
     }
 
@@ -958,6 +962,10 @@ impl<'a> Game<'a> {
     /// observation callbacks. Replace [`Game::table`] before stepping to use different inputs.
     #[must_use]
     pub fn fork(&self) -> Self {
+        let mut rng = self.rng.clone();
+        // Clones made during a step share activity. A new game is a separate
+        // execution and must never mark its source attempt or the live game.
+        rng.bind_observation(None);
         Self {
             state: self.state.clone(),
             table: Table::new(),
@@ -980,7 +988,7 @@ impl<'a> Game<'a> {
             trade: self.trade.clone(),
             diplomacy: self.diplomacy.clone(),
             agenda_talks: self.agenda_talks.clone(),
-            rng: self.rng.clone(),
+            rng,
             dice: self.dice.clone(),
             status_resolved: self.status_resolved,
             agenda_resolved: self.agenda_resolved,
@@ -990,6 +998,84 @@ impl<'a> Game<'a> {
             actions_this_turn: self.actions_this_turn,
             prepared_turn_seq: self.prepared_turn_seq,
             blocked: self.blocked.clone(),
+            aftermath_observer: None,
+        }
+    }
+
+    /// Make the same fork on another thread, with fresh input bindings there.
+    ///
+    /// A Game itself is not Send: some bot deciders keep thread-local data. This
+    /// closure carries only copied rules state and shared immutable rule functions.
+    /// It preserves open windows and RNG positions just like `fork()` does.
+    pub fn fork_for_worker(&self) -> impl FnOnce() -> Self + Send + use<'a> {
+        let Self {
+            state,
+            table: _,
+            events,
+            timing,
+            event_sequence,
+            content,
+            sources,
+            strategy_cards,
+            secondary,
+            secondary_after_tactical,
+            scoring,
+            event_scoring,
+            tokens,
+            voting,
+            agenda_queue_after_event_scoring,
+            galaxy,
+            tactical,
+            aftermath,
+            trade,
+            diplomacy,
+            agenda_talks,
+            rng,
+            dice,
+            status_resolved,
+            agenda_resolved,
+            strategy_phase_announced,
+            failed_component_actions,
+            turn_closing,
+            actions_this_turn,
+            prepared_turn_seq,
+            blocked,
+            aftermath_observer: _,
+        } = self.fork();
+        let timing = timing.into_worker();
+        move || Self {
+            state,
+            table: Table::new(),
+            events,
+            timing: timing(),
+            event_sequence,
+            content,
+            sources,
+            strategy_cards,
+            secondary,
+            secondary_after_tactical,
+            scoring,
+            event_scoring,
+            tokens,
+            voting,
+            agenda_queue_after_event_scoring,
+            galaxy,
+            tactical,
+            aftermath,
+            trade,
+            diplomacy,
+            agenda_talks,
+            rng,
+            dice,
+            status_resolved,
+            agenda_resolved,
+            strategy_phase_announced,
+            failed_component_actions,
+            turn_closing,
+            actions_this_turn,
+            prepared_turn_seq,
+            blocked,
+            aftermath_observer: None,
         }
     }
 
@@ -1087,6 +1173,21 @@ impl<'a> Game<'a> {
     #[must_use]
     pub const fn galaxy(&self) -> Option<&Galaxy> {
         self.galaxy.as_ref()
+    }
+
+    /// Bind only on a disposable fork, before preparing its hypothetical turn.
+    pub fn bind_observation(&mut self, observation: crate::observation::ExecutionObservation) {
+        self.rng.bind_observation(Some(observation));
+    }
+
+    /// Observe movement's handoff to combat, invasion and production. This can
+    /// happen inside the step that accepts finishing movement, before another
+    /// choice exists. Like table observation callbacks, this binding is not forked.
+    pub fn on_aftermath(
+        &mut self,
+        observer: impl Fn(&GameState, &ContentStore, SourceSet) + Send + Sync + 'static,
+    ) {
+        self.aftermath_observer = Some(std::sync::Arc::new(observer));
     }
 
     /// Give the game its map, which is what makes a tactical action possible.
@@ -1576,7 +1677,13 @@ impl<'a> Game<'a> {
                 .options
                 .retain(|option| !self.failed_component_actions.contains(&option.id));
         }
-        Some(choice)
+        Some(choice.contextualized(DecisionContext::new(
+            active.clone(),
+            DecisionSource::Rule("22".to_owned()),
+            "action_menu",
+            self.state.phase,
+            self.state.round,
+        )))
     }
 
     /// 89.1 needs a map and a tactic token to spend.
@@ -2769,6 +2876,12 @@ impl<'a> Game<'a> {
         let (Some((player, notes_at_start)), Some(system)) = (tactical, system) else {
             return self.close_tactical();
         };
+
+        // A single answer can enter automatic aftermath before another question
+        // exists. The observer only reports that boundary; rules still run normally.
+        if let Some(observer) = &self.aftermath_observer {
+            observer(&self.state, self.content, self.sources);
+        }
 
         let mut dice = std::mem::take(&mut self.dice);
         let mut rng = self.rng.clone();
