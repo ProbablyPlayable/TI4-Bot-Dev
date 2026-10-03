@@ -364,7 +364,6 @@ const NEXUS_TILE: &str = "82";
 // The five switches below are independent rules that happen to be booleans -- three laws, one
 // action card and one relic -- set by the game before each step. Grouping them into a struct would
 // name a thing that does not exist and would not make any call site clearer.
-#[expect(clippy::struct_excessive_bools, reason = "independent rule switches")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Galaxy {
     /// Hex to system id.

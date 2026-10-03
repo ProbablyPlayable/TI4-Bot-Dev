@@ -113,6 +113,7 @@ many_single_char_names = "allow"
 # A data model with hundreds of accessors does not benefit from `#[must_use]` on each; the
 # attribute stops meaning anything once it is everywhere.
 must_use_candidate = "allow"
+struct_excessive_bools = "allow"
 
 [profile.release]
 lto = "thin"

@@ -62,10 +62,6 @@ pub struct Subscriber {
 }
 
 /// Shared session state accessible across threads.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "worker lifecycle and durable history are independent states"
-)]
 pub struct SessionShared {
     pub game_id: String,
     pub game_version: u64,
