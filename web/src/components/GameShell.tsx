@@ -32,6 +32,7 @@ import { deriveChoiceRendererModel, ChoiceRendererModel } from "../presentation/
 import { Dialog, overlayStack } from "../primitives/index.ts";
 import { useParticipantText } from "../presentation/PlayerIdentity.tsx";
 import { PipelineRunnerContext, useOwnedPipelineRunner } from "../hooks/usePipelineRunner.ts";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 
 export interface GameShellProps {
   header: React.ReactNode;
@@ -489,6 +490,7 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
   onLandingDraftChange,
 }) => {
   const present = useParticipantText();
+  const workspace = useWorkspace();
   const derivedModel = useMemo(() => {
     return choice ? deriveChoiceRendererModel(choice, viewerSeat ?? null) : null;
   }, [choice, viewerSeat]);
@@ -656,12 +658,18 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
               <Dialog.Title as="h2" className="visually-hidden">
                 {visibleChoice.prompt}
               </Dialog.Title>
-              {content}
+              <fieldset disabled={!workspace.actionable} className="workspace-controls">
+                {content}
+              </fieldset>
             </div>
           </Dialog.Content>
         </Dialog.Root>
-      ) : (
+      ) : renderer === renderGeneric ? (
         content
+      ) : (
+        <fieldset disabled={!workspace.actionable} className="workspace-controls">
+          {content}
+        </fieldset>
       )}
     </>
   );
@@ -695,6 +703,7 @@ export const GameShell: React.FC<GameShellProps> = ({
   objectiveProgress,
 }) => {
   const [openDrawer, setOpenDrawer] = useState<"events" | "players" | null>(null);
+  const workspace = useWorkspace();
   const [isChoiceMinimized, setIsChoiceMinimized] = useState(false);
   const [productionQueue, setProductionQueue] = useState<{
     actor: string;
@@ -714,7 +723,10 @@ export const GameShell: React.FC<GameShellProps> = ({
   const tacticalPlan = useRef<ExecutionPlan>(emptyMovementPlan());
   const [tacticalStep, setTacticalStep] = useState(0);
   const lastHistoryGeneration = useRef(history?.generation);
-  const pipelineRunner = useOwnedPipelineRunner(choice, onSubmitChoice);
+  const pipelineRunner = useOwnedPipelineRunner(
+    workspace.actionable ? choice : null,
+    onSubmitChoice,
+  );
 
   // A restored timeline must not resume a movement plan from the old timeline.
   if (history?.generation !== lastHistoryGeneration.current) {
@@ -810,14 +822,14 @@ export const GameShell: React.FC<GameShellProps> = ({
 
   // Register open drawer in overlayStack for Escape dismissal
   useEffect(() => {
-    if (!openDrawer) return;
+    if (!openDrawer || !workspace.active) return;
     const unregister = overlayStack.register({
       id: `drawer-${openDrawer}`,
       modal: false,
       onDismiss: () => setOpenDrawer(null),
     });
     return unregister;
-  }, [openDrawer]);
+  }, [openDrawer, workspace.active]);
 
   return (
     <div data-testid="game-container" className="app-shell">

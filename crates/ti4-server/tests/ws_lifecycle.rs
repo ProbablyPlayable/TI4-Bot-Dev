@@ -763,6 +763,21 @@ async fn running_takeover_closes_old_subscription_and_refuses_old_choices() {
     let first: ServerMessage =
         serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
     assert!(matches!(first, ServerMessage::InitialSnapshot(_)));
+    // Availability is part of the initial seat-only subscription handshake.
+    // Consume it before revocation so a pre-revocation frame cannot be mistaken
+    // for a private publication delivered after the credential was replaced.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let message: ServerMessage =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            if matches!(message, ServerMessage::PlanningStatus(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert!(matches!(
         registry.take_over_player(&game, &host, "New Host"),
         Err(ti4_server::session::registry::LobbyError::TakeoverUnavailable)

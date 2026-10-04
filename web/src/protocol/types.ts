@@ -140,6 +140,7 @@ export interface PlacedUnitView {
   owner: string;
   planet?: string | null;
   damaged: boolean;
+  galvanized?: boolean;
 }
 
 export interface SystemView {
@@ -442,7 +443,108 @@ export interface PongMsg {
   sequence: number;
 }
 
+export interface AttemptIdentity {
+  checkpoint_id: number;
+  plan_revision: number;
+  generation_id: number;
+}
+
+export interface PlanningPublication {
+  position: GameView;
+  choice: EngineChoice | null;
+  events: string[];
+}
+
+export type PlanningStopReason =
+  | "Uncertainty"
+  | "UnsupportedOffer"
+  | "OtherPlayerRequired"
+  | "UnsupportedParticipation"
+  | "UnsupportedSegment"
+  | "KnowledgeChanged"
+  | "ReplayMismatch"
+  | "StepLimit"
+  | "MovementComplete";
+export type PlanningUpdate =
+  | "Preparing"
+  | { SafeOffer: PlanningPublication }
+  | { SafeStep: PlanningPublication }
+  | { Stopped: { reason: PlanningStopReason; last_safe_publication: PlanningPublication | null } }
+  | { Failed: "Preparation" | "Engine" | "Worker" };
+export interface PlanningEnvelope {
+  publication_id: number;
+  identity: AttemptIdentity;
+  /** Changes only when the retained script is explicitly replaced, including across reconnects. */
+  reset_revision?: number;
+  awaiting_answer: boolean;
+  recorded_request_ids: string[];
+  recorded_decisions?: RecordedDecisionDto[];
+  assumptions: string[];
+  progress: {
+    recorded_answers: number;
+    replayed: number;
+    remaining: number;
+    completed_steps: number;
+    nested_answers_since_checkpoint: number;
+  };
+  update: PlanningUpdate;
+}
+export interface RecordedDecisionDto {
+  player: string;
+  prompt: string;
+  context: DecisionContextDto | null;
+  option_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+}
+export interface DraftApplication {
+  applied: number;
+  total: number;
+  state: "applying" | "waiting_for_player" | "needs_decision" | "applied";
+  message: string;
+}
+export interface PlanningStatusMsg {
+  type: "planning_status";
+  protocol_version: number;
+  game_id: string;
+  checkpoint_id: number;
+  available: boolean;
+  can_start: boolean;
+  has_draft: boolean;
+  identity: AttemptIdentity | null;
+  can_apply?: boolean;
+  application?: DraftApplication | null;
+}
+export interface PlanningUpdateMsg {
+  type: "planning_update";
+  protocol_version: number;
+  game_id: string;
+  envelope: PlanningEnvelope;
+}
+export type PlanningRejection =
+  | "unauthorized"
+  | "wrong_game"
+  | "unavailable"
+  | "unknown_seat"
+  | "active_player"
+  | "not_started"
+  | "retired"
+  | "not_waiting"
+  | "unknown_option"
+  | "no_action_opportunity"
+  | "replay_mismatch";
+export interface PlanningResultMsg {
+  type: "planning_result";
+  protocol_version: number;
+  game_id: string;
+  identity: AttemptIdentity | null;
+  rejection: PlanningRejection | null;
+}
+
 export type ServerMessage =
+  | PlanningStatusMsg
+  | PlanningUpdateMsg
+  | PlanningResultMsg
   | ({ type: "initial_snapshot" } & InitialSnapshotMsg)
   | ({ type: "state_update" } & StateUpdateMsg)
   | ({ type: "pending_choice" } & PendingChoiceMsg)
@@ -455,6 +557,24 @@ export type ServerMessage =
   | ({ type: "event" } & GameEventMsg);
 
 export type ClientMessage =
+  | { type: "start_planning"; protocol_version: number; game_id: string }
+  | { type: "reset_planning"; protocol_version: number; game_id: string; identity: AttemptIdentity }
+  | {
+      type: "apply_planning";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+      nonce: string;
+      expected_version: number;
+    }
+  | {
+      type: "submit_planning_choice";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+      option_id: string;
+      request_id?: string;
+    }
   | {
       type: "subscribe";
       protocol_version: number;

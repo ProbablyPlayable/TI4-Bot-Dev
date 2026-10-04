@@ -1,5 +1,6 @@
 import React, { useState, useRef, useId, useEffect, cloneElement, isValidElement } from "react";
 import { overlayStack } from "../core/overlayStack.ts";
+import { useWorkspace } from "../../components/WorkspaceContext.tsx";
 
 export interface PopoverProps {
   content: React.ReactNode;
@@ -22,6 +23,7 @@ export const Popover: React.FC<PopoverProps> = ({
   "data-testid": testId,
   ariaLabel,
 }) => {
+  const workspace = useWorkspace();
   const [uncontrolledIsOpen, setUncontrolledIsOpen] = useState(false);
   const isOpen = controlledIsOpen ?? uncontrolledIsOpen;
   const setIsOpen = (next: boolean) => {
@@ -47,7 +49,7 @@ export const Popover: React.FC<PopoverProps> = ({
 
   // Register with overlayStack on open
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !workspace.active) return;
     const unregister = overlayStack.register({
       id: popoverId,
       modal: false,
@@ -56,7 +58,7 @@ export const Popover: React.FC<PopoverProps> = ({
       onDismiss: () => close(true),
     });
     return unregister;
-  }, [isOpen, popoverId]);
+  }, [isOpen, popoverId, workspace.active]);
 
   if (!isValidElement(children)) {
     return children;

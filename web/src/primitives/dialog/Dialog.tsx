@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import { overlayStack } from "../core/overlayStack.ts";
 import { useFocusTrap } from "../core/useFocusTrap.ts";
+import { useWorkspace } from "../../components/WorkspaceContext.tsx";
 
 interface DialogContextValue {
   isOpen: boolean;
@@ -44,6 +45,7 @@ export const DialogRoot: React.FC<DialogRootProps> = ({
   modal = true,
   children,
 }) => {
+  const workspace = useWorkspace();
   const dialogId = useId();
   const titleId = `${dialogId}-title`;
   const descriptionId = `${dialogId}-desc`;
@@ -52,7 +54,7 @@ export const DialogRoot: React.FC<DialogRootProps> = ({
   return (
     <DialogContext.Provider
       value={{
-        isOpen: open,
+        isOpen: open && workspace.active,
         onOpenChange,
         modal,
         dialogId,
@@ -96,6 +98,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
     const { isOpen, onOpenChange, modal, titleId, descriptionId, hasDescription } =
       useDialogContext();
     const internalRef = useRef<HTMLDivElement | null>(null);
+    const workspace = useWorkspace();
 
     const setRef = (node: HTMLDivElement | null) => {
       internalRef.current = node;
@@ -134,7 +137,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
       returnFocusRef,
     });
 
-    if (!isOpen && !keepMounted) return null;
+    if (!isOpen && !keepMounted && workspace.active) return null;
 
     const ariaDescribedBy =
       rest["aria-describedby"] || (hasDescription ? descriptionId : undefined);
@@ -165,6 +168,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
         }}
         {...rest}
       >
+        {workspace.chrome && <div className="workspace-dialog-chrome">{workspace.chrome}</div>}
         {children}
       </div>
     );

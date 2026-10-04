@@ -105,13 +105,15 @@
               "unit_type": "carrier",
               "owner": "seat_a",
               "planet": null,
-              "damaged": false
+              "damaged": false,
+              "galvanized": false
             },
             {
               "unit_type": "fighter",
               "owner": "seat_a",
               "planet": null,
-              "damaged": false
+              "damaged": false,
+              "galvanized": false
             }
           ]
         }

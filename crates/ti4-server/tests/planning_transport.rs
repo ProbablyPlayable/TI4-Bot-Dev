@@ -251,6 +251,53 @@ async fn receive(socket: &mut Socket) -> ServerMessage {
     .expect("message deadline")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase_retirement_notifies_the_owner_without_a_replacement_preview() {
+    let fixture = Fixture::new(false).await;
+    let mut b = fixture.socket(Some(B)).await;
+    let old = start(&mut b).await;
+    let owner = PlayerId::new(B);
+    for seat in [A, B] {
+        let player = PlayerId::new(seat);
+        let snapshot = tokio::time::timeout(DEADLINE, async {
+            loop {
+                let snapshot = fixture
+                    .session
+                    .get_snapshot(&ViewerRole::Player(player.clone()));
+                if snapshot.pending_choice.is_some() {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pending = snapshot.pending_choice.unwrap();
+        assert!(pending.choice.option("pass").is_some());
+        fixture
+            .session
+            .submit_choice(&player, &pending.nonce, snapshot.game_version, "pass")
+            .unwrap();
+    }
+    loop {
+        if let ServerMessage::PlanningStatus(status) = receive(&mut b).await {
+            if !status.available {
+                assert!(!status.can_start);
+                assert!(status.has_draft);
+                assert!(status.identity.is_none());
+                break;
+            }
+        }
+    }
+    assert!(fixture.session.plans().contains_key(&owner));
+    assert!(
+        fixture
+            .session
+            .submit_planning_choice(&owner, old.identity, "tactical")
+            .is_err()
+    );
+}
+
 async fn result(
     socket: &mut Socket,
     identity: Option<AttemptIdentity>,
@@ -288,6 +335,7 @@ async fn answer(socket: &mut Socket, identity: AttemptIdentity, option: &str) {
             game_id: "planning_transport".into(),
             identity,
             option_id: option.into(),
+            request_id: None,
         },
     )
     .await;
@@ -402,6 +450,7 @@ async fn private_draft_refresh_reconnect_and_history() {
             game_id: fixture.session.id().into(),
             identity: old.identity,
             option_id: "done_moving".into(),
+            request_id: None,
         },
     )
     .await;
@@ -539,6 +588,7 @@ async fn rejects_unauthorized_wrong_game_unknown_and_duplicate_answers() {
             game_id: fixture.session.id().into(),
             identity: current.identity,
             option_id: "not offered".into(),
+            request_id: None,
         },
     )
     .await;
@@ -562,6 +612,7 @@ async fn rejects_unauthorized_wrong_game_unknown_and_duplicate_answers() {
             game_id: fixture.session.id().into(),
             identity: current.identity,
             option_id: "tactical".into(),
+            request_id: None,
         },
     )
     .await;

@@ -129,6 +129,7 @@ pub fn project_combat_view(
                 owner: u.owner.clone(),
                 planet: None,
                 damaged: u.sustained_damage,
+                galvanized: u.galvanized,
             })
             .collect(),
         barrage_start: state
@@ -140,6 +141,7 @@ pub fn project_combat_view(
                 owner: u.owner.clone(),
                 planet: None,
                 damaged: u.sustained_damage,
+                galvanized: u.galvanized,
             })
             .collect(),
         barrage_hits: state.combat_presentation.barrage_hits.clone(),
@@ -232,6 +234,7 @@ pub fn project_board_view_full(
                 owner: u.owner.clone(),
                 planet: None,
                 damaged: u.sustained_damage,
+                galvanized: u.galvanized,
             });
         }
         // Planet units
@@ -242,6 +245,7 @@ pub fn project_board_view_full(
                     owner: u.owner.clone(),
                     planet: Some(p_id.clone()),
                     damaged: u.sustained_damage,
+                    galvanized: u.galvanized,
                 });
             }
         }
@@ -387,6 +391,7 @@ pub fn project_board_view_full(
                     owner: unit.owner.clone(),
                     planet: Some(step.planet.clone()),
                     damaged: unit.sustained_damage,
+                    galvanized: unit.galvanized,
                 };
                 crate::protocol::view::InvasionStepView {
                     planet: step.planet.clone(),

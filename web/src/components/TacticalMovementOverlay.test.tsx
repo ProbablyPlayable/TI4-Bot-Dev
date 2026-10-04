@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from "@testing-library/react"
 import { TacticalMovementOverlay, emptyMovementPlan } from "./TacticalMovementOverlay.tsx";
 import { PendingChoiceDto, PlayerView } from "../protocol/types.ts";
 import { deriveChoiceRendererModel } from "../presentation/choiceModel.ts";
+import { WorkspaceContext } from "./WorkspaceContext.tsx";
 
 const mockMoveChoice: PendingChoiceDto = {
   prompt: "movement",
@@ -61,6 +62,128 @@ const mockPlayer: PlayerView = {
 };
 
 describe("TacticalMovementOverlay Component", () => {
+  it("retains ship and cargo staging when the same draft offer is re-enabled, but clears it on a new offer", () => {
+    const onSubmit = vi.fn();
+    const renderDraft = (actionable: boolean, nonce = mockMoveChoice.nonce) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey: "10:1", chrome: null }}
+      >
+        <TacticalMovementOverlay
+          choice={{ ...mockMoveChoice, nonce }}
+          board={{
+            systems: {
+              "24": {
+                system_id: "24",
+                command_tokens: [],
+                planets: {},
+                units: [
+                  { owner: "p1", unit_type: "carrier", damaged: false },
+                  { owner: "p1", unit_type: "infantry", planet: "home", damaged: false },
+                ],
+              },
+            },
+          }}
+          onSubmit={onSubmit}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(true));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    fireEvent.click(screen.getByTestId("rally-inc-cargo-24-infantry-home"));
+    rerender(renderDraft(false));
+    expect(screen.getByTestId("commit-moves-btn")).toHaveTextContent("Commit Moves (2)");
+    rerender(renderDraft(true));
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(renderDraft(true, "next"));
+    expect(screen.getByTestId("commit-moves-btn")).toHaveTextContent("Done Moving");
+  });
+  it("preserves unsubmitted draft staging across refresh and reports unavailable units without substituting", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const renderDraft = (choice: PendingChoiceDto, actionable: boolean, refreshKey: string) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <TacticalMovementOverlay choice={choice} onSubmit={onSubmit} isOpen onClose={vi.fn()} />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(mockMoveChoice, true, "10:1"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    rerender(renderDraft(mockMoveChoice, false, "11:2"));
+    rerender(
+      renderDraft(
+        {
+          ...mockMoveChoice,
+          nonce: "fresh",
+          options: mockMoveChoice.options.filter((o) => o.id !== "move|24|1"),
+        },
+        true,
+        "11:2",
+      ),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Clear staging" }));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledExactlyOnceWith("done_moving"));
+  });
+  it("finishes only the remaining ship after an in-flight answer is reconciled against a refreshed draft", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((done) => {
+            resolve = done;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const plan = { current: emptyMovementPlan() };
+    const renderDraft = (
+      choice: PendingChoiceDto,
+      actionable: boolean,
+      refreshKey: string,
+      active = true,
+    ) => (
+      <WorkspaceContext.Provider
+        value={{ active, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <TacticalMovementOverlay
+          choice={choice}
+          onSubmit={onSubmit}
+          executionPlan={plan}
+          isOpen={active}
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(mockMoveChoice, true, "10:1"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-cruiser"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("move|24|0");
+    rerender(renderDraft(mockMoveChoice, false, "11:2", false));
+    await act(async () => resolve());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    rerender(
+      renderDraft(
+        {
+          ...mockMoveChoice,
+          nonce: "fresh",
+          options: mockMoveChoice.options.filter((o) => o.id !== "move|24|0"),
+        },
+        true,
+        "11:2",
+        false,
+      ),
+    );
+    await waitFor(() => expect(onSubmit).toHaveBeenNthCalledWith(2, "move|24|1"));
+    expect(plan.current.remainingShips).toHaveLength(0);
+  });
   it("submits one atomic movement and cargo plan without done_loading when all candidates are loaded", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const onSubmitBatch = vi.fn().mockResolvedValue(undefined);

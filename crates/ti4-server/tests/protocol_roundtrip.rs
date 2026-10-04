@@ -42,10 +42,15 @@ fn planning_updates_and_results_round_trip_without_a_live_game_version() {
             protocol_version: PROTOCOL_VERSION,
             game_id: "game_abc".into(),
             envelope: PlanningEnvelope {
+                publication_id: 1,
                 identity,
+                reset_revision: 1,
                 awaiting_answer: false,
+                recorded_request_ids: vec!["answer-request".into()],
+                recorded_decisions: vec![],
                 assumptions: vec![],
                 progress: Progress {
+                    recorded_answers: 0,
                     replayed: 1,
                     remaining: 2,
                     completed_steps: 3,

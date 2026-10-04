@@ -1520,6 +1520,39 @@ pub struct PongMsg {
 /// A gated planning publication delivered only to its owning player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PlanningStatusMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    pub checkpoint_id: u64,
+    pub available: bool,
+    pub can_start: bool,
+    pub has_draft: bool,
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    pub can_apply: bool,
+    pub application: Option<DraftApplication>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftApplicationState {
+    Applying,
+    WaitingForPlayer,
+    NeedsDecision,
+    Applied,
+}
+
+/// Seat-private live execution progress, retained across socket reconnects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftApplication {
+    pub applied: usize,
+    pub total: usize,
+    pub state: DraftApplicationState,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanningUpdateMsg {
     pub protocol_version: u16,
     pub game_id: String,
@@ -1538,6 +1571,8 @@ pub enum PlanningRejection {
     Retired,
     NotWaiting,
     UnknownOption,
+    NoActionOpportunity,
+    ReplayMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1545,9 +1580,9 @@ pub enum PlanningRejection {
 pub struct PlanningResultMsg {
     pub protocol_version: u16,
     pub game_id: String,
-    /// None identifies a start request; Some identifies an answer request.
+    /// None identifies a start request; Some identifies an answer, reset, or apply request.
     pub identity: Option<crate::planning::runner::AttemptIdentity>,
-    /// None means accepted by the controller, not committed to the live game.
+    /// None means accepted by the controller. Application progress is seat-private status.
     pub rejection: Option<PlanningRejection>,
 }
 
@@ -1556,6 +1591,7 @@ pub struct PlanningResultMsg {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerMessage {
     PlanningUpdate(PlanningUpdateMsg),
+    PlanningStatus(PlanningStatusMsg),
     PlanningResult(PlanningResultMsg),
     InitialSnapshot(InitialSnapshotMsg),
     StateUpdate(StateUpdateMsg),
@@ -1575,6 +1611,7 @@ impl ServerMessage {
     pub fn protocol_version(&self) -> u16 {
         match self {
             Self::PlanningUpdate(m) => m.protocol_version,
+            Self::PlanningStatus(m) => m.protocol_version,
             Self::PlanningResult(m) => m.protocol_version,
             Self::InitialSnapshot(m) => m.protocol_version,
             Self::StateUpdate(m) => m.protocol_version,
@@ -1594,6 +1631,7 @@ impl ServerMessage {
     pub fn game_id(&self) -> Option<&str> {
         match self {
             Self::PlanningUpdate(m) => Some(&m.game_id),
+            Self::PlanningStatus(m) => Some(&m.game_id),
             Self::PlanningResult(m) => Some(&m.game_id),
             Self::InitialSnapshot(m) => Some(&m.game_id),
             Self::StateUpdate(m) => Some(&m.game_id),
@@ -1619,9 +1657,11 @@ impl ServerMessage {
             Self::ActionRejected(m) => Some(m.game_version),
             Self::GameOver(m) => Some(m.game_version),
             Self::Event(m) => m.entry.version,
-            Self::Error(_) | Self::Pong(_) | Self::PlanningUpdate(_) | Self::PlanningResult(_) => {
-                None
-            }
+            Self::Error(_)
+            | Self::Pong(_)
+            | Self::PlanningUpdate(_)
+            | Self::PlanningStatus(_)
+            | Self::PlanningResult(_) => None,
         }
     }
 }

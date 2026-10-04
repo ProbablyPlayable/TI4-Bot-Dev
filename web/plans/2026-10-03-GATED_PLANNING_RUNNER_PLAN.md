@@ -179,21 +179,21 @@ Use a step bound for automatic work and a bounded shutdown assertion in tests. C
 
 Use real `Game::step()` execution and captured **outbound envelopes**, not just final fork state. Place runner tests under `crates/ti4-server/tests/` with a stable `planning_runner` test target; add focused engine tests for the narrow hooks.
 
-| Scenario | Required observable result |
-|---|---|
-| Two-player deterministic movement | Planner receives activation, movement, and cargo offers; deterministic arrival matches an unrestricted hypothetical fork under the same no-optional-reactions assumption. Live state and RNG remain untouched. |
-| Gravity-rift move, across different seeds | Move is recorded; preview stops without a survival result, sampled face, derived option, or post-roll event. The published transcript is identical across outcome-changing seeds. |
-| RNG use through a temporary clone/direct stream | Observer detects it before the next publication even when the top-level game's stream position is unchanged. |
-| Preloaded dice and zero dice | A positive preloaded outcome stops publication; zero dice alone does not. |
-| Ordered draw/frontier exploration with different deck tops | No RNG is required for detection. No new card, card-derived goods, events, or follow-up offers escape; transcript and generic stop are identical. |
-| Inspection followed by a decision, or draw-and-discard | The segment is excluded or marked; unchanged final holdings cannot allow the follow-up question through. |
-| Opponent empty hand versus playable reaction card | Optional eligibility conditions are never called; preview transcript is identical and still reaches movement drafting. Live execution still opens real reactions. |
-| Required opponent choice/unaudited mandatory ability | Stop without opponent options, private conditions, or input callbacks being exposed/invoked. |
-| Nested unknown offer during one step | Pre-decider callback only buffers privately; the rejected offer never reaches the outbound sink or replay answer source. |
-| Caught decider error | A subsequent success-shaped step cannot publish or become a checkpoint after the external latch stops the attempt. |
-| Replay mismatch and reconstruction | First mismatch stops; remaining script survives. Rebuilding replays nested answers from the completed-step checkpoint, without copying a suspended stack. |
-| Refresh while waiting | Worker wakes and terminates within the test deadline; old-generation submissions/updates are rejected and no old buffers publish. |
-| Engine failure | Report `Failed` separately from expected `Stopped`, without publishing the rejected speculative state. |
+| Scenario                                                   | Required observable result                                                                                                                                                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two-player deterministic movement                          | Planner receives activation, movement, and cargo offers; deterministic arrival matches an unrestricted hypothetical fork under the same no-optional-reactions assumption. Live state and RNG remain untouched. |
+| Gravity-rift move, across different seeds                  | Move is recorded; preview stops without a survival result, sampled face, derived option, or post-roll event. The published transcript is identical across outcome-changing seeds.                              |
+| RNG use through a temporary clone/direct stream            | Observer detects it before the next publication even when the top-level game's stream position is unchanged.                                                                                                   |
+| Preloaded dice and zero dice                               | A positive preloaded outcome stops publication; zero dice alone does not.                                                                                                                                      |
+| Ordered draw/frontier exploration with different deck tops | No RNG is required for detection. No new card, card-derived goods, events, or follow-up offers escape; transcript and generic stop are identical.                                                              |
+| Inspection followed by a decision, or draw-and-discard     | The segment is excluded or marked; unchanged final holdings cannot allow the follow-up question through.                                                                                                       |
+| Opponent empty hand versus playable reaction card          | Optional eligibility conditions are never called; preview transcript is identical and still reaches movement drafting. Live execution still opens real reactions.                                              |
+| Required opponent choice/unaudited mandatory ability       | Stop without opponent options, private conditions, or input callbacks being exposed/invoked.                                                                                                                   |
+| Nested unknown offer during one step                       | Pre-decider callback only buffers privately; the rejected offer never reaches the outbound sink or replay answer source.                                                                                       |
+| Caught decider error                                       | A subsequent success-shaped step cannot publish or become a checkpoint after the external latch stops the attempt.                                                                                             |
+| Replay mismatch and reconstruction                         | First mismatch stops; remaining script survives. Rebuilding replays nested answers from the completed-step checkpoint, without copying a suspended stack.                                                      |
+| Refresh while waiting                                      | Worker wakes and terminates within the test deadline; old-generation submissions/updates are rejected and no old buffers publish.                                                                              |
+| Engine failure                                             | Report `Failed` separately from expected `Stopped`, without publishing the rejected speculative state.                                                                                                         |
 
 For each hidden-state pair, compare the complete projected transcript: state, choice/options/context/previews, events, assumptions, and stop classification. Changing unknown state must not change whether or where output is published within the audited slice. Do not expose or compare private debug messages as client output.
 

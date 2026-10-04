@@ -32,12 +32,26 @@ pub enum ClientMessage {
         protocol_version: u16,
         game_id: String,
     },
+    ResetPlanning {
+        protocol_version: u16,
+        game_id: String,
+        identity: crate::planning::runner::AttemptIdentity,
+    },
+    ApplyPlanning {
+        protocol_version: u16,
+        game_id: String,
+        identity: crate::planning::runner::AttemptIdentity,
+        nonce: String,
+        expected_version: u64,
+    },
     /// Answer an offer from the player's current planning attempt.
     SubmitPlanningChoice {
         protocol_version: u16,
         game_id: String,
         identity: crate::planning::runner::AttemptIdentity,
         option_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     /// Keep-alive ping message.
     Ping {
@@ -49,6 +63,26 @@ pub enum ClientMessage {
 impl std::fmt::Debug for ClientMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ApplyPlanning {
+                game_id,
+                identity,
+                nonce,
+                expected_version,
+                ..
+            } => f
+                .debug_struct("ApplyPlanning")
+                .field("game_id", game_id)
+                .field("identity", identity)
+                .field("nonce", nonce)
+                .field("expected_version", expected_version)
+                .finish(),
+            Self::ResetPlanning {
+                game_id, identity, ..
+            } => f
+                .debug_struct("ResetPlanning")
+                .field("game_id", game_id)
+                .field("identity", identity)
+                .finish(),
             Self::StartPlanning { game_id, .. } => f
                 .debug_struct("StartPlanning")
                 .field("game_id", game_id)
@@ -120,6 +154,12 @@ impl ClientMessage {
             | Self::StartPlanning {
                 protocol_version, ..
             }
+            | Self::ResetPlanning {
+                protocol_version, ..
+            }
+            | Self::ApplyPlanning {
+                protocol_version, ..
+            }
             | Self::SubmitPlanningChoice {
                 protocol_version, ..
             } => *protocol_version,
@@ -129,12 +169,24 @@ impl ClientMessage {
     /// Rejects variable-length client fields before they reach session state.
     pub fn validate_bounds(&self) -> Result<(), &'static str> {
         match self {
-            Self::StartPlanning { game_id, .. } => bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?,
+            Self::ApplyPlanning { game_id, nonce, .. } => {
+                bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
+                bounded(nonce, MAX_NONCE_BYTES, "nonce")?;
+            }
+            Self::StartPlanning { game_id, .. } | Self::ResetPlanning { game_id, .. } => {
+                bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?
+            }
             Self::SubmitPlanningChoice {
-                game_id, option_id, ..
+                game_id,
+                option_id,
+                request_id,
+                ..
             } => {
                 bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
                 bounded(option_id, MAX_OPTION_ID_BYTES, "option_id")?;
+                if let Some(request_id) = request_id {
+                    bounded(request_id, MAX_NONCE_BYTES, "request_id")?;
+                }
             }
             Self::Subscribe {
                 game_id,
@@ -186,11 +238,24 @@ mod tests {
                 protocol_version: 1,
                 game_id: "game".into(),
             },
+            ClientMessage::ResetPlanning {
+                protocol_version: 1,
+                game_id: "game".into(),
+                identity,
+            },
+            ClientMessage::ApplyPlanning {
+                protocol_version: 1,
+                game_id: "game".into(),
+                identity,
+                nonce: "current-choice".into(),
+                expected_version: 9,
+            },
             ClientMessage::SubmitPlanningChoice {
                 protocol_version: 1,
                 game_id: "game".into(),
                 identity,
                 option_id: "tactical".into(),
+                request_id: Some("answer-request".into()),
             },
         ] {
             let encoded = serde_json::to_string(&message).unwrap();
@@ -214,11 +279,25 @@ mod tests {
                 protocol_version: 1,
                 game_id: "game".into(),
                 identity,
-                option_id: "x".repeat(MAX_OPTION_ID_BYTES + 1)
+                option_id: "x".repeat(MAX_OPTION_ID_BYTES + 1),
+                request_id: None,
             }
             .validate_bounds(),
             Err("option_id")
         );
+        for request_id in [String::new(), "x".repeat(MAX_NONCE_BYTES + 1)] {
+            assert_eq!(
+                ClientMessage::SubmitPlanningChoice {
+                    protocol_version: 1,
+                    game_id: "game".into(),
+                    identity,
+                    option_id: "tactical".into(),
+                    request_id: Some(request_id),
+                }
+                .validate_bounds(),
+                Err("request_id")
+            );
+        }
         assert!(serde_json::from_value::<ClientMessage>(serde_json::json!({
             "type": "start_planning", "protocol_version": 1, "game_id": "game", "seat": "someone_else"
         })).is_err());

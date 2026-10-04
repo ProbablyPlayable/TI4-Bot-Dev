@@ -1,8 +1,47 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { Dialog, Drawer, Tooltip, Popover, SvgButton, overlayStack } from "../index.ts";
+import { WorkspaceContext } from "../../components/WorkspaceContext.tsx";
 
 describe("Accessible Primitives Suite", () => {
+  it.each(["dialog", "drawer"])(
+    "retains an inactive workspace's %s without keeping its focus trap or Escape handler",
+    (kind) => {
+      const dismiss = vi.fn();
+      const view = (active: boolean) => (
+        <>
+          <button type="button">Foreground</button>
+          <WorkspaceContext.Provider
+            value={{ active, actionable: true, draft: true, refreshKey: "", chrome: null }}
+          >
+            <div hidden={!active}>
+              {kind === "dialog" ? (
+                <Dialog.Root open onOpenChange={dismiss}>
+                  <Dialog.Content keepMounted>
+                    <Dialog.Title>Draft</Dialog.Title>
+                    <input aria-label="Draft intent" />
+                  </Dialog.Content>
+                </Dialog.Root>
+              ) : (
+                <Drawer open onClose={dismiss} title="Draft">
+                  <input aria-label="Draft intent" />
+                </Drawer>
+              )}
+            </div>
+          </WorkspaceContext.Provider>
+        </>
+      );
+      const { rerender } = render(view(true));
+      fireEvent.change(screen.getByLabelText("Draft intent"), { target: { value: "retained" } });
+      rerender(view(false));
+      screen.getByRole("button", { name: "Foreground" }).focus();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(dismiss).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Foreground" })).toHaveFocus();
+      rerender(view(true));
+      expect(screen.getByLabelText("Draft intent")).toHaveValue("retained");
+    },
+  );
   describe("overlayStack (LIFO Dismissal)", () => {
     it("dismisses overlays in reverse order of registration when Escape is pressed", () => {
       const dismissFirst = vi.fn();

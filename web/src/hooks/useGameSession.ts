@@ -19,6 +19,18 @@ export interface UseGameSessionOptions {
 }
 
 export interface UseGameSessionReturn {
+  planning: import("../protocol/planning.ts").PlanningState;
+  startPlanning: () => Promise<void>;
+  resetPlanning: (identity: import("../protocol/types.ts").AttemptIdentity) => Promise<void>;
+  applyPlanning: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    nonce: string,
+    expectedVersion: number,
+  ) => Promise<void>;
+  submitPlanningChoice: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    optionId: string,
+  ) => Promise<void>;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -61,6 +73,11 @@ export function useGameSession({
 
   return {
     ...state,
+    startPlanning: () => client.startPlanning(),
+    resetPlanning: (identity) => client.resetPlanning(identity),
+    applyPlanning: (identity, nonce, expectedVersion) =>
+      client.applyPlanning(identity, nonce, expectedVersion),
+    submitPlanningChoice: (identity, optionId) => client.submitPlanningChoice(identity, optionId),
     submitChoice,
     changeHistory,
     submitMovementBatch: (destination, steps) => client.submitMovementBatch(destination, steps),

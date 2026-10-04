@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { BoardView, ChoiceOptionDto, PendingChoiceDto } from "../protocol/types.ts";
 import { SemanticIntent, usePipelineRunner } from "../hooks/usePipelineRunner.ts";
 import { DecisionHeader } from "./DecisionHeader.tsx";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 
 export const CargoLoadingTray: React.FC<{
   choice: PendingChoiceDto;
@@ -11,6 +12,8 @@ export const CargoLoadingTray: React.FC<{
   onClose: () => void;
   lastError?: string | null;
 }> = ({ choice, board, onSubmit, isOpen, onClose, lastError }) => {
+  const workspace = useWorkspace();
+  const stagingBinding = useRef({ nonce: choice.nonce, refresh: workspace.refreshKey });
   const [staged, setStaged] = useState<Record<string, number>>({});
   const [submittingDone, setSubmittingDone] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -76,13 +79,30 @@ export const CargoLoadingTray: React.FC<{
   };
   const stagedCount = Object.values(staged).reduce((sum, count) => sum + count, 0);
   useEffect(() => {
+    if (!workspace.actionable) return;
+    const previous = stagingBinding.current;
+    const refreshed = previous.refresh !== workspace.refreshKey;
+    stagingBinding.current = { nonce: choice.nonce, refresh: workspace.refreshKey };
+    // Re-enabling the same offer after a socket replacement is not a choice transition.
+    if (!refreshed && previous.nonce === choice.nonce) return;
+    if (workspace.draft && refreshed) return;
     setStaged({});
     setLocalError(null);
     setSubmittingDone(false);
-  }, [choice.nonce]);
+  }, [choice.nonce, workspace.actionable, workspace.refreshKey]);
 
   const submit = async () => {
     setLocalError(null);
+    if (!workspace.actionable) return;
+    if (
+      Object.entries(staged).some(
+        ([key, count]) =>
+          count > 0 && !groups.some((group) => group.key === key && groupAvailable(group) >= count),
+      )
+    ) {
+      setLocalError("Selected cargo is no longer available. Review or reset your selection.");
+      return;
+    }
     if (isRunning || submittingDone) return;
     if (stagedCount === 0) {
       if (!done) {

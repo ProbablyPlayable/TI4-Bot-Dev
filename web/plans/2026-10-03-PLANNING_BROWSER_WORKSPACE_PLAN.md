@@ -4,7 +4,7 @@
 
 Let a player draft and inspect a tactical move while another player acts, using the existing gameplay UI. Provide an easy Live/Draft switch, automatic draft refresh after completed live steps and undo/redo, and a clear indication when the live game needs the player's answer.
 
-This milestone covers activation, movement, and cargo. Automatic execution in the live game and production planning come later.
+This milestone covers activation, movement, and cargo, including explicitly confirmed execution of the recorded prefix in the live game. Production planning comes later.
 
 ## Current State
 
@@ -22,6 +22,11 @@ This milestone covers activation, movement, and cargo. Automatic execution in th
 - A live question never switches modes or steals focus. The Live tab pulses and displays **Your decision**; Draft mode also shows **The live game is waiting for you** with a one-click switch. Respect reduced-motion preferences. Sound is later work.
 - A compact draft status strip labels the view **Hypothetical**, displays the no-optional-opponent-reactions assumption, and reports refresh, completion, uncertainty, mismatch, or failure. Existing overlays provide the decision controls.
 - Refresh replaces the disposable preview while retaining the recorded script. Retired controls cannot submit answers, and stopped previews remain inspectable without actionable choices.
+- **Reset draft** clears the recorded script and starts a fresh preview. Individual-answer editing and draft undo are deferred.
+- **Apply draft** becomes available at the owner's actual tactical action opportunity when the current prefix validates. A confirmation lists the recorded choices and activation cost. The server executes exact fresh offers, waits for other players' live reactions, and stops for an unplanned owner question or changed selection. Unsupported preview boundaries permit applying the validated prefix. Seat-private progress survives reconnect; repeated requests cannot restart it. Resetting afterward never undoes live choices.
+- Starting is restricted to inactive players; existing drafts remain inspectable and editable during their live turn.
+- Explicitly started pipelines automatically finish after refresh when remaining instructions still match. Missing or ambiguous ships/cargo pause execution with an explanation.
+- Workspace UI state survives switches and socket replacements within the current page. Reload restores the server-held script/preview with fresh local UI state.
 
 ## Implementation Details
 
@@ -31,7 +36,8 @@ This milestone covers activation, movement, and cargo. Automatic execution in th
 - Add independent planning state, submission promises/errors, and start/answer methods to `GameSessionClient`; expose them through `useGameSession`.
 - Keep planning updates separate from the live snapshot, pending choice, event log, and history. Capture the full displayed attempt identity with every answer.
 - Reject older updates and ignore stale acknowledgments using checkpoint identity, generation, and plan revision. Checkpoints distinguish reconstructed sessions even when generation numbering restarts.
-- Add seat-only refresh/invalidation and availability notifications where needed so controls are disabled as soon as an attempt retires, before its replacement publishes. Do not infer checkpoint refresh from every live version change.
+- Order publications within an attempt using a publication ID, including safe-step and terminal updates at the same plan revision. Expose the recorded-answer count so in-flight pipeline answers can be reconciled after refresh/reconnect without resubmitting the recorded prefix.
+- Add authoritative seat-only refresh/invalidation and availability notifications so controls are disabled as soon as an attempt retires, before its replacement publishes, including when no replacement is available. Do not infer checkpoint refresh from every live version change.
 - On reconnect or history-driven socket replacement, keep the draft but disable cached controls until current server planning state arrives.
 
 ### Shared UI, independent workspaces

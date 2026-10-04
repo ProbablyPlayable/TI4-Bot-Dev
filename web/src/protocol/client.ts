@@ -10,6 +10,17 @@ import {
   HistoryStatus,
 } from "./types.ts";
 import { decodeInitialSnapshot, decodeServerMessage, isStaleServerMessage } from "./decode.ts";
+import {
+  initialPlanningState,
+  applyPlanningEnvelope,
+  applyPlanningStatus,
+  planningChoice,
+  attemptKey,
+  sameAttempt,
+  PlanningRefreshError,
+  type PlanningState,
+} from "./planning.ts";
+import type { AttemptIdentity } from "./types.ts";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
 export type SnapshotState = InitialSnapshotMsg | StateUpdateMsg;
@@ -26,7 +37,14 @@ export type HistoryChange =
 
 export type MovementStep =
   | { kind: "move"; origin: string; unit: string; damaged: boolean }
-  | { kind: "load"; origin: string; unit: string; source: string | null; damaged: boolean }
+  | {
+      kind: "load";
+      origin: string;
+      unit: string;
+      source: string | null;
+      damaged: boolean;
+      galvanized?: boolean;
+    }
   | { kind: "done_loading" }
   | { kind: "done_moving" };
 export type BasketPlan =
@@ -44,6 +62,7 @@ export type BasketPlan =
 const HISTORY_RETRY_ATTEMPTS = 20;
 
 export interface GameSessionState {
+  planning: PlanningState;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -63,6 +82,7 @@ export interface GameSessionClientOptions {
 type Listener = () => void;
 
 const initialState: GameSessionState = {
+  planning: initialPlanningState,
   status: "connecting",
   gameVersion: 0,
   snapshot: null,
@@ -124,6 +144,12 @@ export function reduceServerMessage(
   if (isStaleServerMessage(message, state.gameVersion)) return state;
 
   switch (message.type) {
+    case "planning_status":
+      return { ...state, planning: applyPlanningStatus(state.planning, message) };
+    case "planning_update":
+      return { ...state, planning: applyPlanningEnvelope(state.planning, message.envelope) };
+    case "planning_result":
+      return state;
     case "initial_snapshot":
     case "state_update":
       return {
@@ -201,6 +227,15 @@ export class GameSessionClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private pingSequence = 0;
   private pendingBatch: { nonce: string; plan: string; requestId: string } | null = null;
+  private planningSubmission: {
+    kind: "start" | "answer" | "reset" | "apply";
+    identity: AttemptIdentity | null;
+    requestId: string;
+    recorded: number;
+    reconnecting: boolean;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
 
   constructor(private readonly options: GameSessionClientOptions) {}
 
@@ -225,6 +260,116 @@ export class GameSessionClient {
     this.clearTimers();
     this.detachSocket();
     this.rejectSubmission("Submission stopped");
+    this.rejectPlanning("Submission stopped");
+  }
+
+  startPlanning(): Promise<void> {
+    return this.sendPlanning("start");
+  }
+  resetPlanning(identity: AttemptIdentity): Promise<void> {
+    return this.sendPlanning("reset", identity);
+  }
+  applyPlanning(identity: AttemptIdentity, nonce: string, expectedVersion: number): Promise<void> {
+    if (!this.state.planning.availability?.can_apply || this.submission)
+      return Promise.reject(new Error("The draft is not ready at this live action opportunity."));
+    return this.sendPlanning("apply", identity, undefined, { nonce, expectedVersion });
+  }
+  submitPlanningChoice(identity: AttemptIdentity, optionId: string): Promise<void> {
+    const choice = planningChoice(this.state.planning);
+    if (
+      !choice ||
+      !this.state.planning.envelope ||
+      attemptKey(identity) !== attemptKey(this.state.planning.envelope.identity)
+    )
+      return Promise.reject(
+        new PlanningRefreshError("Draft refreshed; revalidating remaining instructions."),
+      );
+    if (!choice.options.some((option) => option.id === optionId))
+      return Promise.reject(new Error("This draft selection is no longer available."));
+    return this.sendPlanning("answer", identity, optionId);
+  }
+  private sendPlanning(
+    kind: "start" | "answer" | "reset" | "apply",
+    identity?: AttemptIdentity,
+    optionId?: string,
+    live?: { nonce: string; expectedVersion: number },
+  ): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN)
+      return Promise.reject(new Error("Planning is not connected."));
+    if (this.planningSubmission)
+      return Promise.reject(new Error("A draft submission is still pending."));
+    const requestId = crypto.randomUUID();
+    const message: ClientMessage =
+      kind === "start"
+        ? {
+            type: "start_planning",
+            protocol_version: PROTOCOL_VERSION,
+            game_id: this.options.gameId,
+          }
+        : kind === "reset"
+          ? {
+              type: "reset_planning",
+              protocol_version: PROTOCOL_VERSION,
+              game_id: this.options.gameId,
+              identity: identity!,
+            }
+          : kind === "apply"
+            ? {
+                type: "apply_planning",
+                protocol_version: PROTOCOL_VERSION,
+                game_id: this.options.gameId,
+                identity: identity!,
+                nonce: live!.nonce,
+                expected_version: live!.expectedVersion,
+              }
+            : {
+                type: "submit_planning_choice",
+                protocol_version: PROTOCOL_VERSION,
+                game_id: this.options.gameId,
+                identity: identity!,
+                option_id: optionId!,
+                request_id: requestId,
+              };
+    const promise = new Promise<void>((resolve, reject) => {
+      this.planningSubmission = {
+        kind,
+        identity: identity ?? null,
+        requestId,
+        recorded: this.state.planning.envelope?.progress.recorded_answers ?? 0,
+        reconnecting: false,
+        resolve,
+        reject,
+      };
+    });
+    this.setState({
+      ...this.state,
+      planning: {
+        ...this.state.planning,
+        busy: true,
+        error: null,
+        current: kind === "answer" ? this.state.planning.current : false,
+      },
+    });
+    try {
+      this.socket.send(JSON.stringify(message));
+    } catch (error) {
+      this.rejectPlanning(String(error));
+    }
+    return promise;
+  }
+
+  private rejectPlanning(reason: string): void {
+    const pending = this.planningSubmission;
+    this.planningSubmission = null;
+    pending?.reject(new Error(reason));
+    this.setState({
+      ...this.state,
+      planning: {
+        ...this.state.planning,
+        busy: false,
+        error: pending ? reason : this.state.planning.error,
+      },
+    });
   }
 
   async submitChoice(optionId: string): Promise<void> {
@@ -427,6 +572,11 @@ export class GameSessionClient {
   }
 
   private openSocket(): void {
+    if (this.planningSubmission?.kind === "answer") this.planningSubmission.reconnecting = true;
+    this.setState({
+      ...this.state,
+      planning: { ...this.state.planning, availability: null, current: false },
+    });
     const socket = new WebSocket(this.webSocketUrl());
     this.socket = socket;
     socket.onopen = () => {
@@ -453,7 +603,9 @@ export class GameSessionClient {
         }, 10_000);
       this.setState({ ...this.state, status: "connected", lastError: null });
     };
-    socket.onmessage = (event) => this.ingestWebSocket(event.data);
+    socket.onmessage = (event) => {
+      if (this.socket === socket && !this.stopped) this.ingestWebSocket(event.data);
+    };
     socket.onerror = () => {
       if (!this.stopped && this.socket === socket) {
         this.setState({
@@ -468,11 +620,13 @@ export class GameSessionClient {
         this.clearTimers();
         this.socket = null;
         this.rejectSubmission("Submission disconnected before confirmation");
+        // An answer's outcome is reconciled from the server-held script on reconnect.
+        if (this.planningSubmission?.kind !== "answer")
+          this.rejectPlanning("Planning disconnected before confirmation");
         this.setState({
           ...this.state,
           status: "disconnected",
-          pendingChoice: null,
-          snapshot: null,
+          planning: { ...this.state.planning, availability: null, current: false },
         });
         this.retry = setTimeout(
           () => {
@@ -514,6 +668,122 @@ export class GameSessionClient {
   }
 
   private apply(message: ServerMessage): void {
+    if (message.type === "planning_result") {
+      const pending = this.planningSubmission;
+      if (
+        !pending ||
+        (pending.identity
+          ? !message.identity || attemptKey(pending.identity) !== attemptKey(message.identity)
+          : message.identity !== null)
+      )
+        return;
+      // Answer results acknowledge reservation only. A publication confirms recording.
+      if (pending.kind === "answer") {
+        if (
+          this.state.planning.envelope &&
+          attemptKey(this.state.planning.envelope.identity) !== attemptKey(pending.identity!)
+        )
+          return;
+        if (message.rejection && message.rejection !== "retired")
+          this.rejectPlanning(`Draft answer rejected: ${message.rejection}`);
+        return;
+      }
+      this.planningSubmission = null;
+      if (message.rejection) {
+        const reason =
+          message.rejection === "replay_mismatch"
+            ? "The draft no longer matches the live game. Review or reset it before applying."
+            : message.rejection === "no_action_opportunity"
+              ? "Apply draft is available only at your tactical action opportunity."
+              : message.rejection === "retired"
+                ? "The draft or live decision changed. Review the current draft and try again."
+                : `Draft request rejected: ${message.rejection}`;
+        pending.reject(new Error(reason));
+        this.setState({
+          ...this.state,
+          planning: {
+            ...this.state.planning,
+            busy: false,
+            error: reason,
+          },
+        });
+      } else {
+        this.setState({
+          ...this.state,
+          planning: {
+            ...this.state.planning,
+            busy: false,
+          },
+        });
+        pending.resolve();
+      }
+      return;
+    }
+    if (message.type === "planning_update" || message.type === "planning_status") {
+      const previousResetEpoch = this.state.planning.resetEpoch;
+      this.setState(reduceServerMessage(this.state, message));
+      const pending = this.planningSubmission;
+      const envelope = this.state.planning.envelope;
+      if (pending?.kind === "answer" && this.state.planning.resetEpoch !== previousResetEpoch) {
+        this.rejectPlanning("Draft reset; remaining instructions were cancelled.");
+        return;
+      }
+      if (
+        message.type === "planning_status" &&
+        this.state.planning.availability === message &&
+        !message.available &&
+        this.planningSubmission?.kind === "answer"
+      ) {
+        this.rejectPlanning("Draft planning is unavailable; remaining instructions were paused.");
+        return;
+      }
+      if (
+        message.type === "planning_update" &&
+        envelope === message.envelope &&
+        pending?.kind === "answer" &&
+        envelope.update !== "Preparing"
+      ) {
+        const recorded = envelope.recorded_request_ids.includes(pending.requestId);
+        if (!recorded && envelope.progress.recorded_answers > pending.recorded) {
+          this.rejectPlanning(
+            "Another connection answered this draft offer. Remaining instructions were paused.",
+          );
+          return;
+        }
+        const retired = pending.identity && !sameAttempt(pending.identity, envelope.identity);
+        // Only the replacement socket's authoritative publication can prove that
+        // an unchanged offer was never reserved. Ordinary duplicate deliveries cannot.
+        const undelivered =
+          pending.reconnecting &&
+          envelope.awaiting_answer &&
+          pending.identity &&
+          attemptKey(pending.identity) === attemptKey(envelope.identity);
+        const terminal =
+          typeof envelope.update === "object" &&
+          ("Stopped" in envelope.update || "Failed" in envelope.update);
+        if (
+          recorded ||
+          undelivered ||
+          (retired &&
+            (envelope.awaiting_answer ||
+              (typeof envelope.update === "object" &&
+                ("Stopped" in envelope.update || "Failed" in envelope.update))))
+        ) {
+          this.planningSubmission = null;
+          this.setState({ ...this.state, planning: { ...this.state.planning, busy: false } });
+          if (recorded) pending.resolve();
+          else
+            pending.reject(
+              new PlanningRefreshError("Draft refreshed; revalidating remaining instructions."),
+            );
+        } else if (terminal) {
+          this.rejectPlanning(
+            "The preview stopped before this answer was recorded. Remaining instructions were paused.",
+          );
+        }
+      }
+      return;
+    }
     if (message.type === "initial_snapshot" || message.type === "state_update") {
       const expected = this.options.viewer;
       if (

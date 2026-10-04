@@ -77,6 +77,8 @@ enum MovementOnlyStep {
         unit: String,
         source: Option<String>,
         damaged: bool,
+        #[serde(default)]
+        galvanized: Option<bool>,
     },
     DoneLoading,
     DoneMoving,
@@ -153,11 +155,13 @@ impl From<MovementOnlyStep> for MovementStep {
                 unit,
                 source,
                 damaged,
+                galvanized,
             } => Self::Load {
                 origin,
                 unit,
                 source,
                 damaged,
+                galvanized,
             },
             MovementOnlyStep::DoneLoading => Self::DoneLoading,
             MovementOnlyStep::DoneMoving => Self::DoneMoving,
@@ -212,6 +216,8 @@ pub enum MovementStep {
         unit: String,
         source: Option<String>,
         damaged: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        galvanized: Option<bool>,
     },
     DoneLoading,
     DoneMoving,
@@ -264,11 +270,20 @@ impl MovementStep {
                 unit,
                 source,
                 damaged,
+                galvanized,
             } => {
                 option.kind == "load"
                     && value("system") == Some(origin.as_str())
                     && value("unit") == Some(unit.as_str())
                     && value("source") == source.as_deref()
+                    && galvanized.is_none_or(|expected| {
+                        option
+                            .payload
+                            .get("galvanized")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                            == expected
+                    })
                     && option
                         .payload
                         .get("damaged")
@@ -698,6 +713,80 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(payment.steps[0], MovementStep::TradeGood));
+    }
+
+    #[test]
+    fn movement_load_matches_the_explicit_cargo_variant_from_the_wire() {
+        for galvanized in [false, true] {
+            let plan: MovementPlan = serde_json::from_value(serde_json::json!({
+                "kind": "tactical_movement",
+                "destination": "42",
+                "steps": [{
+                    "kind": "load", "origin": "24", "unit": "infantry", "source": "home",
+                    "damaged": false, "galvanized": galvanized
+                }, {"kind": "done_moving"}]
+            }))
+            .expect("browser cargo variant must deserialize");
+            let options = [true, false].map(|variant| {
+                let mut option = ChoiceOption::labelled(
+                    if variant {
+                        "load-galvanized"
+                    } else {
+                        "load-normal"
+                    },
+                    "load",
+                    "Load infantry",
+                );
+                option.payload = serde_json::from_value(serde_json::json!({
+                    "system": "24", "unit": "infantry", "source": "home",
+                    "damaged": false, "galvanized": variant
+                }))
+                .unwrap();
+                option
+            });
+            let mut choice = offered("load_cargo", options.to_vec());
+            choice.context.as_mut().unwrap().target =
+                Some(DecisionTarget::System(ti4_model::id::SystemId::new("24")));
+            let mut script = decider(plan.kind, plan.steps);
+            let selected = script
+                .choose(&choice)
+                .expect("explicit cargo is unambiguous");
+            assert_eq!(selected.payload["galvanized"], galvanized);
+        }
+    }
+
+    #[test]
+    fn legacy_load_without_a_cargo_variant_still_rejects_ambiguity() {
+        let plan: MovementPlan = serde_json::from_str(
+            r#"{"destination":"42","steps":[{"kind":"load","origin":"24","unit":"infantry","source":"home","damaged":false},{"kind":"done_moving"}]}"#,
+        )
+        .unwrap();
+        let options = [false, true].map(|galvanized| {
+            let mut option = ChoiceOption::labelled(
+                if galvanized {
+                    "load-galvanized"
+                } else {
+                    "load-normal"
+                },
+                "load",
+                "Load infantry",
+            );
+            option.payload = serde_json::from_value(serde_json::json!({
+                "system": "24", "unit": "infantry", "source": "home",
+                "damaged": false, "galvanized": galvanized
+            }))
+            .unwrap();
+            option
+        });
+        let mut choice = offered("load_cargo", options.to_vec());
+        choice.context.as_mut().unwrap().target =
+            Some(DecisionTarget::System(ti4_model::id::SystemId::new("24")));
+        let mut script = decider(plan.kind, plan.steps);
+        assert!(script.choose(&choice).is_err());
+        assert_eq!(
+            script.0.lock().unwrap().failure.as_ref().unwrap().reason,
+            "ambiguous option"
+        );
     }
 
     fn offered(subtype: &str, options: Vec<ChoiceOption>) -> Choice {

@@ -7,6 +7,33 @@ use ti4_server::projection::project_combat_view;
 use ti4_server::projection::{project_initial_snapshot, project_state_update};
 
 #[test]
+fn board_projection_preserves_normal_and_galvanized_cargo() {
+    let mut game = create_sample_game();
+    let system = SystemId::new("18");
+    let owner = PlayerId::new("seat_a");
+    let normal = Unit::new(UnitTypeId::new("infantry"), owner.clone());
+    let mut galvanized = normal.clone();
+    galvanized.galvanized = true;
+    game.system_mut(&system).planet_units.insert(
+        ti4_model::id::PlanetId::new("jord"),
+        vec![normal, galvanized],
+    );
+
+    let snapshot = project_initial_snapshot("cargo", 1, &game, &ViewerRole::Player(owner), None);
+    let json = serde_json::to_value(&snapshot).expect("snapshot");
+    let units = json["view"]["board"]["systems"]["18"]["units"]
+        .as_array()
+        .expect("board units");
+    let cargo: Vec<_> = units.iter().filter(|u| u["planet"] == "jord").collect();
+    assert_eq!(cargo.len(), 2);
+    assert_eq!(cargo[0]["galvanized"], false);
+    assert_eq!(cargo[1]["galvanized"], true);
+    let decoded: ti4_server::protocol::server::InitialSnapshotMsg =
+        serde_json::from_value(json).expect("round trip");
+    assert_eq!(decoded.view, snapshot.view);
+}
+
+#[test]
 fn invasion_boundary_is_public_even_during_an_unrelated_nested_offer() {
     let mut game = create_sample_game();
     let system = SystemId::new("18");

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useId } from "react";
 import { overlayStack } from "../core/overlayStack.ts";
 import { useFocusTrap } from "../core/useFocusTrap.ts";
+import { useWorkspace } from "../../components/WorkspaceContext.tsx";
 
 export interface DrawerProps {
   open: boolean;
@@ -29,12 +30,13 @@ export const Drawer: React.FC<DrawerProps> = ({
   showBackdrop = true,
   style,
 }) => {
+  const workspace = useWorkspace();
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const id = useId();
   const titleId = `drawer-title-${id}`;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !workspace.active) return;
     const unregister = overlayStack.register({
       id: `drawer-${id}`,
       modal,
@@ -42,10 +44,10 @@ export const Drawer: React.FC<DrawerProps> = ({
       onDismiss: onClose,
     });
     return unregister;
-  }, [open, modal, id, onClose]);
+  }, [open, modal, id, onClose, workspace.active]);
 
   useFocusTrap(drawerRef, {
-    isActive: open && modal,
+    isActive: open && modal && workspace.active,
   });
 
   if (!open) return null;

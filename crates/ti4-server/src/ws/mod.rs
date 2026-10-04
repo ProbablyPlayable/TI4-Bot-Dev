@@ -205,9 +205,21 @@ async fn handle_socket(
 
         match client_msg {
             message @ (ClientMessage::StartPlanning { .. }
+            | ClientMessage::ResetPlanning { .. }
+            | ClientMessage::ApplyPlanning { .. }
             | ClientMessage::SubmitPlanningChoice { .. }) => {
+                let request_id = match &message {
+                    ClientMessage::SubmitPlanningChoice { request_id, .. } => request_id.as_deref(),
+                    _ => None,
+                };
                 let (message_game_id, answer) = match &message {
                     ClientMessage::StartPlanning { game_id, .. } => (game_id, None),
+                    ClientMessage::ResetPlanning {
+                        game_id, identity, ..
+                    } => (game_id, Some((*identity, ""))),
+                    ClientMessage::ApplyPlanning {
+                        game_id, identity, ..
+                    } => (game_id, Some((*identity, ""))),
                     ClientMessage::SubmitPlanningChoice {
                         game_id,
                         identity,
@@ -221,9 +233,41 @@ async fn handle_socket(
                 } else if let (Some(ViewerRole::Player(player)), Some(token)) =
                     (&current_role, &current_token)
                 {
-                    registry
-                        .submit_player_planning(&game_id, token, player, &session, answer)
-                        .err()
+                    if let ClientMessage::ApplyPlanning {
+                        identity,
+                        nonce,
+                        expected_version,
+                        ..
+                    } = &message
+                    {
+                        registry
+                            .apply_player_planning(
+                                &game_id,
+                                token,
+                                player,
+                                &session,
+                                *identity,
+                                nonce,
+                                *expected_version,
+                            )
+                            .err()
+                    } else if matches!(message, ClientMessage::ResetPlanning { .. }) {
+                        registry
+                            .reset_player_planning(
+                                &game_id,
+                                token,
+                                player,
+                                &session,
+                                answer.expect("reset identity").0,
+                            )
+                            .err()
+                    } else {
+                        registry
+                            .submit_player_planning_with_request_id(
+                                &game_id, token, player, &session, answer, request_id,
+                            )
+                            .err()
+                    }
                 } else {
                     Some(PlanningRejection::Unauthorized)
                 };
@@ -317,12 +361,26 @@ async fn handle_socket(
                 tokio::spawn(async move {
                     let mut check = tokio::time::interval(Duration::from_millis(50));
                     let mut planning = None;
+                    let mut last_planning_status = None;
                     loop {
                         tokio::select! {
                             _ = check.tick() => {},
                             _ = tx_clone.closed() => return,
                         }
                         if let ViewerRole::Player(player) = &role {
+                            // Publish retirement/availability before draining replacement offers.
+                            // This also covers phases where no replacement worker exists.
+                            let status = session_for_updates.planning_status(player);
+                            if last_planning_status.as_ref() != Some(&status) {
+                                if tx_clone
+                                    .send(ServerMessage::PlanningStatus(status.clone()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                last_planning_status = Some(status);
+                            }
                             if planning.is_none() {
                                 planning = session_for_updates.subscribe_planning(player);
                             }

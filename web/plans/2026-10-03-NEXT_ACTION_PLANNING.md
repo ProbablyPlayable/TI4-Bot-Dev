@@ -167,14 +167,14 @@ For example, moving through a gravity rift can be planned. Its survival cannot b
 
 Use a small planning policy around the existing execution:
 
-| Operation | Planning behavior |
-|---|---|
-| Ordinary deterministic rules | Execute normally |
-| Planner's decision using already known information | Ask or replay |
-| Random outcome | Stop before sampling |
-| Draw, inspection, or other new hidden information | Stop before accessing the result |
-| Required decision by another player | Stop |
-| Optional opponent reaction | Apply an explicit policy |
+| Operation                                          | Planning behavior                |
+| -------------------------------------------------- | -------------------------------- |
+| Ordinary deterministic rules                       | Execute normally                 |
+| Planner's decision using already known information | Ask or replay                    |
+| Random outcome                                     | Stop before sampling             |
+| Draw, inspection, or other new hidden information  | Stop before accessing the result |
+| Required decision by another player                | Stop                             |
+| Optional opponent reaction                         | Apply an explicit policy         |
 
 **Blocking RNG alone is insufficient.** Decks are already ordered, and drawing from them may use no RNG at all. Hidden holdings can also affect which reaction questions exist.
 

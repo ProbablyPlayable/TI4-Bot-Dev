@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 import { PendingChoiceDto } from "../protocol/types.ts";
 import { ChoiceRendererModel } from "../presentation/choiceModel.ts";
 import { usePlayerIdentity } from "../presentation/PlayerIdentity.tsx";
@@ -25,6 +26,7 @@ export const ReactionStatusBar: React.FC<ReactionStatusBarProps> = ({
   lastError,
   autoPassTimeoutSeconds,
 }) => {
+  const workspace = useWorkspace();
   const display = usePlayerIdentity();
   const isActor = Boolean(choice && viewerSeat && choice.actor === viewerSeat);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -69,7 +71,15 @@ export const ReactionStatusBar: React.FC<ReactionStatusBarProps> = ({
 
   // Keyboard navigation (Spacebar -> Pass, Enter -> Play Reaction)
   useEffect(() => {
-    if (!isOpen || !choice || !isActor || isSubmitting) return;
+    if (
+      !workspace.active ||
+      !workspace.actionable ||
+      !isOpen ||
+      !choice ||
+      !isActor ||
+      isSubmitting
+    )
+      return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore if focused on an input element
@@ -93,7 +103,16 @@ export const ReactionStatusBar: React.FC<ReactionStatusBarProps> = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, choice, isActor, isSubmitting, declineOption, reactionOptions]);
+  }, [
+    isOpen,
+    choice,
+    isActor,
+    isSubmitting,
+    declineOption,
+    reactionOptions,
+    workspace.active,
+    workspace.actionable,
+  ]);
 
   // Countdown timer for auto-pass (if configured and not pinned)
   useEffect(() => {

@@ -13,6 +13,11 @@ import { participantText } from "./presentation/participantText.ts";
 import { CardDetails, CardSubject } from "./components/CardDetails.tsx";
 import { TechnologyModal } from "./components/TechnologyModal.tsx";
 import { ObjectivesModal } from "./components/ObjectivesModal.tsx";
+import { WorkspaceContext, useWorkspace } from "./components/WorkspaceContext.tsx";
+import { attemptKey, planningChoice, sameAttempt } from "./protocol/planning.ts";
+import { ApplyDraftDialog } from "./components/ApplyDraftDialog.tsx";
+import type { UseGameSessionReturn } from "./hooks/useGameSession.ts";
+import type { AttemptIdentity, PendingChoiceDto, RecordedDecisionDto } from "./protocol/types.ts";
 
 const DevDecisionGallery = import.meta.env.DEV
   ? React.lazy(() =>
@@ -198,6 +203,351 @@ const GameViewContainer: React.FC<{
   viewer: ViewerRole;
   onLeave?: () => void;
 }> = ({ gameId, lobby, viewer }) => {
+  const session = useGameSession({ gameId, viewer });
+  const [mode, setMode] = useState<"live" | "draft">("live");
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    identity: AttemptIdentity;
+    nonce: string;
+    version: number;
+    decisions: RecordedDecisionDto[];
+  } | null>(null);
+  const planning = session.planning;
+  const application = planning.availability?.application;
+  const applying = application?.state === "applying" || application?.state === "waiting_for_player";
+  const applicationLabel =
+    application &&
+    {
+      applying: "Applying draft",
+      waiting_for_player: "Waiting for another player",
+      needs_decision: "Needs your decision",
+      applied: "Applied",
+    }[application.state];
+  const canApply =
+    !!planning.availability?.can_apply &&
+    planning.current &&
+    !planning.busy &&
+    session.status === "connected" &&
+    session.pendingChoice?.context?.subtype === "action_menu";
+  const hasDraft = planning.availability?.has_draft || !!planning.envelope;
+  const attention =
+    !applying &&
+    viewer.role === "player" &&
+    (session.pendingChoice?.actor === viewer.seat ||
+      (session.turnStatus?.kind === "waiting_for_decision" &&
+        session.turnStatus.seat === viewer.seat));
+  const request = (operation: Promise<void>) => {
+    setRequestError(null);
+    void operation.catch((error) => setRequestError(String(error.message ?? error)));
+  };
+  const chrome = (
+    <nav
+      className={`workspace-switch${hasDraft || mode === "draft" ? " workspace-switch--segmented" : ""}`}
+      aria-label="Game workspace"
+    >
+      {hasDraft || mode === "draft" ? (
+        <>
+          <button
+            type="button"
+            aria-pressed={mode === "live"}
+            className={`button ${attention ? "workspace-attention" : ""}`}
+            onClick={() => setMode("live")}
+          >
+            Live{attention && <span> · Your decision</span>}
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === "draft"}
+            className="button"
+            onClick={() => setMode("draft")}
+          >
+            Draft
+          </button>
+        </>
+      ) : (
+        viewer.role === "player" && (
+          <button
+            type="button"
+            className="button"
+            disabled={!planning.availability?.can_start || planning.busy}
+            onClick={() => {
+              setMode("draft");
+              request(session.startPlanning());
+            }}
+          >
+            Start tactical draft
+          </button>
+        )
+      )}
+      {hasDraft &&
+        (application ? (
+          <span
+            className="workspace-application"
+            role="status"
+            data-testid="draft-application-status"
+          >
+            {applicationLabel} · {application.applied} / {application.total}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="button"
+            disabled={!canApply}
+            title={
+              canApply
+                ? "Apply the recorded choices to your live tactical action"
+                : "Available when the current draft matches your live tactical action opportunity"
+            }
+            onClick={() => {
+              if (!planning.envelope || !session.pendingChoice) return;
+              setRequestError(null);
+              setConfirmation({
+                identity: planning.envelope.identity,
+                nonce: session.pendingChoice.nonce,
+                version: session.gameVersion,
+                decisions: planning.envelope.recorded_decisions ?? [],
+              });
+            }}
+          >
+            Apply draft
+          </button>
+        ))}
+    </nav>
+  );
+  const actionableChoice = planningChoice(planning);
+  const displayedChoice = useRef<PendingChoiceDto | null>(null);
+  const displayedResetEpoch = useRef(planning.resetEpoch);
+  if (displayedResetEpoch.current !== planning.resetEpoch) {
+    displayedChoice.current = null;
+    displayedResetEpoch.current = planning.resetEpoch;
+  }
+  if (actionableChoice) displayedChoice.current = actionableChoice;
+  const terminal =
+    planning.envelope &&
+    typeof planning.envelope.update === "object" &&
+    ("Stopped" in planning.envelope.update || "Failed" in planning.envelope.update);
+  if (terminal || application) displayedChoice.current = null;
+  const identity = planning.envelope?.identity;
+  const draftSession: UseGameSessionReturn = {
+    ...session,
+    snapshot:
+      planning.publication && session.snapshot
+        ? {
+            ...session.snapshot,
+            view: {
+              ...planning.publication.position,
+              board: {
+                ...planning.publication.position.board,
+                map_tiles: session.snapshot.view.board.map_tiles,
+              },
+            },
+            state: {},
+            pending_choice: null,
+            events: [],
+          }
+        : null,
+    pendingChoice: displayedChoice.current,
+    turnStatus: null,
+    events: [],
+    history: { cursor: 0, redo_count: 0 },
+    lastError: planning.error,
+    submitChoice: (optionId) =>
+      identity
+        ? session.submitPlanningChoice(identity, optionId)
+        : Promise.reject(new Error("Draft is preparing.")),
+  };
+  const update = planning.envelope?.update;
+  const label = !planning.availability
+    ? "Connecting"
+    : !planning.availability.available
+      ? "Planning unavailable in this phase"
+      : !planning.current
+        ? planning.publication
+          ? "Previous preview · refreshing"
+          : "Preparing"
+        : typeof update === "object" && "Stopped" in update
+          ? {
+              MovementComplete: "Movement complete",
+              ReplayMismatch: "Replay mismatch",
+              Uncertainty: "Uncertainty",
+              KnowledgeChanged: "Known information changed",
+              OtherPlayerRequired: "Another player's decision is required",
+              UnsupportedOffer: "Unsupported boundary",
+              UnsupportedParticipation: "Unsupported boundary",
+              UnsupportedSegment: "Unsupported boundary",
+              StepLimit: "Preview step limit reached",
+            }[update.Stopped.reason]
+          : typeof update === "object" && "Failed" in update
+            ? "Preview failed"
+            : planning.envelope?.progress.remaining
+              ? "Replaying recorded draft"
+              : "Ready";
+  const statusStrip = (
+    <section className="draft-status" aria-label="Draft status" data-testid="draft-status">
+      <div className="draft-status__summary">
+        <div className="draft-status__heading">
+          <strong className="draft-status__badge">Hypothetical</strong>
+          <span className="draft-status__state" role="status">
+            {planning.current &&
+            identity &&
+            planning.publicationIdentity &&
+            !sameAttempt(identity, planning.publicationIdentity)
+              ? `Previous preview · ${label.toLowerCase()}`
+              : label}
+          </span>
+        </div>
+        <p className="draft-status__description">
+          {planning.envelope?.assumptions.join(" ") ||
+            "Other players take no optional reactions in this hypothetical turn."}
+        </p>
+        <p className="draft-status__description">
+          {application?.message ||
+            "Preview only. Apply draft executes the recorded choices when your live tactical action is available."}
+        </p>
+        {!!planning.envelope?.progress.recorded_answers && (
+          <span className="draft-status__progress">
+            Replayed {planning.envelope.progress.replayed} · Recorded{" "}
+            {planning.envelope.progress.recorded_answers}
+          </span>
+        )}
+      </div>
+      <div className="draft-status__actions">
+        {hasDraft && (
+          <button
+            type="button"
+            className="button button--secondary"
+            disabled={
+              !planning.availability?.available ||
+              !planning.current ||
+              planning.busy ||
+              !identity ||
+              applying
+            }
+            onClick={() => identity && request(session.resetPlanning(identity))}
+          >
+            Reset draft
+          </button>
+        )}
+        {attention && (
+          <button
+            type="button"
+            className="button workspace-attention"
+            onClick={() => setMode("live")}
+          >
+            The live game is waiting for you · Switch to Live
+          </button>
+        )}
+      </div>
+      {(requestError || planning.error) && (
+        <span className="draft-status__error" role="alert">
+          {requestError || planning.error}
+        </span>
+      )}
+    </section>
+  );
+  const refreshKey = identity ? `${identity.checkpoint_id}:${identity.generation_id}` : "";
+  const draftChrome = (
+    <>
+      {chrome}
+      {statusStrip}
+    </>
+  );
+  return (
+    <>
+      <WorkspaceContext.Provider
+        value={{
+          active: mode === "live",
+          actionable: session.status === "connected" && !applying,
+          draft: false,
+          refreshKey: "",
+          chrome,
+        }}
+      >
+        <div hidden={mode !== "live"} data-testid="live-workspace">
+          <GameWorkspace
+            gameId={gameId}
+            lobby={lobby}
+            viewer={viewer}
+            session={session}
+            chrome={chrome}
+            statusStrip={
+              application && (
+                <p className="draft-application-message" role="status">
+                  {application.message}
+                </p>
+              )
+            }
+          />
+        </div>
+      </WorkspaceContext.Provider>
+      {(hasDraft || mode === "draft") && (
+        <WorkspaceContext.Provider
+          value={{
+            active: mode === "draft",
+            actionable: !!actionableChoice,
+            draft: true,
+            refreshKey,
+            chrome: draftChrome,
+          }}
+        >
+          <div hidden={mode !== "draft"} data-testid="draft-workspace">
+            <GameWorkspace
+              key={planning.resetEpoch}
+              gameId={gameId}
+              lobby={lobby}
+              viewer={viewer}
+              session={draftSession}
+              chrome={chrome}
+              statusStrip={statusStrip}
+              draft
+            />
+          </div>
+        </WorkspaceContext.Provider>
+      )}
+      {confirmation && (
+        <ApplyDraftDialog
+          decisions={confirmation.decisions}
+          ready={
+            !!canApply &&
+            !!identity &&
+            attemptKey(identity) === attemptKey(confirmation.identity) &&
+            session.pendingChoice?.nonce === confirmation.nonce &&
+            session.gameVersion === confirmation.version
+          }
+          busy={planning.busy}
+          error={requestError || planning.error}
+          onClose={() => setConfirmation(null)}
+          onConfirm={() => {
+            setRequestError(null);
+            void session
+              .applyPlanning(confirmation.identity, confirmation.nonce, confirmation.version)
+              .then(() => {
+                setConfirmation(null);
+                setMode("live");
+              })
+              .catch((error) => setRequestError(String(error.message ?? error)));
+          }}
+        />
+      )}
+    </>
+  );
+};
+
+const GameWorkspace: React.FC<{
+  gameId: string;
+  lobby: import("./protocol/types.ts").LobbyDto;
+  viewer: ViewerRole;
+  session: UseGameSessionReturn;
+  chrome: React.ReactNode;
+  statusStrip?: React.ReactNode;
+  draft?: boolean;
+}> = ({ lobby, viewer, session, chrome, statusStrip, draft }) => {
+  const workspace = useWorkspace();
+  const selectionBinding = useRef({
+    nonce: session.pendingChoice?.nonce,
+    refresh: workspace.refreshKey,
+    subtype: session.pendingChoice?.context?.subtype,
+  });
   const {
     status,
     gameVersion,
@@ -211,7 +561,7 @@ const GameViewContainer: React.FC<{
     changeHistory,
     submitMovementBatch,
     submitBatch,
-  } = useGameSession({ gameId, viewer });
+  } = session;
   const logHistoryKey = useRef<unknown>(null);
   if (
     snapshot?.type === "initial_snapshot" &&
@@ -248,7 +598,25 @@ const GameViewContainer: React.FC<{
   const [cardSubject, setCardSubject] = useState<CardSubject | null>(null);
   const [isTechModalOpen, setIsTechModalOpen] = useState(false);
   const [isObjectivesModalOpen, setIsObjectivesModalOpen] = useState(false);
-  useEffect(() => setSelectedOptionId(undefined), [pendingChoice?.nonce]);
+  useEffect(() => {
+    if (draft && !workspace.actionable) return;
+    const previous = selectionBinding.current;
+    const refreshed =
+      previous.refresh !== workspace.refreshKey &&
+      previous.subtype === pendingChoice?.context?.subtype;
+    selectionBinding.current = {
+      nonce: pendingChoice?.nonce,
+      refresh: workspace.refreshKey,
+      subtype: pendingChoice?.context?.subtype,
+    };
+    if (
+      previous.nonce === pendingChoice?.nonce &&
+      previous.refresh === workspace.refreshKey &&
+      previous.subtype === pendingChoice?.context?.subtype
+    )
+      return;
+    if (!draft || !refreshed) setSelectedOptionId(undefined);
+  }, [pendingChoice?.nonce, draft, workspace.refreshKey, workspace.actionable]);
   const cardIsVisible =
     cardSubject &&
     snapshot &&
@@ -299,7 +667,9 @@ const GameViewContainer: React.FC<{
               connectionStatus={status}
               userSeat={userSeat}
             />
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {chrome}
+            {statusStrip}
+            <div className="game-header__actions">
               <button
                 type="button"
                 data-testid="technology-modal-button"
@@ -353,7 +723,8 @@ const GameViewContainer: React.FC<{
         }
         boardView={snapshot?.view.board}
         activeSystemId={
-          typeof snapshot?.state.active_system === "string" ? snapshot.state.active_system : null
+          snapshot?.view.board.active_system ??
+          (typeof snapshot?.state.active_system === "string" ? snapshot.state.active_system : null)
         }
         playerSheet={
           snapshot ? (
@@ -380,7 +751,7 @@ const GameViewContainer: React.FC<{
         logHistoryKey={logHistoryKey.current}
         history={gameHistory}
         historyBusy={historyBusy}
-        onChangeHistory={userSeat === lobby.host_player_id ? onChangeHistory : undefined}
+        onChangeHistory={!draft && userSeat === lobby.host_player_id ? onChangeHistory : undefined}
         choice={pendingChoice}
         viewerSeat={userSeat}
         players={snapshot?.view.players}
@@ -388,10 +759,11 @@ const GameViewContainer: React.FC<{
         scoredObjectives={snapshot?.view.table.scored_objectives}
         objectiveProgress={snapshot?.view.table.objective_progress}
         onSubmitChoice={submitChoice}
-        onSubmitMovementBatch={submitMovementBatch}
-        onSubmitBasketBatch={submitBatch}
+        onSubmitMovementBatch={draft ? undefined : submitMovementBatch}
+        onSubmitBasketBatch={draft ? undefined : submitBatch}
         lastError={lastError}
         selectedOptionId={selectedOptionId}
+        selectedSystemId={selectedSystemId}
         onSelectOption={setSelectedOptionId}
       />
       <TechnologyModal

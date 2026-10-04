@@ -62,6 +62,8 @@ pub struct PlacedUnitView {
     pub owner: PlayerId,
     pub planet: Option<PlanetId>,
     pub damaged: bool,
+    #[serde(default)]
+    pub galvanized: bool,
 }
 
 /// Redacted view of a star system.

@@ -5,8 +5,9 @@ import {
   type InitialSnapshotMsg,
   type LobbyDto,
   type StateUpdateMsg,
+  type PlanningEnvelope,
 } from "../src/protocol/types";
-import type { BasketPlan } from "../src/protocol/client";
+import type { BasketPlan, MovementStep } from "../src/protocol/client";
 
 const gameId = "mocked-decision";
 const seat = "p1";
@@ -74,6 +75,139 @@ const lobby: LobbyDto = {
   })),
 };
 
+const movementSnapshot: typeof initial = {
+  ...initial,
+  state: { active_system: "42" },
+  view: {
+    ...initial.view,
+    players: [
+      {
+        id: seat,
+        faction: "sol",
+        victory_points: 0,
+        trade_goods: 0,
+        commodities: 0,
+        tactic_tokens: 3,
+        fleet_tokens: 2,
+        strategic_tokens: 2,
+        passed: false,
+        strategy_cards: [],
+        exhausted_strategy_cards: [],
+        technologies: [],
+        exhausted_technologies: [],
+        relics: [],
+        exhausted_relics: [],
+        action_cards_count: 0,
+        secret_objectives_count: 0,
+        leaders: {},
+      },
+    ],
+    board: {
+      active_system: "42",
+      systems: {
+        "24": {
+          system_id: "24",
+          command_tokens: [],
+          planets: {},
+          units: [
+            { owner: seat, unit_type: "carrier", damaged: false },
+            ...[false, true].map((galvanized) => ({
+              owner: seat,
+              unit_type: "infantry",
+              planet: "home",
+              damaged: false,
+              galvanized,
+            })),
+          ],
+        },
+        "42": {
+          system_id: "42",
+          command_tokens: [],
+          planets: {},
+          units: [
+            { owner: seat, unit_type: "cruiser", damaged: false },
+            { owner: seat, unit_type: "destroyer", damaged: false },
+          ],
+        },
+      },
+    },
+  },
+  pending_choice: {
+    nonce,
+    choice: {
+      player: seat,
+      prompt: "movement",
+      // The Rust movement_step offer has a null target; the destination is projected on the board.
+      context: { subtype: "movement_step", target: null },
+      options: [
+        {
+          id: "move|24|0",
+          kind: "move",
+          label: "Carrier",
+          payload: { origin: "24", unit: "carrier", damaged: false, capacity: 4 },
+        },
+        { id: "done_moving", kind: "decline", label: "Finish movement" },
+      ],
+    },
+  },
+};
+
+function movementDraft(): PlanningEnvelope {
+  return {
+    publication_id: 1,
+    identity: { checkpoint_id: 7, generation_id: 1, plan_revision: 2 },
+    awaiting_answer: true,
+    recorded_request_ids: [],
+    assumptions: [],
+    progress: {
+      recorded_answers: 2,
+      replayed: 2,
+      remaining: 0,
+      completed_steps: 2,
+      nested_answers_since_checkpoint: 0,
+    },
+    update: {
+      SafeOffer: {
+        position: movementSnapshot.view,
+        choice: movementSnapshot.pending_choice!.choice,
+        events: [],
+      },
+    },
+  };
+}
+
+function deliverDraft(socket: WebSocketRoute, envelope: PlanningEnvelope) {
+  socket.send(
+    JSON.stringify({
+      type: "planning_status",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: gameId,
+      checkpoint_id: envelope.identity.checkpoint_id,
+      available: true,
+      can_start: true,
+      has_draft: true,
+      identity: envelope.identity,
+    }),
+  );
+  socket.send(
+    JSON.stringify({
+      type: "planning_update",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: gameId,
+      envelope,
+    }),
+  );
+}
+
+async function showDraft(page: Page) {
+  await page
+    .getByTestId("live-workspace")
+    .getByRole("button", { name: "Draft", exact: true })
+    .first()
+    .click();
+  return page.getByTestId("draft-workspace");
+}
+
 async function openMockedGame(page: Page, snapshot = initial) {
   // Register both routes before navigation: the HTTP load and socket subscribe can race.
   await page.route(`**/api/games/${gameId}/lobby/join`, (route) =>
@@ -118,8 +252,309 @@ type BatchRequest = {
   request_id: string;
   expected_version: number;
   nonce: string;
-  plan: BasketPlan;
+  plan: BasketPlan | { kind: "tactical_movement"; destination: string; steps: MovementStep[] };
 };
+
+test("draft fleet supply includes destination ships with the Rust null-target movement offer", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  deliverDraft(socket, movementDraft());
+  const draft = await showDraft(page);
+  await draft.getByTestId("rally-inc-24-carrier").click();
+  await expect(draft.getByTestId("fleet-supply-gauge")).toContainText("3 / 2 Ships");
+  await expect(draft.getByTestId("fleet-supply-gauge")).toHaveAttribute("data-warning", "true");
+  await expect(draft.getByTestId("tactical-movement-tray")).toContainText("Destination: system 42");
+});
+
+test("a refreshed null-target movement offer cannot redirect a committed draft pipeline", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  const submissions: ClientMessage[] = [];
+  socket.onMessage((raw) => {
+    const message = JSON.parse(String(raw)) as ClientMessage;
+    if (message.type !== "submit_planning_choice") return;
+    submissions.push(message);
+    if (submissions.length !== 1) return;
+    deliverDraft(socket, {
+      ...envelope,
+      identity: { ...envelope.identity, checkpoint_id: 8, generation_id: 2, plan_revision: 3 },
+      update: {
+        SafeOffer: {
+          position: {
+            ...movementSnapshot.view,
+            board: { ...movementSnapshot.view.board, active_system: "43" },
+          },
+          choice: movementSnapshot.pending_choice!.choice,
+          events: [],
+        },
+      },
+    });
+  });
+  await draft.getByTestId("rally-inc-24-carrier").click();
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect(draft.getByTestId("movement-error-banner")).toContainText(
+    "The movement destination changed",
+  );
+  await expect(draft.getByTestId("movement-progress")).toHaveCount(0);
+  expect(submissions).toHaveLength(1);
+});
+
+for (const galvanized of [false, true]) {
+  test(`Live movement batches preserve explicitly selected ${galvanized ? "galvanized" : "normal"} cargo`, async ({
+    page,
+  }) => {
+    const batches = await mockBatchSubmission(page, movementSnapshot);
+    await openMockedGame(page, movementSnapshot);
+    await page.getByTestId("rally-inc-24-carrier").click();
+    await page
+      .getByTestId(`rally-inc-cargo-24-infantry-home${galvanized ? "-galvanized" : ""}`)
+      .click();
+    await page.getByTestId("commit-moves-btn").click();
+    await expect.poll(() => batches.length).toBe(1);
+    expect(batches[0].plan).toEqual({
+      kind: "tactical_movement",
+      destination: "42",
+      steps: [
+        { kind: "move", origin: "24", unit: "carrier", damaged: false },
+        {
+          kind: "load",
+          origin: "24",
+          unit: "infantry",
+          source: "home",
+          damaged: false,
+          galvanized,
+        },
+        { kind: "done_loading" },
+        { kind: "done_moving" },
+      ],
+    });
+  });
+}
+
+for (const transition of ["submission", "refresh", "disconnect"] as const) {
+  test(`generic draft modal keeps workspace navigation enabled during ${transition}`, async ({
+    page,
+  }) => {
+    const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+    const envelope = movementDraft();
+    const menu = {
+      player: seat,
+      prompt: "Choose an action",
+      context: { subtype: "action_menu" },
+      options: [{ id: "tactical", kind: "tactical", label: "Tactical action" }],
+    };
+    deliverDraft(socket, {
+      ...envelope,
+      update: { SafeOffer: { position: initial.view, choice: menu, events: [] } },
+    });
+    const draft = await showDraft(page);
+    const dialog = draft.getByTestId("pending-choice-dialog");
+    await expect(dialog).toBeVisible();
+    if (transition === "submission") await dialog.getByTestId("submit-choice-button").click();
+    else if (transition === "refresh")
+      deliverDraft(socket, {
+        ...envelope,
+        identity: { ...envelope.identity, checkpoint_id: 8, generation_id: 2 },
+        awaiting_answer: false,
+        update: "Preparing",
+      });
+    else await socket.close({ code: 1012, reason: "Disconnected modal regression" });
+    await expect(dialog.getByTestId("submit-choice-button")).toBeDisabled();
+    await expect(dialog.getByRole("radio")).toBeDisabled();
+    const live = dialog.getByRole("button", { name: /^Live/ });
+    await expect(live).toBeEnabled();
+    await live.click();
+    await expect(page.getByTestId("live-workspace")).toBeVisible();
+    await page
+      .getByTestId("live-workspace")
+      .getByRole("button", { name: "Draft", exact: true })
+      .first()
+      .click();
+    await expect(dialog).toBeVisible();
+  });
+}
+
+for (const scenario of ["normal", "galvanized", "ambiguous", "unknown-attributes"] as const) {
+  test(`draft cargo execution handles ${scenario} cargo without selecting the first option`, async ({
+    page,
+  }) => {
+    const snapshot: typeof initial = {
+      ...initial,
+      view: { ...initial.view, active_player: "p2" },
+      pending_choice: null,
+    };
+    const { socket } = await openMockedGame(page, snapshot);
+    const position = {
+      ...snapshot.view,
+      board: {
+        systems: {
+          "24": {
+            system_id: "24",
+            command_tokens: [],
+            planets: {},
+            units: [
+              { owner: seat, unit_type: "carrier", damaged: false },
+              ...[false, true].map((galvanized) => ({
+                owner: seat,
+                unit_type: "infantry",
+                planet: "home",
+                damaged: false,
+                ...(scenario === "unknown-attributes" ? {} : { galvanized }),
+              })),
+            ],
+          },
+        },
+      },
+    };
+    let envelope: PlanningEnvelope = {
+      publication_id: 1,
+      identity: { checkpoint_id: 7, generation_id: 1, plan_revision: 0 },
+      awaiting_answer: true,
+      recorded_request_ids: [],
+      assumptions: [],
+      progress: {
+        recorded_answers: 0,
+        replayed: 0,
+        remaining: 0,
+        completed_steps: 0,
+        nested_answers_since_checkpoint: 0,
+      },
+      update: {
+        SafeOffer: {
+          position,
+          events: [],
+          choice: {
+            player: seat,
+            prompt: "movement",
+            context: { subtype: "movement_step", target: { System: "42" } },
+            options: [
+              {
+                id: "move-carrier",
+                kind: "move",
+                label: "Carrier",
+                payload: { origin: "24", unit: "carrier", capacity: 4 },
+              },
+              { id: "done_moving", kind: "decline", label: "Finish movement" },
+            ],
+          },
+        },
+      },
+    };
+    const deliver = () =>
+      socket.send(
+        JSON.stringify({
+          type: "planning_update",
+          protocol_version: PROTOCOL_VERSION,
+          game_id: gameId,
+          envelope,
+        }),
+      );
+    const submissions: Extract<ClientMessage, { type: "submit_planning_choice" }>[] = [];
+    socket.onMessage((data) => {
+      const message = JSON.parse(String(data)) as ClientMessage;
+      if (message.type !== "submit_planning_choice") return;
+      submissions.push(message);
+      if (message.option_id !== "move-carrier") return;
+      envelope = {
+        ...envelope,
+        publication_id: 2,
+        identity: { ...envelope.identity, plan_revision: 1 },
+        recorded_request_ids: [message.request_id!],
+        progress: { ...envelope.progress, recorded_answers: 1 },
+        update: {
+          SafeOffer: {
+            position,
+            events: [],
+            choice: {
+              player: seat,
+              prompt: "Load cargo",
+              context: { subtype: "load_cargo" },
+              // Galvanized is deliberately first: option order must not determine the load.
+              options: [
+                ...[true, false].map((galvanized) => ({
+                  id: galvanized ? "load-galvanized" : "load-normal",
+                  kind: "load",
+                  label: "Load infantry",
+                  payload: { unit: "infantry", source: "home", damaged: false, galvanized },
+                })),
+                ...(scenario === "ambiguous"
+                  ? [
+                      {
+                        id: "load-normal-duplicate",
+                        kind: "load",
+                        label: "Load infantry",
+                        payload: {
+                          unit: "infantry",
+                          source: "home",
+                          damaged: false,
+                          galvanized: false,
+                        },
+                      },
+                    ]
+                  : []),
+                { id: "done_loading", kind: "decline", label: "Done loading" },
+              ],
+            },
+          },
+        },
+      };
+      deliver();
+      socket.send(
+        JSON.stringify({
+          type: "planning_result",
+          protocol_version: PROTOCOL_VERSION,
+          game_id: gameId,
+          identity: message.identity,
+          request_id: message.request_id,
+          rejection: null,
+        }),
+      );
+    });
+    socket.send(
+      JSON.stringify({
+        type: "planning_status",
+        protocol_version: PROTOCOL_VERSION,
+        game_id: gameId,
+        checkpoint_id: 7,
+        available: true,
+        can_start: true,
+        has_draft: true,
+        identity: envelope.identity,
+      }),
+    );
+    deliver();
+    await page
+      .getByTestId("live-workspace")
+      .getByRole("button", { name: "Draft", exact: true })
+      .first()
+      .click();
+    const draft = page.getByTestId("draft-workspace");
+    await draft.getByTestId("rally-inc-24-carrier").click();
+    const cargo = draft.locator('[data-testid^="rally-inc-cargo-24-infantry-home"]');
+    if (scenario !== "unknown-attributes") {
+      await expect(cargo).toHaveCount(2);
+      await expect(draft.getByTestId("rally-row-cargo-24-infantry-home-galvanized")).toContainText(
+        "Galvanized",
+      );
+    }
+    await (scenario === "galvanized" ? cargo.last() : cargo.first()).click();
+    await draft.getByTestId("commit-moves-btn").click();
+    if (scenario === "ambiguous" || scenario === "unknown-attributes") {
+      await expect(draft.getByTestId("movement-error-banner")).toContainText(/ambiguous.*paused/i);
+      await expect(draft.getByTestId("movement-progress")).toHaveCount(0);
+      expect(submissions.map((message) => message.option_id)).toEqual(["move-carrier"]);
+    } else {
+      await expect
+        .poll(() => submissions.map((message) => message.option_id))
+        .toEqual(["move-carrier", `load-${scenario}`]);
+    }
+  });
+}
 
 async function mockBatchSubmission(page: Page, snapshot: typeof initial) {
   const requests: BatchRequest[] = [];

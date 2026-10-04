@@ -34,8 +34,14 @@ pub const ASSUMPTION: &str = "Other players take no optional reactions in this h
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerPlan {
     pub revision: u64,
+    /// Explicit script replacement, preserved across checkpoint refresh and recovery.
+    #[serde(default)]
+    pub reset_revision: u64,
     pub base_checkpoint_id: u64,
     pub recorded_decisions: Vec<RecordedDecision>,
+    /// Confirmation receipts survive refresh and session restoration with the script.
+    #[serde(default)]
+    pub recorded_request_ids: Vec<String>,
 }
 
 impl PlayerPlan {
@@ -43,8 +49,10 @@ impl PlayerPlan {
     pub const fn new(base_checkpoint_id: u64) -> Self {
         Self {
             revision: 0,
+            reset_revision: 0,
             base_checkpoint_id,
             recorded_decisions: Vec::new(),
+            recorded_request_ids: Vec::new(),
         }
     }
 }
@@ -59,6 +67,7 @@ pub struct AttemptIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Progress {
+    pub recorded_answers: usize,
     pub replayed: usize,
     pub remaining: usize,
     pub completed_steps: usize,
@@ -97,6 +106,7 @@ pub struct SafePublication {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanningUpdate {
+    Preparing,
     SafeOffer(SafePublication),
     SafeStep(SafePublication),
     Stopped {
@@ -108,11 +118,17 @@ pub enum PlanningUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanningEnvelope {
+    pub publication_id: u64,
     pub identity: AttemptIdentity,
+    #[serde(default)]
+    pub reset_revision: u64,
     /// Replay offers are informative; only a waiting offer accepts an answer.
     pub awaiting_answer: bool,
     pub assumptions: Vec<String>,
     pub progress: Progress,
+    pub recorded_request_ids: Vec<String>,
+    #[serde(default)]
+    pub recorded_decisions: Vec<RecordedDecision>,
     pub update: PlanningUpdate,
 }
 
@@ -129,11 +145,13 @@ enum Input {
 }
 
 struct Shared {
+    publication_id: u64,
     plan: PlayerPlan,
     generation: u64,
     retired: bool,
     terminal: bool,
     pending: Option<Choice>,
+    reserved_request_id: Option<String>,
     last_safe: Option<SafePublication>,
     progress: Progress,
     output: mpsc::Sender<PlanningEnvelope>,
@@ -158,11 +176,17 @@ impl Shared {
         if self.retired {
             return;
         }
+        self.progress.recorded_answers = self.plan.recorded_decisions.len();
+        self.publication_id += 1;
         let envelope = PlanningEnvelope {
+            publication_id: self.publication_id,
             identity: self.identity(),
+            reset_revision: self.plan.reset_revision,
             awaiting_answer: self.pending.is_some(),
             assumptions: vec![ASSUMPTION.to_owned()],
             progress: self.progress.clone(),
+            recorded_request_ids: self.plan.recorded_request_ids.clone(),
+            recorded_decisions: self.plan.recorded_decisions.clone(),
             update,
         };
         self.latest = Some(envelope.clone());
@@ -210,13 +234,16 @@ impl PlanningRunner {
     ) -> Self {
         let (output_tx, output) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
+            publication_id: 0,
             plan,
             generation: 1,
             retired: false,
             terminal: false,
             pending: None,
+            reserved_request_id: None,
             last_safe: None,
             progress: Progress {
+                recorded_answers: 0,
                 replayed: 0,
                 remaining: 0,
                 completed_steps: 0,
@@ -254,6 +281,15 @@ impl PlanningRunner {
         identity: AttemptIdentity,
         option_id: &str,
     ) -> Result<(), SubmissionError> {
+        self.submit_with_request_id(identity, option_id, None)
+    }
+
+    pub fn submit_with_request_id(
+        &self,
+        identity: AttemptIdentity,
+        option_id: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), SubmissionError> {
         let mut shared = self.shared.lock().expect("planning lock");
         if !shared.active(identity.generation_id) || shared.identity() != identity {
             return Err(SubmissionError::Retired);
@@ -265,6 +301,7 @@ impl PlanningRunner {
         // Taking the pending offer reserves this answer. A duplicate submission
         // cannot queue another answer for the following question.
         shared.pending = None;
+        shared.reserved_request_id = request_id.map(str::to_owned);
         self.inbox
             .send(Input::Answer(option_id.to_owned()))
             .map_err(|_| SubmissionError::Retired)
@@ -329,6 +366,35 @@ impl PlanningRunner {
         }
     }
 
+    pub(crate) fn identity(&self) -> AttemptIdentity {
+        self.shared.lock().expect("planning lock").identity()
+    }
+
+    /// A refreshed, fully matched prefix is executable even if the preview stopped
+    /// at the next unsupported or uncertain step. Failed/mismatched previews aren't.
+    pub(crate) fn validated_plan(&self, identity: AttemptIdentity) -> Option<PlayerPlan> {
+        let shared = self.shared.lock().expect("planning lock");
+        let latest = shared.latest.as_ref()?;
+        if shared.retired
+            || shared.identity() != identity
+            || latest.identity != identity
+            || latest.progress.remaining != 0
+            || (latest.awaiting_answer && shared.pending.is_none())
+            || matches!(
+                latest.update,
+                PlanningUpdate::Preparing
+                    | PlanningUpdate::Failed(_)
+                    | PlanningUpdate::Stopped {
+                        reason: StopReason::ReplayMismatch | StopReason::KnowledgeChanged,
+                        ..
+                    }
+            )
+        {
+            return None;
+        }
+        Some(shared.plan.clone())
+    }
+
     /// Replay the whole retained script on a fresh hypothetical turn. Answers
     /// within the old worker's unfinished step are included in that script.
     pub fn refresh(&mut self, checkpoint: &Game<'static>, checkpoint_id: u64) {
@@ -356,7 +422,9 @@ impl PlanningRunner {
         {
             let mut shared = self.shared.lock().expect("planning lock");
             if let Some(decisions) = decisions {
+                shared.plan.reset_revision += 1;
                 shared.plan.recorded_decisions = decisions;
+                shared.plan.recorded_request_ids.clear();
             }
             shared.plan.revision += 1;
             shared.plan.base_checkpoint_id = checkpoint_id;
@@ -364,14 +432,17 @@ impl PlanningRunner {
             shared.retired = false;
             shared.terminal = false;
             shared.pending = None;
+            shared.reserved_request_id = None;
             shared.last_safe = None;
             shared.latest = None;
             shared.progress = Progress {
+                recorded_answers: 0,
                 replayed: 0,
                 remaining: 0,
                 completed_steps: 0,
                 nested_answers_since_checkpoint: 0,
             };
+            shared.publish(PlanningUpdate::Preparing);
         }
         let (inbox, worker) = spawn(
             checkpoint.fork_for_worker(),
@@ -606,6 +677,9 @@ impl PlanningDecider {
                     .clone(),
             );
             shared.plan.revision += 1;
+            if let Some(request_id) = shared.reserved_request_id.take() {
+                shared.plan.recorded_request_ids.push(request_id);
+            }
         }
         // The answer survives even if applying it rolls a rift or draws a card.
         shared.progress.nested_answers_since_checkpoint += 1;
@@ -1049,13 +1123,16 @@ mod tests {
     fn gate(state: &GameState) -> (Arc<Gate>, mpsc::Receiver<PlanningEnvelope>) {
         let (output, receiver) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
+            publication_id: 0,
             plan: PlayerPlan::new(1),
             generation: 1,
             retired: false,
             terminal: false,
             pending: None,
+            reserved_request_id: None,
             last_safe: None,
             progress: Progress {
+                recorded_answers: 0,
                 replayed: 0,
                 remaining: 0,
                 completed_steps: 0,

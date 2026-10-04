@@ -69,6 +69,22 @@ impl RecordedDecision {
                 _ => false,
             }
     }
+
+    /// Resolve only the exact recorded instruction against a fresh live offer.
+    pub(crate) fn offered_option(&self, choice: &Choice) -> Option<ChoiceOption> {
+        if !self.matches_question(choice) {
+            return None;
+        }
+        let mut matches = choice.options.iter().filter(|option| {
+            option.id == self.option_id
+                && option.kind == self.kind
+                && option.payload == self.payload
+        });
+        match (matches.next(), matches.next()) {
+            (Some(option), None) => Some(option.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Kept outside the decider so answers survive disposal of the engine fork.

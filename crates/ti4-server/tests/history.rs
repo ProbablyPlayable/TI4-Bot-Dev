@@ -613,6 +613,92 @@ fn pending(session: &GameSession) -> (PlayerId, String, u64, String) {
 }
 
 #[test]
+fn live_movement_batch_loads_only_the_selected_galvanized_variant() {
+    use ti4_content::galaxy::all_systems;
+    use ti4_engine::fixtures::{game, hub_from, plain_systems, put, put_on_planet};
+    use ti4_model::{content_types::POK, id::PlanetId, state::Phase};
+
+    for galvanized in [false, true] {
+        let owner = PlayerId::new("p1");
+        let origin = SystemId::new("01");
+        let planet = PlanetId::new("jord");
+        let target = SystemId::new(
+            *all_systems(ContentStore::embedded(), POK)
+                .iter()
+                .find(|(_, system)| {
+                    system.planets().is_empty() && !system.is_anomaly() && !system.is_hyperlane()
+                })
+                .unwrap()
+                .0,
+        );
+        let mut ids = vec![target.to_string(), origin.to_string()];
+        ids.extend(
+            plain_systems(9)
+                .into_iter()
+                .filter(|id| id != target.as_str() && id != origin.as_str())
+                .take(5),
+        );
+        let mut state = game(&["p1", "p2"]);
+        state.phase = Phase::Action;
+        state.active = Some(owner.clone());
+        put(&mut state, &origin, "carrier", &owner, 1);
+        put_on_planet(&mut state, &origin, &planet, "infantry", &owner, 2);
+        state
+            .system_mut(&origin)
+            .planet_units
+            .get_mut(&planet)
+            .unwrap()[1]
+            .galvanized = true;
+        let registry = GameRegistry::new();
+        let session = registry
+            .create_game(
+                SessionConfig::new("cargo_variants", state)
+                    .with_galaxy(hub_from(&ids).galaxy, vec![])
+                    .with_seat(owner.clone(), SeatController::Human)
+                    .with_seat(PlayerId::new("p2"), SeatController::Human),
+            )
+            .unwrap();
+        for option in ["tactical", target.as_str()] {
+            let (actor, nonce, version, _) = pending(&session);
+            session
+                .submit_choice(&actor, &nonce, version, option)
+                .unwrap();
+        }
+        let (_, nonce, version, _) = pending(&session);
+        let token = session.seat_tokens()[&owner].clone();
+        let request: BatchRequest = serde_json::from_value(serde_json::json!({
+            "request_id": "cargo-confirmation", "expected_version": version, "nonce": nonce,
+            "plan": {
+                "kind": "tactical_movement", "destination": target.as_str(),
+                "steps": [
+                    {"kind": "move", "origin": origin.as_str(), "unit": "carrier", "damaged": false},
+                    {"kind": "load", "origin": origin.as_str(), "unit": "infantry", "source": planet.as_str(), "damaged": false, "galvanized": galvanized},
+                    {"kind": "done_loading"}, {"kind": "done_moving"}
+                ]
+            }
+        })).unwrap();
+        registry
+            .submit_batch("cargo_variants", &token, request)
+            .unwrap();
+        let moved = registry.get_game("cargo_variants").unwrap();
+        let _ = pending(&moved);
+        let state = moved.current_state();
+        let loaded: Vec<_> = state
+            .system_state(&target)
+            .units
+            .iter()
+            .filter(|unit| unit.owner == owner && unit.type_id.as_str() == "infantry")
+            .map(|unit| unit.galvanized)
+            .collect();
+        assert_eq!(loaded, vec![galvanized]);
+        let left = &state.system_state(&origin).planet_units[&planet];
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].galvanized, !galvanized);
+        moved.stop();
+    }
+}
+
+#[test]
 fn undo_action_rewinds_the_whole_movement_pipeline_and_preserves_redo() {
     let registry = GameRegistry::new();
     let host = PlayerId::new("p1");

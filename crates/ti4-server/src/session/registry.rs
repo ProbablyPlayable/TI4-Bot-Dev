@@ -1844,6 +1844,81 @@ impl GameRegistry {
         session: &GameSession,
         answer: Option<(crate::planning::runner::AttemptIdentity, &str)>,
     ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.submit_player_planning_with_request_id(
+            game_id, credential, player, session, answer, None,
+        )
+    }
+
+    pub fn submit_player_planning_with_request_id(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str)>,
+        request_id: Option<&str>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            answer.map(|(identity, option)| (identity, option, request_id)),
+            None,
+            None,
+        )
+    }
+
+    pub fn reset_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            Some(identity),
+            None,
+        )
+    }
+
+    pub fn apply_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+        nonce: &str,
+        expected_version: u64,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            None,
+            Some((identity, nonce, expected_version)),
+        )
+    }
+
+    fn player_planning_request(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str, Option<&str>)>,
+        reset: Option<crate::planning::runner::AttemptIdentity>,
+        apply: Option<(crate::planning::runner::AttemptIdentity, &str, u64)>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
         use super::PlanningError;
         use crate::planning::runner::SubmissionError;
         use crate::protocol::server::PlanningRejection as Rejection;
@@ -1863,15 +1938,23 @@ impl GameRegistry {
         {
             return Err(Rejection::Unavailable);
         }
-        let result = match answer {
-            Some((identity, option)) => session.submit_planning_choice(player, identity, option),
-            None => session.start_planning(player),
+        let result = match (answer, reset, apply) {
+            (_, _, Some((identity, nonce, version))) => {
+                session.apply_planning(player, identity, nonce, version)
+            }
+            (_, Some(identity), _) => session.reset_planning(player, identity),
+            (Some((identity, option, request_id)), _, _) => {
+                session.submit_planning_choice_with_request_id(player, identity, option, request_id)
+            }
+            _ => session.start_planning(player),
         };
         result.map_err(|error| match error {
             PlanningError::Unavailable => Rejection::Unavailable,
             PlanningError::UnknownSeat => Rejection::UnknownSeat,
             PlanningError::ActivePlayer => Rejection::ActivePlayer,
             PlanningError::NotStarted => Rejection::NotStarted,
+            PlanningError::NoActionOpportunity => Rejection::NoActionOpportunity,
+            PlanningError::ReplayMismatch => Rejection::ReplayMismatch,
             PlanningError::Submission(SubmissionError::Retired) => Rejection::Retired,
             PlanningError::Submission(SubmissionError::NotWaiting) => Rejection::NotWaiting,
             PlanningError::Submission(SubmissionError::UnknownOption) => Rejection::UnknownOption,

@@ -138,6 +138,49 @@ fn answers(destination: &SystemId, origin: &SystemId, cargo: bool) -> Vec<String
 }
 
 #[test]
+fn recording_receipts_exclude_rejected_requests_and_survive_refresh_and_restoration() {
+    let (live, _, _) = checkpoint(false, false);
+    let mut runner = runner(&live);
+    let old = next(&runner);
+    assert!(old.awaiting_answer);
+    assert!(old.recorded_request_ids.is_empty());
+    runner
+        .submit_with_request_id(old.identity, "tactical", Some("winner"))
+        .unwrap();
+    let recorded = loop {
+        let update = next(&runner);
+        if update.awaiting_answer {
+            break update;
+        }
+    };
+    assert_eq!(recorded.recorded_request_ids, ["winner"]);
+    assert_eq!(
+        runner.submit_with_request_id(old.identity, "tactical", Some("loser")),
+        Err(SubmissionError::Retired)
+    );
+    let retained = runner.plan();
+    assert_eq!(retained.recorded_request_ids, ["winner"]);
+    runner.refresh(&live, 11);
+    loop {
+        let update = next(&runner);
+        assert_eq!(update.recorded_request_ids, ["winner"]);
+        if update.awaiting_answer {
+            break;
+        }
+    }
+    let saved = serde_json::to_string(&retained).unwrap();
+    let restored = PlanningRunner::start(
+        &live,
+        PlayerId::new("b"),
+        serde_json::from_str(&saved).unwrap(),
+        32,
+    );
+    assert_eq!(next(&restored).recorded_request_ids, ["winner"]);
+    runner.edit(&live, 12, vec![]);
+    assert!(next(&runner).recorded_request_ids.is_empty());
+}
+
+#[test]
 fn two_player_movement_and_cargo_match_the_normal_fork_without_touching_live_state() {
     let (live, destination, origin) = checkpoint(false, true);
     let original = serde_json::to_value(&live.state).unwrap();
@@ -542,8 +585,10 @@ fn replay_does_not_supply_an_answer_to_an_unaudited_nested_offer() {
     assert_eq!(retained.len(), 3);
     let plan = PlayerPlan {
         revision: 1,
+        reset_revision: 0,
         base_checkpoint_id: 10,
         recorded_decisions: retained.clone(),
+        recorded_request_ids: vec![],
     };
     let runner = PlanningRunner::start(&live, PlayerId::new("b"), plan, 16);
     let transcript = collect(&runner, &[]);
@@ -576,8 +621,10 @@ fn replay_stops_at_a_rift_before_consuming_a_matching_later_answer() {
         PlayerId::new("b"),
         PlayerPlan {
             revision: 1,
+            reset_revision: 0,
             base_checkpoint_id: 10,
             recorded_decisions: retained.clone(),
+            recorded_request_ids: vec![],
         },
         16,
     );
@@ -657,6 +704,7 @@ fn automatic_step_bound_and_edit_have_explicit_generation_boundaries() {
     assert_eq!(runner.plan().recorded_decisions.len(), 1);
     let old = transcript[0].identity;
     runner.edit(&live, 11, vec![]);
+    assert!(matches!(next(&runner).update, PlanningUpdate::Preparing));
     let offer = next(&runner);
     assert!(matches!(offer.update, PlanningUpdate::SafeOffer(_)));
     assert_eq!(

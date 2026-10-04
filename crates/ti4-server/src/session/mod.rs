@@ -537,16 +537,138 @@ impl GameSession {
         identity: crate::planning::runner::AttemptIdentity,
         option_id: &str,
     ) -> Result<(), PlanningError> {
+        self.submit_planning_choice_with_request_id(player, identity, option_id, None)
+    }
+
+    pub fn submit_planning_choice_with_request_id(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+        option_id: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), PlanningError> {
         let lock = self.shared.lock().expect("shared lock");
         if lock.stopped || lock.finished || lock.error.is_some() {
             return Err(PlanningError::Unavailable);
+        }
+        if lock.planning.has_application(player) {
+            return Err(PlanningError::Submission(
+                crate::planning::runner::SubmissionError::NotWaiting,
+            ));
         }
         lock.planning
             .runners
             .get(player)
             .ok_or(PlanningError::NotStarted)?
-            .submit(identity, option_id)
+            .submit_with_request_id(identity, option_id, request_id)
             .map_err(PlanningError::Submission)
+    }
+
+    pub fn reset_planning(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), PlanningError> {
+        let mut lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+            return Err(PlanningError::Unavailable);
+        }
+        lock.planning.reset(player, identity)
+    }
+
+    /// Confirm the current validated draft at a real tactical action opportunity.
+    /// Execution then stays with the live decider, independent of the connection.
+    pub fn apply_planning(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+        nonce: &str,
+        expected_version: u64,
+    ) -> Result<(), PlanningError> {
+        let mut lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+            return Err(PlanningError::Unavailable);
+        }
+        let pending = lock
+            .pending_decision
+            .as_ref()
+            .ok_or(PlanningError::NoActionOpportunity)?;
+        if pending.submission_state != PendingSubmissionState::AwaitingSubmission
+            || pending.nonce != nonce
+            || pending.game_version != expected_version
+        {
+            return Err(PlanningError::Submission(
+                crate::planning::runner::SubmissionError::Retired,
+            ));
+        }
+        let plan = lock
+            .planning
+            .executable_plan(player, identity, &pending.choice)?;
+        let inbox = lock
+            .seat_inboxes
+            .get(player)
+            .ok_or(PlanningError::UnknownSeat)?
+            .clone();
+        let (reply_tx, _reply_rx) = mpsc::channel();
+        lock.pending_decision
+            .as_mut()
+            .expect("pending decision")
+            .submission_state = PendingSubmissionState::Reserved;
+        // Queue the first answer under the same reservation lock used by live input.
+        // No browser-supplied choices or hypothetical state enter the live game.
+        if inbox
+            .send(ChoiceSubmission {
+                seat: player.clone(),
+                nonce: nonce.to_owned(),
+                expected_version,
+                option_id: "tactical".into(),
+                reply_tx,
+            })
+            .is_err()
+        {
+            lock.pending_decision
+                .as_mut()
+                .expect("pending decision")
+                .submission_state = PendingSubmissionState::AwaitingSubmission;
+            return Err(PlanningError::Unavailable);
+        }
+        lock.planning.begin_application(player, plan);
+        Ok(())
+    }
+
+    pub fn planning_status(&self, player: &PlayerId) -> crate::protocol::server::PlanningStatusMsg {
+        let lock = self.shared.lock().expect("shared lock");
+        let available = !lock.stopped
+            && !lock.finished
+            && lock.error.is_none()
+            && lock.replay_complete
+            && lock.planning.available;
+        let can_apply = available
+            && lock.pending_decision.as_ref().is_some_and(|pending| {
+                pending.submission_state == PendingSubmissionState::AwaitingSubmission
+                    && lock.planning.runners.get(player).is_some_and(|runner| {
+                        lock.planning
+                            .executable_plan(player, runner.identity(), &pending.choice)
+                            .is_ok()
+                    })
+            });
+        crate::protocol::server::PlanningStatusMsg {
+            protocol_version: crate::protocol::PROTOCOL_VERSION,
+            game_id: self.game_id.clone(),
+            checkpoint_id: lock.planning.checkpoint_id,
+            available,
+            can_start: available
+                && lock.seats.get(player) == Some(&SeatController::Human)
+                && lock.latest_state.active.as_ref() != Some(player),
+            has_draft: lock.planning.has_draft(player),
+            identity: lock
+                .planning
+                .runners
+                .get(player)
+                .map(|runner| runner.identity()),
+            can_apply,
+            application: lock.planning.application(player),
+        }
     }
 
     /// Private stream independent of the captured runner output used by tests.

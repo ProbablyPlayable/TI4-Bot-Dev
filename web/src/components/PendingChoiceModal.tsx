@@ -6,6 +6,7 @@ import { ChoiceRendererModel } from "../presentation/choiceModel.ts";
 import { useParticipantText } from "../presentation/PlayerIdentity.tsx";
 import { findStrategyCardMeta } from "../protocol/contentCatalog.ts";
 import { DecisionHeader } from "./DecisionHeader.tsx";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 
 export interface PendingChoiceModalProps {
   choice: PendingChoiceDto | null;
@@ -33,6 +34,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
   onSelectOptions,
 }) => {
   const present = useParticipantText();
+  const workspace = useWorkspace();
   const [uncontrolledSelectedOptionId, setUncontrolledSelectedOptionId] = useState<string>("");
   const [uncontrolledSelectedOptionIds, setUncontrolledSelectedOptionIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -200,8 +202,9 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
           justifyContent: "center",
         }}
       >
-        <div
-          className="choice-dialog__panel panel"
+        <fieldset
+          disabled={!workspace.actionable}
+          className="workspace-controls choice-dialog__panel panel"
           style={{
             padding: 24,
             maxWidth: strategyDraft ? 1100 : 960,
@@ -409,7 +412,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
               </button>
             </div>
           </form>
-        </div>
+        </fieldset>
       </Dialog.Content>
     </Dialog.Root>
   );

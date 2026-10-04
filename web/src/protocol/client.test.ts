@@ -13,6 +13,8 @@ import {
 } from "./decode.ts";
 import { InitialSnapshotMsg, PROTOCOL_VERSION } from "./types.ts";
 import { validNickname } from "./nickname.ts";
+import { initialPlanningState, planningChoice, PlanningRefreshError } from "./planning.ts";
+import type { PlanningEnvelope } from "./types.ts";
 
 const snapshot: InitialSnapshotMsg = {
   type: "initial_snapshot",
@@ -43,6 +45,7 @@ const snapshot: InitialSnapshotMsg = {
 };
 
 const state: GameSessionState = {
+  planning: initialPlanningState,
   status: "connected",
   gameVersion: 0,
   snapshot: null,
@@ -341,6 +344,320 @@ class FakeWebSocket {
 }
 
 describe("GameSessionClient ingress lifecycle", () => {
+  function draftOffer(checkpoint = 10, revision = 2, recorded = 1): PlanningEnvelope {
+    return {
+      publication_id: revision,
+      identity: { checkpoint_id: checkpoint, generation_id: 1, plan_revision: revision },
+      awaiting_answer: true,
+      recorded_request_ids: [],
+      assumptions: [],
+      progress: {
+        recorded_answers: recorded,
+        replayed: recorded,
+        remaining: 0,
+        completed_steps: 1,
+        nested_answers_since_checkpoint: 0,
+      },
+      update: {
+        SafeOffer: {
+          position: snapshot.view,
+          choice: { player: "player_a", prompt: "Move", options: [{ id: "move", label: "Move" }] },
+          events: [],
+        },
+      },
+    };
+  }
+  it("binds Apply draft to the confirmed live nonce and revision, and keeps execution server-owned", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const offer = draftOffer();
+    const availability = {
+      type: "planning_status",
+      checkpoint_id: 10,
+      available: true,
+      can_start: false,
+      has_draft: true,
+      identity: offer.identity,
+      can_apply: true,
+      application: null,
+    };
+    send({ type: "planning_update", envelope: offer });
+    send(availability);
+    const applying = client.applyPlanning(offer.identity, "nonce-4", 4);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "apply_planning",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: offer.identity,
+      nonce: "nonce-4",
+      expected_version: 4,
+    });
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    await expect(client.applyPlanning(offer.identity, "nonce-4", 4)).rejects.toThrow(/pending/);
+    send({ type: "planning_result", identity: offer.identity, rejection: null });
+    await applying;
+    send({
+      ...availability,
+      can_apply: false,
+      application: {
+        applied: 2,
+        total: 5,
+        state: "waiting_for_player",
+        message: "Waiting for another player.",
+      },
+    });
+    expect(client.getState().planning.availability?.application?.applied).toBe(2);
+    await expect(client.applyPlanning(offer.identity, "nonce-4", 4)).rejects.toThrow(/not ready/);
+    expect(socket.sent.filter((raw) => JSON.parse(raw).type === "apply_planning")).toHaveLength(1);
+    expect(socket.sent.filter((raw) => JSON.parse(raw).type === "submit_choice")).toHaveLength(0);
+    client.stop();
+  });
+  it("keeps planning independent from the live projection and confirms recorded answers rather than reservation acknowledgments", async () => {
+    const { client, send } = await connectedPlayer();
+    const live = client.getState();
+    const offer = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    let resolved = false;
+    void answer.then(() => {
+      resolved = true;
+    });
+    send({
+      type: "planning_result",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: offer.identity,
+      rejection: null,
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: {
+        ...draftOffer(10, 3, 2),
+        recorded_request_ids: [JSON.parse(FakeWebSocket.latest!.sent.at(-1)!).request_id],
+      },
+    });
+    await answer;
+    expect(client.getState().snapshot).toBe(live.snapshot);
+    expect(client.getState().pendingChoice).toBe(live.pendingChoice);
+    expect(client.getState().events).toBe(live.events);
+    expect(client.getState().history).toBe(live.history);
+    expect(client.getState().lastError).toBe(live.lastError);
+    expect(JSON.parse(FakeWebSocket.latest!.sent.at(-1)!)).toMatchObject({
+      type: "submit_planning_choice",
+      identity: offer.identity,
+    });
+    client.stop();
+  });
+  it("reconciles an in-flight recorded answer after refresh and ignores its stale rejection", async () => {
+    const { client, send } = await connectedPlayer();
+    const old = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+    const answer = client.submitPlanningChoice(old.identity, "move");
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: { ...draftOffer(11, 4, 2), update: "Preparing", awaiting_answer: false },
+    });
+    send({
+      type: "planning_result",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: old.identity,
+      rejection: "unknown_option",
+    });
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: {
+        ...draftOffer(11, 4, 2),
+        publication_id: 5,
+        recorded_request_ids: [JSON.parse(FakeWebSocket.latest!.sent.at(-1)!).request_id],
+      },
+    });
+    await expect(answer).resolves.toBeUndefined();
+    expect(client.getState().planning.error).toBeNull();
+    await expect(client.submitPlanningChoice(old.identity, "move")).rejects.toBeInstanceOf(
+      PlanningRefreshError,
+    );
+    client.stop();
+  });
+  it("lets pipelines retry only the unrecorded suffix after a refresh", async () => {
+    const { client, send } = await connectedPlayer();
+    const old = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+    const answer = client.submitPlanningChoice(old.identity, "move");
+    const rejected = expect(answer).rejects.toBeInstanceOf(PlanningRefreshError);
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: draftOffer(11, 3, 1),
+    });
+    await rejected;
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it.each(["before", "after"])(
+    "does not confirm another connection's recorded answer when rejection arrives %s the publication",
+    async (order) => {
+      const { client, send } = await connectedPlayer();
+      const old = draftOffer();
+      send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+      const answer = client.submitPlanningChoice(old.identity, "move");
+      const rejected = expect(answer).rejects.toThrow("Another connection answered");
+      const rejection = {
+        type: "planning_result" as const,
+        protocol_version: 3,
+        game_id: "game_12345",
+        identity: old.identity,
+        rejection: "retired" as const,
+      };
+      if (order === "before") send(rejection);
+      send({
+        type: "planning_update",
+        protocol_version: 3,
+        game_id: "game_12345",
+        envelope: { ...draftOffer(10, 3, 2), recorded_request_ids: ["another-tab"] },
+      });
+      await rejected;
+      if (order === "after") send(rejection);
+      expect(client.getState().planning.busy).toBe(false);
+      expect(client.getState().planning.error).toContain("Remaining instructions were paused");
+      client.stop();
+    },
+  );
+  it("disables cached controls during a socket replacement while retaining the preview", async () => {
+    vi.useFakeTimers();
+    const { client, send } = await connectedPlayer();
+    const offer = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: offer });
+    const before = client.getState().planning.publication;
+    FakeWebSocket.latest!.onclose?.();
+    expect(client.getState().planning.publication).toBe(before);
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    vi.advanceTimersByTime(2000);
+    const socket = FakeWebSocket.latest!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.onopen?.();
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "planning_update",
+        protocol_version: 3,
+        game_id: "game_12345",
+        envelope: offer,
+      }),
+    } as MessageEvent);
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it("keeps a reserved answer pending across duplicate deliveries and reconnect until its receipt arrives", async () => {
+    vi.useFakeTimers();
+    const { client, socket, send } = await connectedPlayer();
+    const offer = draftOffer();
+    send({ type: "planning_update", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    const requestId = JSON.parse(socket.sent.at(-1)!).request_id;
+    let settled = false;
+    void answer.then(() => {
+      settled = true;
+    });
+    send({ type: "planning_update", envelope: offer });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(client.getState().planning.busy).toBe(true);
+    socket.close();
+    vi.advanceTimersByTime(2000);
+    const replacement = FakeWebSocket.latest!;
+    replacement.readyState = FakeWebSocket.OPEN;
+    replacement.onopen?.();
+    const deliver = (envelope: PlanningEnvelope) =>
+      replacement.onmessage?.({
+        data: JSON.stringify({
+          type: "planning_update",
+          protocol_version: 3,
+          game_id: "game_12345",
+          envelope,
+        }),
+      } as MessageEvent);
+    // Subscription recalculates awaiting_answer under the reservation lock.
+    deliver({ ...offer, awaiting_answer: false });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(client.getState().planning.busy).toBe(true);
+    deliver({ ...draftOffer(10, 3, 2), recorded_request_ids: [requestId] });
+    await answer;
+    expect(client.getState().planning.busy).toBe(false);
+    expect(client.getState().planning.error).toBeNull();
+    client.stop();
+  });
+  it("cancels an answer on an authoritative reset even if reconnect skipped the reset publications", async () => {
+    const { client, send } = await connectedPlayer();
+    const offer = { ...draftOffer(), reset_revision: 0 };
+    send({ type: "planning_update", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    const failure = answer.catch((error: unknown) => error);
+    // The new draft is already as long as the old one, so answer counts cannot identify a reset.
+    send({
+      type: "planning_update",
+      envelope: {
+        ...draftOffer(11, 5, offer.progress.recorded_answers),
+        reset_revision: 1,
+      },
+    });
+    const error = await failure;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PlanningRefreshError);
+    expect((error as Error).message).toContain("Draft reset");
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    expect(client.getState().planning.busy).toBe(false);
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it("invalidates local staging when another tab resets an empty script, once per reset publication", async () => {
+    const { client, send } = await connectedPlayer();
+    const offer = { ...draftOffer(10, 0, 0), reset_revision: 0 };
+    send({ type: "planning_update", envelope: offer });
+    const reset = {
+      ...offer,
+      reset_revision: 1,
+      identity: { ...offer.identity, generation_id: 2, plan_revision: 1 },
+      update: "Preparing",
+      awaiting_answer: false,
+    };
+    send({ type: "planning_update", envelope: reset });
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    const replacement = {
+      ...offer,
+      reset_revision: 1,
+      publication_id: 2,
+      identity: reset.identity,
+    };
+    send({ type: "planning_update", envelope: replacement });
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    // Its own successful acknowledgment must not invalidate the workspace twice.
+    const operation = client.resetPlanning(replacement.identity);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...replacement,
+        reset_revision: 2,
+        identity: { ...replacement.identity, generation_id: 3 },
+        update: "Preparing",
+        awaiting_answer: false,
+      },
+    });
+    send({ type: "planning_result", identity: replacement.identity, rejection: null });
+    await operation;
+    expect(client.getState().planning.resetEpoch).toBe(2);
+    client.stop();
+  });
   it("retries an uncertain basket confirmation with the same request ID", async () => {
     const { client, send } = await connectedPlayer();
     send({
