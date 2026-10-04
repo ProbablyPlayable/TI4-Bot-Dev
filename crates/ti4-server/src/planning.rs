@@ -46,7 +46,7 @@ pub struct RecordedDecision {
 }
 
 impl RecordedDecision {
-    fn from_answer(choice: &Choice, answer: &ChoiceOption) -> Self {
+    pub(crate) fn from_answer(choice: &Choice, answer: &ChoiceOption) -> Self {
         Self {
             player: choice.player.clone(),
             prompt: choice.prompt.clone(),
@@ -80,6 +80,55 @@ impl RecordedDecision {
                 && option.kind == self.kind
                 && option.payload == self.payload
         });
+        match (matches.next(), matches.next()) {
+            (Some(option), None) => Some(option.clone()),
+            _ => None,
+        }
+    }
+
+    /// Movement/cargo vector indexes and hold counters are execution details.
+    /// Reconstruction may rebind those, but keeps every other semantic field,
+    /// including boost choices, unit condition, and the cargo's actual pickup
+    /// system (which may differ from the carrier's origin). Live application stays exact.
+    fn matches_replay_option(&self, option: &ChoiceOption) -> bool {
+        let subtype = self
+            .context
+            .as_ref()
+            .map(|context| context.subtype.as_str());
+        let volatile: &[&str] = match (subtype, self.kind.as_str()) {
+            (Some("movement_step"), "move") => &[],
+            (Some("load_cargo"), "load" | "decline") => &[
+                "capacity_remaining",
+                "loaded_ground",
+                "loaded_fighters",
+                "ground_available",
+            ],
+            _ => {
+                return self.option_id == option.id
+                    && self.kind == option.kind
+                    && self.payload == option.payload;
+            }
+        };
+        self.kind == option.kind
+            && (self.kind != "decline" || self.option_id == option.id)
+            && self
+                .payload
+                .iter()
+                .filter(|(key, _)| !volatile.contains(&key.as_str()))
+                .eq(option
+                    .payload
+                    .iter()
+                    .filter(|(key, _)| !volatile.contains(&key.as_str())))
+    }
+
+    pub(crate) fn replay_option(&self, choice: &Choice) -> Option<ChoiceOption> {
+        if !self.matches_question(choice) {
+            return None;
+        }
+        let mut matches = choice
+            .options
+            .iter()
+            .filter(|option| self.matches_replay_option(option));
         match (matches.next(), matches.next()) {
             (Some(option), None) => Some(option.clone()),
             _ => None,
@@ -230,6 +279,7 @@ pub type ReplayStatus = Arc<Mutex<ReplayProgress>>;
 /// and replay never searches ahead for another answer.
 pub struct ReplayDecider {
     progress: ReplayStatus,
+    semantic_movement: bool,
 }
 
 impl ReplayDecider {
@@ -245,9 +295,16 @@ impl ReplayDecider {
         (
             Self {
                 progress: progress.clone(),
+                semantic_movement: false,
             },
             progress,
         )
+    }
+
+    pub(crate) fn for_planning(decisions: Vec<RecordedDecision>) -> (Self, ReplayStatus) {
+        let (mut decider, status) = Self::new(decisions);
+        decider.semantic_movement = true;
+        (decider, status)
     }
 }
 
@@ -266,9 +323,13 @@ impl Decider for ReplayDecider {
                 Err(ReplayStopReason::QuestionMismatch)
             } else {
                 let mut matching = choice.options.iter().filter(|option| {
-                    option.id == expected.option_id
-                        && option.kind == expected.kind
-                        && option.payload == expected.payload
+                    if self.semantic_movement {
+                        expected.matches_replay_option(option)
+                    } else {
+                        option.id == expected.option_id
+                            && option.kind == expected.kind
+                            && option.payload == expected.payload
+                    }
                 });
                 match (matching.next(), matching.next()) {
                     // Clone the fresh offered option, not the saved instruction.
@@ -301,5 +362,62 @@ impl Decider for ReplayDecider {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ti4_engine::decision_context::DecisionSource;
+    use ti4_model::state::Phase;
+
+    #[test]
+    fn semantic_movement_rebinds_indexes_without_substituting_conditions_boosts_or_ambiguous_units()
+    {
+        let player = PlayerId::new("b");
+        let option = ChoiceOption::new("move|origin|0", "move")
+            .with("origin", "origin")
+            .with("unit", "carrier")
+            .with("damaged", false)
+            .with("capacity", 4)
+            .with("gravity_drive", false);
+        let question = Choice::new(player.clone(), "movement", vec![option.clone()])
+            .contextualized(DecisionContext::new(
+                player,
+                DecisionSource::Rule("89.2".into()),
+                "movement_step",
+                Phase::Action,
+                1,
+            ));
+        let recorded = RecordedDecision::from_answer(&question, &option);
+        let mut fresh = option.clone();
+        fresh.id = "move|origin|2".into();
+        let mut offered = question.clone();
+        offered.options = vec![fresh.clone()];
+        assert_eq!(recorded.replay_option(&offered), Some(fresh.clone()));
+        assert_eq!(
+            recorded.offered_option(&offered),
+            None,
+            "live application stays exact"
+        );
+        for changed in [
+            fresh.clone().with("damaged", true),
+            fresh.clone().with("gravity_drive", true),
+            fresh.clone().with("ionian", true),
+            fresh.clone().with("unit", "carrier2"),
+            fresh.clone().with("origin", "elsewhere"),
+        ] {
+            offered.options = vec![changed];
+            assert!(recorded.replay_option(&offered).is_none());
+        }
+        offered.options = vec![fresh, option];
+        let (mut replay, progress) = ReplayDecider::for_planning(vec![recorded]);
+        assert!(replay.choose(&offered).is_err());
+        let progress = progress.lock().unwrap();
+        assert_eq!(
+            progress.stop_reason(),
+            Some(ReplayStopReason::SelectionAmbiguous)
+        );
+        assert_eq!(progress.remaining().len(), 1);
     }
 }

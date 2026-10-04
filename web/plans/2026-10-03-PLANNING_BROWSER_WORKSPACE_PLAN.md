@@ -11,7 +11,7 @@ This milestone covers activation, movement, and cargo, including explicitly conf
 - The gated planning runner produces player-projected offers and positions, records answers, and reports movement completion, uncertainty, replay mismatch, and sanitized failures.
 - Session integration retains scripts and reconstructs attempts from completed live-step checkpoints, including undo/redo.
 - Authenticated `StartPlanning` and `SubmitPlanningChoice` WebSocket messages exist. Planning updates are seat-only, with delivery independent of a waiting live decider.
-- The browser does not yet decode or display planning messages.
+- The browser decodes seat-private planning messages and displays independent Live/Draft workspaces, confirmed application, and editable recorded movement.
 - `Board`, `ChoiceRendererDispatcher`, activation/movement/cargo overlays, and the client-side move/load pipeline provide the existing interaction model. Workflow state is split between `GameShell`, pipeline owners, and individual overlays.
 
 ## Target State
@@ -22,7 +22,7 @@ This milestone covers activation, movement, and cargo, including explicitly conf
 - A live question never switches modes or steals focus. The Live tab pulses and displays **Your decision**; Draft mode also shows **The live game is waiting for you** with a one-click switch. Respect reduced-motion preferences. Sound is later work.
 - A compact draft status strip labels the view **Hypothetical**, displays the no-optional-opponent-reactions assumption, and reports refresh, completion, uncertainty, mismatch, or failure. Existing overlays provide the decision controls.
 - Refresh replaces the disposable preview while retaining the recorded script. Retired controls cannot submit answers, and stopped previews remain inspectable without actionable choices.
-- **Reset draft** clears the recorded script and starts a fresh preview. Individual-answer editing and draft undo are deferred.
+- **Reset draft** clears the recorded script and starts a fresh preview. **Edit movement** rebuilds to the first movement offer while retaining the original recorded script. The movement tray restores all recorded ships and cargo as editable quantities; changing one selection retains independent selections. The first accepted fresh movement answer replaces the old movement suffix, and the existing move/load pipeline records the revised trace. Activation editing and draft undo are deferred.
 - **Apply draft** becomes available at the owner's actual tactical action opportunity when the current prefix validates. A confirmation lists the recorded choices and activation cost. The server executes exact fresh offers, waits for other players' live reactions, and stops for an unplanned owner question or changed selection. Unsupported preview boundaries permit applying the validated prefix. Seat-private progress survives reconnect; repeated requests cannot restart it. Resetting afterward never undoes live choices.
 - Starting is restricted to inactive players; existing drafts remain inspectable and editable during their live turn.
 - Explicitly started pipelines automatically finish after refresh when remaining instructions still match. Missing or ambiguous ships/cargo pause execution with an explanation.
@@ -49,6 +49,7 @@ This milestone covers activation, movement, and cargo, including explicitly conf
 - Keep the mode switch reachable while decision overlays are open, including through shared overlay chrome if necessary.
 - An explicitly started pipeline continues across mode switches. Refresh pauses it, invalidates old bindings, and lets server replay reconstruct the recorded prefix. Revalidate remaining local intent against fresh offers before resuming; never resubmit the recorded prefix.
 - Preserve unsubmitted staging as local intent across refresh where possible, but disable it until revalidated. Report unavailable selections rather than silently substituting another option.
+- Movement editing retains the existing script with an editing flag and revision, including across refresh/recovery; no second durable movement-intent model is introduced. Reopening cancels old pipelines without resetting the camera. Unavailable selections can be removed individually, and cargo without remaining carrier capacity stays visible for reassignment. Planning replay uniquely matches ship/cargo semantics while rebinding vector-index IDs and hold counters; live application uses the regenerated exact trace.
 
 ### Status and attention
 
@@ -61,4 +62,5 @@ This milestone covers activation, movement, and cargo, including explicitly conf
 - Add focused client/workspace tests for attempt freshness, independent state retention, pipeline routing and refresh cancellation, stopped controls, and live attention without automatic switching.
 - Add a real-server browser scenario with A, B, and a spectator: A waits at a live question; B drafts activation/movement/cargo and inspects the hypothetical position; A moves; B refreshes or reports mismatch; undo/redo reconstructs B's retained draft.
 - Verify mode switches preserve staging and workflow progress, including during an in-flight pipeline. Verify retired clicks/acknowledgments cannot affect the replacement attempt.
+- Verify removing an early ship retains later ships and cargo, rebinds changed option indexes, and applies only the revised fleet. Reconnect/reload restores an open editor, and another tab's shorter replacement or edit retirement cannot advance a losing pipeline.
 - Inspect WebSocket traffic as well as the DOM: A and spectators receive none of B's planning offers or answer results, and B receives updates while A's live decider is waiting.

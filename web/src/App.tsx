@@ -226,6 +226,7 @@ const GameViewContainer: React.FC<{
   const canApply =
     !!planning.availability?.can_apply &&
     planning.current &&
+    !planning.envelope?.editing_movement &&
     !planning.busy &&
     session.status === "connected" &&
     session.pendingChoice?.context?.subtype === "action_menu";
@@ -402,7 +403,9 @@ const GameViewContainer: React.FC<{
         </p>
         <p className="draft-status__description">
           {application?.message ||
-            "Preview only. Apply draft executes the recorded choices when your live tactical action is available."}
+            (planning.envelope?.editing_movement
+              ? "Edit the recorded fleet and cargo below, then commit to regenerate the preview."
+              : "Preview only. Apply draft executes the recorded choices when your live tactical action is available.")}
         </p>
         {!!planning.envelope?.progress.recorded_answers && (
           <span className="draft-status__progress">
@@ -412,6 +415,29 @@ const GameViewContainer: React.FC<{
         )}
       </div>
       <div className="draft-status__actions">
+        {planning.envelope?.recorded_decisions?.some(
+          (decision) => decision.context?.subtype === "movement_step",
+        ) &&
+          !application && (
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={
+                !planning.availability?.available ||
+                !planning.current ||
+                planning.busy ||
+                !identity ||
+                !!planning.envelope.editing_movement
+              }
+              onClick={() => {
+                if (!identity) return;
+                setMode("draft");
+                request(session.editPlanningMovement(identity));
+              }}
+            >
+              Edit movement
+            </button>
+          )}
         {hasDraft && (
           <button
             type="button"
@@ -488,6 +514,13 @@ const GameViewContainer: React.FC<{
             draft: true,
             refreshKey,
             chrome: draftChrome,
+            movementEditRevision: planning.envelope?.movement_edit_revision ?? 0,
+            movementEdit: planning.envelope?.editing_movement
+              ? {
+                  revision: planning.envelope.movement_edit_revision ?? 0,
+                  decisions: planning.envelope.recorded_decisions ?? [],
+                }
+              : undefined,
           }}
         >
           <div hidden={mode !== "draft"} data-testid="draft-workspace">

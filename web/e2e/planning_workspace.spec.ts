@@ -368,6 +368,98 @@ async function history(
   }).toPass({ timeout: 5000 });
 }
 
+for (const delivery of ["refresh", "reconnect"] as const) {
+  test(`a shorter cross-tab editor replacement stops stale movement after ${delivery}`, async ({
+    browser,
+    request,
+  }) => {
+    test.setTimeout(60_000);
+    const { gameId, players, pages, wires, a, b } = await actionGame(browser, request);
+    const trace = wires[b];
+    const initial = await gameSnapshot(request, gameId, players[b].session);
+    const { draft } = await beginDraft(pages[b], trace, initial, players[b].id);
+    await draft.getByTestId("commit-moves-btn").click();
+    await expect(draft.getByTestId("draft-status").first()).toContainText(
+      /Movement complete|Unsupported boundary|Uncertainty/,
+    );
+    await draft.getByRole("button", { name: "Edit movement", exact: true }).first().click();
+    await expect(draft.getByTestId("tactical-movement-tray")).toBeVisible();
+    const offer = trace.envelopes().at(-1)!;
+    expect(offer.progress.recorded_answers).toBeGreaterThan(3);
+    const otherTab = await browser.newPage();
+    const otherTrace = await wire(otherTab);
+    await openPlayerGame(otherTab, gameId, players[b].session);
+    await expect.poll(() => otherTrace.envelopes().at(-1)?.identity).toEqual(offer.identity);
+    const choice =
+      typeof offer.update === "object" && "SafeOffer" in offer.update
+        ? offer.update.SafeOffer.choice!
+        : null;
+    const alternative = choice!.options.find(
+      (o) => o.kind === "move" && !String(o.payload?.unit).includes("carrier"),
+    )!;
+    expect(alternative).toBeDefined();
+    // Drop the losing answer, and withhold the winner's publication until the
+    // live checkpoint advances. The losing client sees only the refreshed script.
+    trace.hold(false, true);
+    trace.dropNextAnswer();
+    const before = trace.outgoing.filter((m) => m.type === "submit_planning_choice").length;
+    await draft.getByTestId("commit-moves-btn").click();
+    await expect
+      .poll(() => trace.outgoing.filter((m) => m.type === "submit_planning_choice").length)
+      .toBe(before + 1);
+    otherTrace.send({
+      type: "submit_planning_choice",
+      protocol_version: 3,
+      game_id: gameId,
+      identity: offer.identity,
+      option_id: alternative.id,
+      request_id: "shorter-script-winner",
+    });
+    await expect.poll(() => otherTrace.envelopes().at(-1)?.progress.recorded_answers).toBe(3);
+    await choose(pages[a].getByTestId("live-workspace"), "tactical");
+    await expect
+      .poll(() => otherTrace.envelopes().at(-1)?.identity.checkpoint_id)
+      .toBeGreaterThan(offer.identity.checkpoint_id);
+    if (delivery === "reconnect") {
+      const count = trace.envelopes().length;
+      const subscriptions = trace.outgoing.filter((m) => m.type === "subscribe").length;
+      await trace.disconnect();
+      await expect
+        .poll(() => trace.outgoing.filter((m) => m.type === "subscribe").length)
+        .toBeGreaterThan(subscriptions);
+      await expect
+        .poll(() =>
+          trace
+            .envelopes()
+            .slice(count)
+            .some(
+              (e) =>
+                e.update !== "Preparing" && e.identity.checkpoint_id > offer.identity.checkpoint_id,
+            ),
+        )
+        .toBe(true);
+      const status = trace.incoming.findLast((m) => m.type === "planning_status")!;
+      trace.deliver(status);
+    }
+    const refreshed = trace.envelopes().at(-1)!;
+    expect(refreshed.progress.recorded_answers).toBe(3);
+    expect(refreshed.recorded_request_ids).toContain("shorter-script-winner");
+    trace.deliver({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: gameId,
+      envelope: refreshed,
+    });
+    await expect(draft.getByTestId("movement-error-banner")).toContainText(
+      "Another connection answered",
+    );
+    expect(trace.outgoing.filter((m) => m.type === "submit_planning_choice")).toHaveLength(
+      before + 1,
+    );
+    await otherTab.close();
+  });
+}
+
 test("Apply draft confirms the supported prefix in Live and reconnect never applies it twice", async ({
   browser,
   request,
@@ -535,6 +627,83 @@ test("a manual two-player game exposes tactical drafting after strategy selectio
   await expect(
     draft.locator('[data-testid="choice-option"][data-option-id="tactical"]'),
   ).toBeVisible();
+});
+
+test("reopening a recorded fleet preserves independent ships, cargo, and camera while editing", async ({
+  browser,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const game = await actionGame(browser, request);
+  const { gameId, players, pages, wires, b } = game;
+  const page = pages[b];
+  const initial = await gameSnapshot(request, gameId, players[b].session);
+  const { draft, origin } = await beginDraft(page, wires[b], initial, players[b].id);
+  const independent = draft
+    .locator(
+      `[data-testid^="rally-inc-${origin}-"]:not([data-testid$="carrier"]):not([data-testid*="cargo"])`,
+    )
+    .first();
+  await expect(independent).toBeVisible();
+  const independentId = (await independent.getAttribute("data-testid"))!;
+  await independent.click();
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect(draft.getByTestId("draft-status").first()).toContainText(
+    /Movement complete|Unsupported boundary|Uncertainty/,
+  );
+  const original = wires[b].envelopes().at(-1)!;
+  await draft.getByTitle("Zoom In", { exact: true }).click();
+  const camera = await draft.locator('[data-testid="ti4-board-svg"] > g').getAttribute("transform");
+  await draft.getByRole("button", { name: "Edit movement", exact: true }).first().click();
+  await expect(draft.getByTestId("tactical-movement-tray")).toBeVisible();
+  await expect(draft.getByTestId(independentId.replace("rally-inc-", "rally-count-"))).toHaveText(
+    "1",
+  );
+  await expect(draft.getByTestId("cargo-capacity-gauge-" + origin)).toContainText("1 /");
+  await expect(draft.locator('[data-testid="ti4-board-svg"] > g')).toHaveAttribute(
+    "transform",
+    camera!,
+  );
+  expect(wires[b].envelopes().at(-1)!.recorded_decisions).toEqual(original.recorded_decisions);
+  await draft.getByTestId(independentId.replace("rally-inc-", "rally-dec-")).click();
+  await expect(draft.getByTestId("commit-moves-btn")).toHaveText("Commit Moves (2)");
+  await draft.getByRole("button", { name: /^Live/ }).last().click();
+  await page
+    .getByTestId("live-workspace")
+    .getByRole("button", { name: "Draft", exact: true })
+    .first()
+    .click();
+  await expect(draft.getByTestId(independentId.replace("rally-inc-", "rally-count-"))).toHaveText(
+    "0",
+  );
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect(draft.getByTestId("draft-status").first()).toContainText(
+    /Movement complete|Unsupported boundary|Uncertainty/,
+  );
+  const revised = wires[b].envelopes().at(-1)!;
+  const moves = revised.recorded_decisions!.filter((decision) => decision.kind === "move");
+  expect(moves).toHaveLength(1);
+  expect(String(moves[0].payload.unit)).toContain("carrier");
+  expect(revised.recorded_decisions!.filter((decision) => decision.kind === "load")).toHaveLength(
+    1,
+  );
+  expect(revised.editing_movement).toBe(false);
+  expect((await gameSnapshot(request, gameId, players[b].session)).view.board).toEqual(
+    initial.view.board,
+  );
+  // Reloading an open editor restores its selections from the original server-held script.
+  await draft.getByRole("button", { name: "Edit movement", exact: true }).first().click();
+  await expect(draft.getByTestId("commit-moves-btn")).toHaveText("Commit Moves (2)");
+  await page.reload();
+  await page
+    .getByTestId("live-workspace")
+    .getByRole("button", { name: "Draft", exact: true })
+    .first()
+    .click();
+  await expect(page.getByTestId("draft-workspace").getByTestId("commit-moves-btn")).toHaveText(
+    "Commit Moves (2)",
+  );
+  for (const opened of [...pages, game.spectator]) await opened.close();
 });
 
 test("private tactical draft preserves staging, refreshes after live movement, survives history/reload, and resets", async ({

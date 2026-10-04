@@ -199,6 +199,251 @@ function deliverDraft(socket: WebSocketRoute, envelope: PlanningEnvelope) {
   );
 }
 
+function recordedMove(payload: Record<string, unknown>, option_id = "old-move") {
+  return {
+    player: seat,
+    prompt: "movement",
+    context: { subtype: "movement_step" },
+    option_id,
+    kind: "move",
+    payload,
+  };
+}
+
+test("a shorter editor replacement stops the losing pipeline across a checkpoint refresh", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  envelope.progress.recorded_answers = 6;
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  const submissions: ClientMessage[] = [];
+  socket.onMessage((raw) => {
+    const message = JSON.parse(String(raw)) as ClientMessage;
+    if (message.type !== "submit_planning_choice") return;
+    submissions.push(message);
+    if (submissions.length === 1)
+      deliverDraft(socket, {
+        ...envelope,
+        publication_id: 2,
+        identity: { checkpoint_id: 8, generation_id: 2, plan_revision: 7 },
+        progress: { ...envelope.progress, recorded_answers: 3 },
+        recorded_request_ids: ["other-tab-winner"],
+      });
+  });
+  await draft.getByTestId("rally-inc-24-carrier").click();
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect(draft.getByTestId("movement-error-banner")).toContainText(
+    "Another connection answered",
+  );
+  expect(submissions).toHaveLength(1);
+});
+
+test("reopened Gravity Drive then Ionian movement executes sequential offers", async ({ page }) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  const position = structuredClone(movementSnapshot.view);
+  position.board.systems["24"].units = [false, false].map((damaged) => ({
+    owner: seat,
+    unit_type: "carrier",
+    damaged,
+  }));
+  position.board.systems["42"].units = [];
+  position.players[0].fleet_tokens = 4;
+  position.players[0].technologies = ["gravity_drive", "ionian"];
+  const gravity = {
+    origin: "24",
+    unit: "carrier",
+    damaged: false,
+    capacity: 4,
+    gravity_drive: true,
+    ionian: false,
+  };
+  const ionian = { ...gravity, gravity_drive: false, ionian: true };
+  const choice = {
+    ...movementSnapshot.pending_choice!.choice,
+    options: [
+      { id: "gravity", kind: "move", label: "Carrier", payload: gravity },
+      { id: "done_moving", kind: "decline", label: "Finish" },
+    ],
+  };
+  Object.assign(envelope, {
+    editing_movement: true,
+    movement_edit_revision: 1,
+    recorded_decisions: [recordedMove(gravity), recordedMove(ionian)],
+    update: { SafeOffer: { position, choice, events: [] } },
+  });
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  const submissions: string[] = [];
+  socket.onMessage((raw) => {
+    const message = JSON.parse(String(raw)) as ClientMessage;
+    if (message.type !== "submit_planning_choice") return;
+    submissions.push(message.option_id);
+    if (submissions.length > 2) return;
+    deliverDraft(socket, {
+      ...envelope,
+      publication_id: submissions.length + 1,
+      identity: { ...envelope.identity, plan_revision: 3 + submissions.length },
+      recorded_request_ids: [message.request_id!],
+      editing_movement: false,
+      update: {
+        SafeOffer: {
+          position,
+          events: [],
+          choice: {
+            ...choice,
+            options:
+              submissions.length === 1
+                ? [
+                    { id: "ionian", kind: "move", label: "Carrier", payload: ionian },
+                    choice.options[1],
+                  ]
+                : [choice.options[1]],
+          },
+        },
+      },
+    });
+  });
+  await expect(draft.getByTestId("commit-moves-btn")).toBeEnabled();
+  await draft.getByTestId("rally-dec-24-carrier-gravity-drive").click();
+  await expect(draft.getByTestId("commit-moves-btn")).toBeDisabled();
+  await draft.getByTestId("rally-inc-24-carrier-gravity-drive").click();
+  await expect(draft.getByTestId("commit-moves-btn")).toBeEnabled();
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect.poll(() => submissions).toEqual(["gravity", "ionian", "done_moving"]);
+});
+
+test("reopened en-route planet cargo retains its pickup system and can be recommitted", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  const position = structuredClone(movementSnapshot.view);
+  position.board.systems["24"].units = [{ owner: seat, unit_type: "carrier", damaged: false }];
+  position.board.systems["42"].units = [];
+  position.board.systems["25"] = {
+    system_id: "25",
+    command_tokens: [],
+    planets: {},
+    units: [
+      {
+        owner: seat,
+        unit_type: "infantry",
+        planet: "route-planet",
+        damaged: false,
+        galvanized: false,
+      },
+    ],
+  };
+  Object.assign(envelope, {
+    editing_movement: true,
+    movement_edit_revision: 1,
+    recorded_decisions: [
+      recordedMove(movementSnapshot.pending_choice!.choice.options[0].payload!),
+      {
+        player: seat,
+        prompt: "load",
+        context: { subtype: "load_cargo" },
+        option_id: "load|1",
+        kind: "load",
+        payload: {
+          system: "24",
+          pickup_system: "25",
+          unit: "infantry",
+          source: "route-planet",
+          damaged: false,
+          galvanized: false,
+        },
+      },
+    ],
+    update: {
+      SafeOffer: { position, choice: movementSnapshot.pending_choice!.choice, events: [] },
+    },
+  });
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  await expect(draft.getByTestId("rally-count-cargo-25-infantry-route-planet")).toHaveText("1");
+  await expect(draft.getByTestId("commit-moves-btn")).toBeEnabled();
+  const submissions: string[] = [];
+  socket.onMessage((raw) => {
+    const message = JSON.parse(String(raw)) as ClientMessage;
+    if (message.type !== "submit_planning_choice") return;
+    submissions.push(message.option_id);
+    if (submissions.length !== 1) return;
+    deliverDraft(socket, {
+      ...envelope,
+      publication_id: 2,
+      identity: { ...envelope.identity, plan_revision: 3 },
+      recorded_request_ids: [message.request_id!],
+      editing_movement: false,
+      update: {
+        SafeOffer: {
+          position,
+          events: [],
+          choice: {
+            player: seat,
+            prompt: "load",
+            context: { subtype: "load_cargo" },
+            options: [
+              {
+                id: "load-route",
+                kind: "load",
+                label: "Load infantry",
+                payload: {
+                  system: "24",
+                  pickup_system: "25",
+                  unit: "infantry",
+                  source: "route-planet",
+                  damaged: false,
+                  galvanized: false,
+                },
+              },
+              { id: "done_loading", kind: "decline", label: "Done" },
+            ],
+          },
+        },
+      },
+    });
+  });
+  await draft.getByTestId("commit-moves-btn").click();
+  await expect.poll(() => submissions).toEqual(["move|24|0", "load-route"]);
+});
+
+test("carrier-first staging cannot double-book one fighter as cargo and independent movement", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  const position = structuredClone(movementSnapshot.view);
+  position.board.systems["24"].units = ["carrier", "fighter"].map((unit_type) => ({
+    owner: seat,
+    unit_type,
+    damaged: false,
+  }));
+  position.board.systems["42"].units = [];
+  const choice = structuredClone(movementSnapshot.pending_choice!.choice);
+  choice.options.splice(1, 0, {
+    id: "move-fighter",
+    kind: "move",
+    label: "Fighter",
+    payload: { origin: "24", unit: "fighter", damaged: false, capacity: 0 },
+  });
+  envelope.update = { SafeOffer: { position, choice, events: [] } };
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  const submissions: ClientMessage[] = [];
+  socket.onMessage((raw) => submissions.push(JSON.parse(String(raw))));
+  await draft.getByTestId("rally-inc-24-carrier").click();
+  await draft.getByTestId("rally-inc-24-fighter").click();
+  await draft.getByTestId("rally-inc-cargo-24-fighter-space").click();
+  await expect(draft.getByTestId("commit-moves-btn")).toBeDisabled();
+  expect(submissions.filter((m) => m.type === "submit_planning_choice")).toHaveLength(0);
+  await draft.getByTestId("rally-dec-24-fighter").click();
+  await expect(draft.getByTestId("commit-moves-btn")).toBeEnabled();
+});
+
 async function showDraft(page: Page) {
   await page
     .getByTestId("live-workspace")

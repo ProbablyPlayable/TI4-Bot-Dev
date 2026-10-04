@@ -206,6 +206,7 @@ async fn handle_socket(
         match client_msg {
             message @ (ClientMessage::StartPlanning { .. }
             | ClientMessage::ResetPlanning { .. }
+            | ClientMessage::EditPlanningMovement { .. }
             | ClientMessage::ApplyPlanning { .. }
             | ClientMessage::SubmitPlanningChoice { .. }) => {
                 let request_id = match &message {
@@ -215,6 +216,9 @@ async fn handle_socket(
                 let (message_game_id, answer) = match &message {
                     ClientMessage::StartPlanning { game_id, .. } => (game_id, None),
                     ClientMessage::ResetPlanning {
+                        game_id, identity, ..
+                    }
+                    | ClientMessage::EditPlanningMovement {
                         game_id, identity, ..
                     } => (game_id, Some((*identity, ""))),
                     ClientMessage::ApplyPlanning {
@@ -249,6 +253,12 @@ async fn handle_socket(
                                 *identity,
                                 nonce,
                                 *expected_version,
+                            )
+                            .err()
+                    } else if let ClientMessage::EditPlanningMovement { identity, .. } = &message {
+                        registry
+                            .edit_player_planning_movement(
+                                &game_id, token, player, &session, *identity,
                             )
                             .err()
                     } else if matches!(message, ClientMessage::ResetPlanning { .. }) {

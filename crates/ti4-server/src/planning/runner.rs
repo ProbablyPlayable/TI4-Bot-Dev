@@ -37,6 +37,12 @@ pub struct PlayerPlan {
     /// Explicit script replacement, preserved across checkpoint refresh and recovery.
     #[serde(default)]
     pub reset_revision: u64,
+    /// The original movement answers remain the editable draft until a fresh
+    /// movement answer replaces them. Refresh/recovery reopens the same editor.
+    #[serde(default)]
+    pub editing_movement: bool,
+    #[serde(default)]
+    pub movement_edit_revision: u64,
     pub base_checkpoint_id: u64,
     pub recorded_decisions: Vec<RecordedDecision>,
     /// Confirmation receipts survive refresh and session restoration with the script.
@@ -50,10 +56,21 @@ impl PlayerPlan {
         Self {
             revision: 0,
             reset_revision: 0,
+            editing_movement: false,
+            movement_edit_revision: 0,
             base_checkpoint_id,
             recorded_decisions: Vec::new(),
             recorded_request_ids: Vec::new(),
         }
+    }
+
+    pub(crate) fn movement_start(&self) -> Option<usize> {
+        self.recorded_decisions.iter().position(|decision| {
+            decision
+                .context
+                .as_ref()
+                .is_some_and(|context| context.subtype == "movement_step")
+        })
     }
 }
 
@@ -122,6 +139,10 @@ pub struct PlanningEnvelope {
     pub identity: AttemptIdentity,
     #[serde(default)]
     pub reset_revision: u64,
+    #[serde(default)]
+    pub editing_movement: bool,
+    #[serde(default)]
+    pub movement_edit_revision: u64,
     /// Replay offers are informative; only a waiting offer accepts an answer.
     pub awaiting_answer: bool,
     pub assumptions: Vec<String>,
@@ -182,6 +203,8 @@ impl Shared {
             publication_id: self.publication_id,
             identity: self.identity(),
             reset_revision: self.plan.reset_revision,
+            editing_movement: self.plan.editing_movement,
+            movement_edit_revision: self.plan.movement_edit_revision,
             awaiting_answer: self.pending.is_some(),
             assumptions: vec![ASSUMPTION.to_owned()],
             progress: self.progress.clone(),
@@ -376,6 +399,7 @@ impl PlanningRunner {
         let shared = self.shared.lock().expect("planning lock");
         let latest = shared.latest.as_ref()?;
         if shared.retired
+            || shared.plan.editing_movement
             || shared.identity() != identity
             || latest.identity != identity
             || latest.progress.remaining != 0
@@ -410,6 +434,32 @@ impl PlanningRunner {
         self.rebuild(checkpoint, checkpoint_id, Some(decisions));
     }
 
+    pub(crate) fn reopen_movement(
+        &mut self,
+        checkpoint: &Game<'static>,
+        checkpoint_id: u64,
+        identity: AttemptIdentity,
+    ) -> Result<(), SubmissionError> {
+        {
+            let mut shared = self.shared.lock().expect("planning lock");
+            if shared.retired || shared.identity() != identity {
+                return Err(SubmissionError::Retired);
+            }
+            // Do not interrupt an answer already reserved by another connection.
+            if shared.plan.editing_movement || (!shared.terminal && shared.pending.is_none()) {
+                return Err(SubmissionError::NotWaiting);
+            }
+            if shared.plan.movement_start().is_none() {
+                return Err(SubmissionError::NotWaiting);
+            }
+            shared.retired = true;
+            shared.plan.editing_movement = true;
+            shared.plan.movement_edit_revision += 1;
+        }
+        self.rebuild(checkpoint, checkpoint_id, None);
+        Ok(())
+    }
+
     fn rebuild(
         &mut self,
         checkpoint: &Game<'static>,
@@ -423,6 +473,7 @@ impl PlanningRunner {
             let mut shared = self.shared.lock().expect("planning lock");
             if let Some(decisions) = decisions {
                 shared.plan.reset_revision += 1;
+                shared.plan.editing_movement = false;
                 shared.plan.recorded_decisions = decisions;
                 shared.plan.recorded_request_ids.clear();
             }
@@ -628,7 +679,7 @@ impl PlanningDecider {
                 .last_safe
                 .as_ref()
                 .and_then(|offer| offer.choice.as_ref())
-                .is_some_and(|choice| choice.option(&expected.option_id).is_some())
+                .is_some_and(|choice| expected.replay_option(choice).is_some())
             {
                 shared.stop(StopReason::ReplayMismatch);
                 return Err(refused(choice));
@@ -667,7 +718,17 @@ impl PlanningDecider {
             let progress = self.replay_status.lock().expect("replay lock");
             shared.progress.replayed = progress.consumed();
             shared.progress.remaining = progress.remaining().len();
+            shared.plan.recorded_decisions[progress.consumed() - 1] =
+                RecordedDecision::from_answer(choice, &answer);
         } else {
+            if shared.plan.editing_movement {
+                // Replace only when the new answer has passed the publication gate.
+                // Opening/reloading the editor never loses the original movement.
+                let start = shared.plan.movement_start().expect("editable movement");
+                shared.plan.recorded_decisions.truncate(start);
+                shared.plan.recorded_request_ids.clear();
+                shared.plan.editing_movement = false;
+            }
             shared.plan.recorded_decisions.push(
                 self.recording
                     .lock()
@@ -788,14 +849,16 @@ fn spawn(
         });
         *game.timing.table_mut() =
             Table::with_default(Box::new(UnobservedDecider { gate: gate.clone() }));
-        let script = shared
-            .lock()
-            .expect("planning lock")
-            .plan
-            .recorded_decisions
-            .clone();
+        let script = {
+            let shared = shared.lock().expect("planning lock");
+            let mut script = shared.plan.recorded_decisions.clone();
+            if shared.plan.editing_movement {
+                script.truncate(shared.plan.movement_start().expect("editable movement"));
+            }
+            script
+        };
         shared.lock().expect("planning lock").progress.remaining = script.len();
-        let (replay, replay_status) = ReplayDecider::new(script);
+        let (replay, replay_status) = ReplayDecider::for_planning(script);
         let (recorder, recording) = RecordingDecider::new(Box::new(InboxDecider {
             inbox,
             shared: shared.clone(),
@@ -955,6 +1018,7 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
                     "loaded_fighters",
                     "ground_available",
                     "system",
+                    "pickup_system",
                 ],
                 _ => return Err(StopReason::UnsupportedOffer),
             };

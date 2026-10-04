@@ -211,6 +211,9 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
         !isNonNegativeInteger(e.publication_id) ||
         !isAttempt(e.identity) ||
         (e.reset_revision !== undefined && !isNonNegativeInteger(e.reset_revision)) ||
+        (e.editing_movement !== undefined && typeof e.editing_movement !== "boolean") ||
+        (e.movement_edit_revision !== undefined &&
+          !isNonNegativeInteger(e.movement_edit_revision)) ||
         typeof e.awaiting_answer !== "boolean" ||
         !Array.isArray(e.recorded_request_ids) ||
         !e.recorded_request_ids.every((id) => typeof id === "string" && id.length > 0) ||

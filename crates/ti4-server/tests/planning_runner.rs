@@ -84,6 +84,166 @@ fn runner(game: &Game<'static>) -> PlanningRunner {
     PlanningRunner::start(game, PlayerId::new("b"), PlayerPlan::new(10), 32)
 }
 
+#[test]
+fn editing_an_early_move_rebinds_later_ships_and_cargo_to_fresh_indexes() {
+    let (mut game, target, origin) = checkpoint(false, true);
+    put(&mut game.state, &origin, "cruiser", &PlayerId::new("b"), 1);
+    game.state.system_mut(&origin).units.rotate_right(1);
+    // Cruiser index 0 precedes carrier index 1. After moving the cruiser,
+    // the recorded carrier's ID is 0; deleting that early move must rebind it to 1.
+    let mut runner = runner(&game);
+    let transcript = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move|{origin}|0"),
+            format!("move|{origin}|0"),
+            "load|0".into(),
+            "done_moving".into(),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    let mut revised = runner.plan().recorded_decisions;
+    assert_eq!(revised.remove(2).payload["unit"], "cruiser");
+    assert_eq!(revised[2].option_id, format!("move|{origin}|0"));
+    runner.edit(&game, 11, revised);
+    let updated = collect(&runner, &[]);
+    assert_eq!(reason(&updated), StopReason::MovementComplete);
+    let fresh = runner.plan().recorded_decisions;
+    assert_eq!(fresh[2].option_id, format!("move|{origin}|1"));
+    assert_eq!(fresh[2].payload["unit"], "carrier");
+    assert_eq!(fresh[3].payload["unit"], "fighter");
+    let PlanningUpdate::Stopped {
+        last_safe_publication: Some(publication),
+        ..
+    } = &updated.last().unwrap().update
+    else {
+        panic!("stopped publication")
+    };
+    let units = &publication.position.board.systems[&target].units;
+    assert_eq!(units.len(), 2);
+    assert!(
+        units
+            .iter()
+            .all(|unit| unit.unit_type.as_str() != "cruiser")
+    );
+    assert_eq!(game.state.system_state(&origin).units.len(), 3);
+}
+
+#[test]
+fn editing_one_load_keeps_later_cargo_and_rebinds_hold_counters() {
+    let (mut game, target, origin) = checkpoint(false, true);
+    put(&mut game.state, &origin, "fighter", &PlayerId::new("b"), 1);
+    let mut runner = runner(&game);
+    collect(
+        &runner,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move|{origin}|0"),
+            "load|0".into(),
+            "load|1".into(),
+            "done_moving".into(),
+        ],
+    );
+    let mut revised = runner.plan().recorded_decisions;
+    revised.remove(3);
+    // With one candidate left behind the new hold needs an explicit finish.
+    // Record that instruction from the normal engine instead of inventing its payload.
+    revised.pop();
+    runner.edit(&game, 11, revised);
+    let updated = collect(&runner, &["done_loading".into(), "done_moving".into()]);
+    // The fighter left at origin now needs a live capacity decision, outside
+    // the preview slice. The revised movement prefix still fully reconstructs.
+    assert_eq!(reason(&updated), StopReason::UnsupportedOffer);
+    assert_eq!(updated.last().unwrap().progress.remaining, 0);
+    let fresh = runner.plan().recorded_decisions;
+    assert_eq!(fresh[3].option_id, "load|0");
+    assert_eq!(fresh[3].payload["loaded_fighters"], 0);
+    assert_eq!(fresh[3].payload["capacity_remaining"], 4);
+}
+
+#[test]
+fn cargo_replay_keeps_the_pickup_system_when_identical_origin_cargo_appears() {
+    let hub = ti4_engine::fixtures::plain_hub();
+    let origin = SystemId::new(&hub.outer[0]);
+    let target = SystemId::new(hub.across(&hub.outer[0]));
+    let pickup = SystemId::new(&hub.centre);
+    let player = PlayerId::new("b");
+    let mut state = game(&["a", "b"]);
+    state.phase = Phase::Action;
+    state.active = Some(PlayerId::new("a"));
+    state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .insert(TechnologyId::new("gd"));
+    put(&mut state, &origin, "carrier", &player, 1);
+    put(&mut state, &pickup, "fighter", &player, 1);
+    let mut game = Game::new(state, ContentStore::embedded()).with_galaxy(hub.galaxy);
+    let mut runner = runner(&game);
+    collect(
+        &runner,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move_gd|{origin}|0"),
+            "load|0".into(),
+            "done_moving".into(),
+        ],
+    );
+    let mut revised = runner.plan().recorded_decisions;
+    // A new indistinguishable fighter at origin changes the candidate indexes.
+    // Replay must still load the fighter from the intermediate system, not this one.
+    put(&mut game.state, &origin, "fighter", &PlayerId::new("b"), 1);
+    revised.pop();
+    runner.edit(&game, 11, revised);
+    let updated = collect(&runner, &["done_loading".into(), "done_moving".into()]);
+    assert_eq!(updated.last().unwrap().progress.remaining, 0);
+    let fresh = runner.plan().recorded_decisions;
+    assert_eq!(fresh[3].option_id, "load|1");
+    assert_eq!(fresh[3].payload["pickup_system"], pickup.to_string());
+}
+
+#[test]
+fn recorded_gravity_drive_then_ionian_moves_replay_in_sequence() {
+    let hub = hub_with_outer(&empty_system());
+    let origin = SystemId::new(hub.across(&hub.outer[0]));
+    let target = SystemId::new(&hub.outer[0]);
+    let player = PlayerId::new("b");
+    let mut state = game(&["a", "b"]);
+    state.phase = Phase::Action;
+    state.active = Some(PlayerId::new("a"));
+    state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .insert(TechnologyId::new("gd"));
+    state
+        .system_mut(&SystemId::new(&hub.centre))
+        .set_control(PlanetId::new("tempesta"), player.clone());
+    put(&mut state, &origin, "carrier", &player, 2);
+    let game = Game::new(state, ContentStore::embedded()).with_galaxy(hub.galaxy);
+    let mut runner = runner(&game);
+    let transcript = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move_gd|{origin}|0"),
+            format!("move_ion|{origin}|0"),
+            "done_moving".into(),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    let recorded = runner.plan().recorded_decisions;
+    assert_eq!(recorded[2].payload["gravity_drive"], true);
+    assert_eq!(recorded[3].payload["ionian"], true);
+    runner.edit(&game, 11, recorded);
+    assert_eq!(reason(&collect(&runner, &[])), StopReason::MovementComplete);
+}
+
 fn next(runner: &PlanningRunner) -> PlanningEnvelope {
     runner
         .recv_timeout(DEADLINE)
@@ -111,7 +271,11 @@ fn collect(runner: &PlanningRunner, answers: &[String]) -> Vec<PlanningEnvelope>
         );
         transcript.push(envelope);
         if terminal {
-            assert!(answers.next().is_none());
+            assert!(
+                answers.next().is_none(),
+                "unexpected terminal: {:?}",
+                transcript.last()
+            );
             return transcript;
         }
     }
@@ -586,6 +750,8 @@ fn replay_does_not_supply_an_answer_to_an_unaudited_nested_offer() {
     let plan = PlayerPlan {
         revision: 1,
         reset_revision: 0,
+        editing_movement: false,
+        movement_edit_revision: 0,
         base_checkpoint_id: 10,
         recorded_decisions: retained.clone(),
         recorded_request_ids: vec![],
@@ -622,6 +788,8 @@ fn replay_stops_at_a_rift_before_consuming_a_matching_later_answer() {
         PlayerPlan {
             revision: 1,
             reset_revision: 0,
+            editing_movement: false,
+            movement_edit_revision: 0,
             base_checkpoint_id: 10,
             recorded_decisions: retained.clone(),
             recorded_request_ids: vec![],

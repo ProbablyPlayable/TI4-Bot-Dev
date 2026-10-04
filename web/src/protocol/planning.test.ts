@@ -187,6 +187,8 @@ describe("planning publications", () => {
       { recorded_request_ids: [""] },
       { reset_revision: -1 },
       { reset_revision: "1" },
+      { editing_movement: "yes" },
+      { movement_edit_revision: -1 },
       { recorded_decisions: [{ player: "b", option_id: "move", payload: "invalid" }] },
       { update: { Failed: "private engine error" } },
       { update: { SafeOffer: { ...publication, choice: { options: [] } } } },

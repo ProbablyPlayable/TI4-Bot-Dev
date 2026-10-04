@@ -27,6 +27,25 @@ fn client_subscribe_round_trips() {
 }
 
 #[test]
+fn movement_edit_round_trips_with_only_a_server_script_identity() {
+    let message = ClientMessage::EditPlanningMovement {
+        protocol_version: PROTOCOL_VERSION,
+        game_id: "game_abc".into(),
+        identity: ti4_server::planning::runner::AttemptIdentity {
+            checkpoint_id: 10,
+            plan_revision: 4,
+            generation_id: 2,
+        },
+    };
+    let json = serde_json::to_string(&message).unwrap();
+    assert_eq!(parse_client_message(&json).unwrap(), message);
+    assert!(format!("{message:?}").contains("EditPlanningMovement"));
+    let mut injected = serde_json::to_value(message).unwrap();
+    injected["recorded_decisions"] = serde_json::json!([]);
+    assert!(parse_client_message(&injected.to_string()).is_err());
+}
+
+#[test]
 fn planning_updates_and_results_round_trip_without_a_live_game_version() {
     use ti4_server::planning::runner::{
         AttemptIdentity, FailureCategory, PlanningEnvelope, PlanningUpdate, Progress,
@@ -45,6 +64,8 @@ fn planning_updates_and_results_round_trip_without_a_live_game_version() {
                 publication_id: 1,
                 identity,
                 reset_revision: 1,
+                editing_movement: true,
+                movement_edit_revision: 1,
                 awaiting_answer: false,
                 recorded_request_ids: vec!["answer-request".into()],
                 recorded_decisions: vec![],

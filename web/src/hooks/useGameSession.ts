@@ -22,6 +22,7 @@ export interface UseGameSessionReturn {
   planning: import("../protocol/planning.ts").PlanningState;
   startPlanning: () => Promise<void>;
   resetPlanning: (identity: import("../protocol/types.ts").AttemptIdentity) => Promise<void>;
+  editPlanningMovement: (identity: import("../protocol/types.ts").AttemptIdentity) => Promise<void>;
   applyPlanning: (
     identity: import("../protocol/types.ts").AttemptIdentity,
     nonce: string,
@@ -75,6 +76,7 @@ export function useGameSession({
     ...state,
     startPlanning: () => client.startPlanning(),
     resetPlanning: (identity) => client.resetPlanning(identity),
+    editPlanningMovement: (identity) => client.editPlanningMovement(identity),
     applyPlanning: (identity, nonce, expectedVersion) =>
       client.applyPlanning(identity, nonce, expectedVersion),
     submitPlanningChoice: (identity, optionId) => client.submitPlanningChoice(identity, optionId),

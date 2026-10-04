@@ -149,6 +149,29 @@ impl SessionPlanning {
             .map(|app| app.progress.clone())
     }
 
+    pub fn edit_movement(
+        &mut self,
+        player: &PlayerId,
+        identity: AttemptIdentity,
+    ) -> Result<(), PlanningError> {
+        if self.closed || !self.available {
+            return Err(PlanningError::Unavailable);
+        }
+        if self.has_application(player) {
+            return Err(PlanningError::Submission(SubmissionError::NotWaiting));
+        }
+        if !self.runners.contains_key(player) {
+            return Err(PlanningError::NotStarted);
+        }
+        let game = self.checkpoint.take().ok_or(PlanningError::Unavailable)?();
+        self.checkpoint = Some(Box::new(game.fork_for_worker()));
+        self.runners
+            .get_mut(player)
+            .expect("runner")
+            .reopen_movement(&game, self.checkpoint_id, identity)
+            .map_err(PlanningError::Submission)
+    }
+
     pub fn is_applying(&self, player: &PlayerId) -> bool {
         self.applications.get(player).is_some_and(|app| {
             matches!(

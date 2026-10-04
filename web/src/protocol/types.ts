@@ -476,6 +476,8 @@ export interface PlanningEnvelope {
   identity: AttemptIdentity;
   /** Changes only when the retained script is explicitly replaced, including across reconnects. */
   reset_revision?: number;
+  editing_movement?: boolean;
+  movement_edit_revision?: number;
   awaiting_answer: boolean;
   recorded_request_ids: string[];
   recorded_decisions?: RecordedDecisionDto[];
@@ -559,6 +561,12 @@ export type ServerMessage =
 export type ClientMessage =
   | { type: "start_planning"; protocol_version: number; game_id: string }
   | { type: "reset_planning"; protocol_version: number; game_id: string; identity: AttemptIdentity }
+  | {
+      type: "edit_planning_movement";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+    }
   | {
       type: "apply_planning";
       protocol_version: number;

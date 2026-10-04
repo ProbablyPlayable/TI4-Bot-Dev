@@ -1866,6 +1866,7 @@ impl GameRegistry {
             answer.map(|(identity, option)| (identity, option, request_id)),
             None,
             None,
+            None,
         )
     }
 
@@ -1885,6 +1886,27 @@ impl GameRegistry {
             None,
             Some(identity),
             None,
+            None,
+        )
+    }
+
+    pub fn edit_player_planning_movement(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            None,
+            None,
+            Some(identity),
         )
     }
 
@@ -1906,6 +1928,7 @@ impl GameRegistry {
             None,
             None,
             Some((identity, nonce, expected_version)),
+            None,
         )
     }
 
@@ -1918,6 +1941,7 @@ impl GameRegistry {
         answer: Option<(crate::planning::runner::AttemptIdentity, &str, Option<&str>)>,
         reset: Option<crate::planning::runner::AttemptIdentity>,
         apply: Option<(crate::planning::runner::AttemptIdentity, &str, u64)>,
+        edit: Option<crate::planning::runner::AttemptIdentity>,
     ) -> Result<(), crate::protocol::server::PlanningRejection> {
         use super::PlanningError;
         use crate::planning::runner::SubmissionError;
@@ -1938,12 +1962,13 @@ impl GameRegistry {
         {
             return Err(Rejection::Unavailable);
         }
-        let result = match (answer, reset, apply) {
-            (_, _, Some((identity, nonce, version))) => {
+        let result = match (answer, reset, apply, edit) {
+            (_, _, _, Some(identity)) => session.edit_planning_movement(player, identity),
+            (_, _, Some((identity, nonce, version)), _) => {
                 session.apply_planning(player, identity, nonce, version)
             }
-            (_, Some(identity), _) => session.reset_planning(player, identity),
-            (Some((identity, option, request_id)), _, _) => {
+            (_, Some(identity), _, _) => session.reset_planning(player, identity),
+            (Some((identity, option, request_id)), _, _, _) => {
                 session.submit_planning_choice_with_request_id(player, identity, option, request_id)
             }
             _ => session.start_planning(player),

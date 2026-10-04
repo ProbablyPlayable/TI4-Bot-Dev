@@ -6,6 +6,11 @@ import { UnitIcon, getUnitDisplayName, getUnitBaseType } from "./UnitIcon.tsx";
 import type { MovementStep } from "../protocol/client.ts";
 import { PlanningRefreshError } from "../protocol/planning.ts";
 import { useWorkspace } from "./WorkspaceContext.tsx";
+import {
+  movementShipKey,
+  movementCargoKey,
+  recordedMovementStaging,
+} from "../protocol/movementDraft.ts";
 
 export interface TacticalMovementOverlayProps {
   choice: PendingChoiceDto | null;
@@ -28,6 +33,8 @@ interface OriginShipGroup {
   originSystemId: string;
   unitType: string;
   damaged: boolean;
+  gravityDrive: boolean;
+  ionian: boolean;
   totalAvailable: number;
   capacityPerUnit: number;
   isFighter: boolean;
@@ -37,6 +44,7 @@ interface OriginShipGroup {
 
 interface OriginCargoGroup {
   originSystemId: string;
+  carrierOrigin?: string;
   unitType: string;
   source: string | null;
   damaged: boolean;
@@ -48,9 +56,17 @@ export interface ExecutionPlan {
   destination?: string | null;
   active: boolean;
   actor: string | null;
-  remainingShips: { origin: string; unitType: string; capacity: number; damaged: boolean }[];
+  remainingShips: {
+    origin: string;
+    unitType: string;
+    capacity: number;
+    damaged: boolean;
+    gravityDrive?: boolean;
+    ionian?: boolean;
+  }[];
   remainingCargo: {
     origin: string;
+    pickupSystem?: string;
     unitType: string;
     source: string | null;
     damaged: boolean;
@@ -96,6 +112,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
   const stagingBinding = useRef({ nonce: choice?.nonce, refresh: workspace.refreshKey });
   // Map of key -> count to move
   const [stagedMoves, setStagedMoves] = useState<Record<string, number>>({});
+  const restoredEdit = useRef<number | null>(null);
   const [isDirectSubmitting, setIsDirectSubmitting] = useState(false);
   const [isExecuting, setIsExecuting] = useState(() => executionPlan?.current.active ?? false);
   const [executionStep, setExecutionStep] = useState(0);
@@ -126,14 +143,48 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
 
     const groupMap = new Map<string, OriginShipGroup>();
 
-    for (const opt of choice.options) {
+    const options = [...choice.options];
+    // A later Ionian move can be hidden by the engine's cheaper Gravity Drive
+    // offer until the earlier recorded move consumes that boost. Retain only
+    // that known dependency; an absent ordinary move remains unavailable.
+    let earlierGravity = false;
+    for (const decision of workspace.movementEdit?.decisions ?? []) {
+      const p = decision.payload;
+      if (decision.kind !== "move" || decision.context?.subtype !== "movement_step") continue;
+      if (earlierGravity && p.ionian === true && p.gravity_drive !== true) {
+        const equivalent = choice.options.find(
+          (option) =>
+            option.kind === "move" &&
+            option.payload?.origin === p.origin &&
+            option.payload?.unit === p.unit &&
+            Boolean(option.payload?.damaged) === (p.damaged === true) &&
+            option.payload?.gravity_drive === true &&
+            option.payload?.ionian !== true,
+        );
+        if (equivalent)
+          options.push({
+            ...equivalent,
+            payload: { ...equivalent.payload, gravity_drive: false, ionian: true },
+          });
+      }
+      earlierGravity ||=
+        p.gravity_drive === true &&
+        typeof p.origin === "string" &&
+        typeof p.unit === "string" &&
+        (stagedMoves[
+          movementShipKey(p.origin, p.unit, p.damaged === true, true, p.ionian === true)
+        ] ?? 0) > 0;
+    }
+    for (const opt of options) {
       if (opt.id === "done_moving" || opt.kind === "decline") continue;
 
       const p = getMovementPayload(opt);
       const origin = p.origin ?? "unknown";
       const unit = p.unit ?? opt.label.toLowerCase();
       const damaged = Boolean(p.damaged);
-      const key = `${origin}:${unit}${damaged ? ":damaged" : ""}`;
+      const gravityDrive = workspace.draft && opt.payload?.gravity_drive === true;
+      const ionian = workspace.draft && opt.payload?.ionian === true;
+      const key = movementShipKey(origin, unit, damaged, gravityDrive, ionian);
 
       const baseType = getUnitBaseType(unit);
       const isFighter = baseType === "fighter";
@@ -152,9 +203,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
             getUnitBaseType(u.unit_type) === baseType
           );
         });
-        if (matchingUnits.length > 0) {
-          availableCount = matchingUnits.length;
-        }
+        availableCount = matchingUnits.length;
       }
 
       const existing = groupMap.get(key);
@@ -168,6 +217,8 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           originSystemId: origin,
           unitType: unit,
           damaged,
+          gravityDrive,
+          ionian,
           totalAvailable: availableCount,
           capacityPerUnit,
           isFighter,
@@ -178,7 +229,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
     }
 
     return Array.from(groupMap.values());
-  }, [choice, board, isCargoStep]);
+  }, [choice, board, isCargoStep, workspace.draft, workspace.movementEdit, stagedMoves]);
 
   // Discover cargo (ground forces + fighters) in origin systems where ships can move from
   const originCargoGroups = useMemo(() => {
@@ -193,6 +244,19 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
 
     const cargoMap = new Map<string, OriginCargoGroup>();
 
+    const carriersByPickup = new Map<string, string>();
+    for (const decision of workspace.movementEdit?.decisions ?? []) {
+      const p = decision.payload;
+      if (
+        decision.kind === "load" &&
+        typeof p.pickup_system === "string" &&
+        typeof p.system === "string"
+      ) {
+        originsWithMovable.add(p.pickup_system);
+        carriersByPickup.set(p.pickup_system, p.system);
+      }
+    }
+
     for (const origin of originsWithMovable) {
       const units = board.systems[origin]?.units ?? [];
       for (const u of units) {
@@ -205,7 +269,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
 
         const source = u.planet ?? null;
         const damaged = Boolean(u.damaged);
-        const key = `${origin}:${u.unit_type}:${source ?? "space"}${damaged ? ":damaged" : ""}${u.galvanized ? ":galvanized" : ""}`;
+        const key = movementCargoKey(origin, u.unit_type, source, damaged, u.galvanized);
 
         const existing = cargoMap.get(key);
         if (existing) {
@@ -213,6 +277,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         } else {
           cargoMap.set(key, {
             originSystemId: origin,
+            carrierOrigin: carriersByPickup.get(origin),
             unitType: u.unit_type,
             source,
             damaged,
@@ -224,11 +289,22 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
     }
 
     return Array.from(cargoMap.values());
-  }, [choice, board, shipGroups, isCargoStep]);
+  }, [choice, board, shipGroups, isCargoStep, workspace.movementEdit]);
 
   // Reset staging on choice nonce change only when NOT actively executing
   useEffect(() => {
     if (!workspace.actionable) return;
+    if (
+      workspace.movementEdit &&
+      choice?.context?.subtype === "movement_step" &&
+      restoredEdit.current !== workspace.movementEdit.revision
+    ) {
+      restoredEdit.current = workspace.movementEdit.revision;
+      setStagedMoves(recordedMovementStaging(workspace.movementEdit.decisions));
+      setLocalError(null);
+      stagingBinding.current = { nonce: choice.nonce, refresh: workspace.refreshKey };
+      return;
+    }
     const previous = stagingBinding.current;
     const refreshed = previous.refresh !== workspace.refreshKey;
     stagingBinding.current = { nonce: choice?.nonce, refresh: workspace.refreshKey };
@@ -240,23 +316,68 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
       setIsDirectSubmitting(false);
       setLocalError(null);
     }
-  }, [choice?.nonce, workspace.refreshKey, workspace.actionable]);
+  }, [choice?.nonce, workspace.refreshKey, workspace.actionable, workspace.movementEdit]);
 
   const fleetTokens = player?.fleet_tokens;
   const availableStaging = new Map<string, number>();
   for (const group of shipGroups)
     availableStaging.set(
-      `${group.originSystemId}:${group.unitType}${group.damaged ? ":damaged" : ""}`,
+      movementShipKey(
+        group.originSystemId,
+        group.unitType,
+        group.damaged,
+        group.gravityDrive,
+        group.ionian,
+      ),
       group.totalAvailable,
     );
   for (const group of originCargoGroups)
     availableStaging.set(
-      `cargo:${group.originSystemId}:${group.unitType}:${group.source ?? "space"}${group.damaged ? ":damaged" : ""}${group.galvanized ? ":galvanized" : ""}`,
+      movementCargoKey(
+        group.originSystemId,
+        group.unitType,
+        group.source,
+        group.damaged,
+        group.galvanized,
+      ),
       group.totalAvailable,
     );
-  const unavailableStaging =
-    !planRef.current.active &&
-    Object.entries(stagedMoves).some(([key, count]) => count > (availableStaging.get(key) ?? 0));
+  // Move variants and cargo rows draw from the same physical inventory.
+  const inventory = new Map<string, { available: number; selected: number; keys: string[] }>();
+  const reserve = (identity: string, key: string, available: number) => {
+    const entry = inventory.get(identity) ?? { available, selected: 0, keys: [] };
+    entry.selected += stagedMoves[key] ?? 0;
+    entry.keys.push(key);
+    inventory.set(identity, entry);
+  };
+  for (const g of shipGroups)
+    reserve(
+      movementCargoKey(g.originSystemId, g.unitType, null, g.damaged),
+      movementShipKey(g.originSystemId, g.unitType, g.damaged, g.gravityDrive, g.ionian),
+      g.totalAvailable,
+    );
+  for (const g of originCargoGroups)
+    reserve(
+      movementCargoKey(g.originSystemId, g.unitType, g.source, g.damaged),
+      movementCargoKey(g.originSystemId, g.unitType, g.source, g.damaged, g.galvanized),
+      (board?.systems?.[g.originSystemId]?.units ?? []).filter(
+        (u) =>
+          u.owner === choice?.actor &&
+          u.unit_type === g.unitType &&
+          (u.planet ?? null) === g.source &&
+          Boolean(u.damaged) === g.damaged,
+      ).length,
+    );
+  const overbooked = new Set(
+    [...inventory.values()]
+      .filter((entry) => entry.selected > entry.available)
+      .flatMap((entry) => entry.keys),
+  );
+  const unavailableSelections = Object.entries(stagedMoves).filter(
+    ([key, count]) =>
+      count > (availableStaging.get(key) ?? 0) || (count > 0 && overbooked.has(key)),
+  );
+  const unavailableStaging = !planRef.current.active && unavailableSelections.length > 0;
 
   const destinationSystemId =
     activeSystemId ??
@@ -294,7 +415,13 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
 
     // 1. Moving ships
     for (const g of shipGroups) {
-      const key = `${g.originSystemId}:${g.unitType}${g.damaged ? ":damaged" : ""}`;
+      const key = movementShipKey(
+        g.originSystemId,
+        g.unitType,
+        g.damaged,
+        g.gravityDrive,
+        g.ionian,
+      );
       const count = stagedMoves[key] ?? 0;
       if (count === 0) continue;
 
@@ -303,7 +430,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         const shipCap = count * g.capacityPerUnit;
         capacity += shipCap;
         capByOrig[g.originSystemId] = (capByOrig[g.originSystemId] ?? 0) + shipCap;
-      } else {
+      } else if (!workspace.draft) {
         cargo += count;
         cargoByOrig[g.originSystemId] = (cargoByOrig[g.originSystemId] ?? 0) + count;
       }
@@ -311,11 +438,12 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
 
     // 2. Staged pooled cargo from origin
     for (const c of originCargoGroups) {
-      const key = `cargo:${c.originSystemId}:${c.unitType}:${c.source ?? "space"}${c.damaged ? ":damaged" : ""}${c.galvanized ? ":galvanized" : ""}`;
+      const key = movementCargoKey(c.originSystemId, c.unitType, c.source, c.damaged, c.galvanized);
       const count = stagedMoves[key] ?? 0;
       if (count === 0) continue;
       cargo += count;
-      cargoByOrig[c.originSystemId] = (cargoByOrig[c.originSystemId] ?? 0) + count;
+      const carrierOrigin = c.carrierOrigin ?? c.originSystemId;
+      cargoByOrig[carrierOrigin] = (cargoByOrig[carrierOrigin] ?? 0) + count;
     }
 
     return {
@@ -325,7 +453,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
       capacityByOrigin: capByOrig,
       cargoByOrigin: cargoByOrig,
     };
-  }, [shipGroups, originCargoGroups, stagedMoves]);
+  }, [shipGroups, originCargoGroups, stagedMoves, workspace.draft]);
 
   const originSystemIds = useMemo(() => {
     const ids = new Set<string>();
@@ -380,6 +508,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
     if (!planRef.current.active || planRef.current.submitting) return;
     if (currentChoice.nonce === planRef.current.lastSubmittedNonce) return;
 
+    const execution = planRef.current;
     const subtype = currentChoice.context?.subtype;
     if (
       currentChoice.actor !== planRef.current.actor ||
@@ -402,20 +531,33 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         setLocalError("The movement destination changed. Remaining instructions were paused.");
         return;
       }
+      // Find the first staged ship that matches any offered move option
       if (
         workspace.draft &&
-        planRef.current.remainingShips.some(
-          (ship) =>
-            !currentChoice.options.some((option) => {
-              const payload = getMovementPayload(option);
-              return (
-                option.kind === "move" &&
-                payload.origin === ship.origin &&
-                payload.unit?.toLowerCase() === ship.unitType.toLowerCase() &&
-                Boolean(payload.damaged) === ship.damaged
-              );
-            }),
-        )
+        planRef.current.remainingShips.some((ship, index, ships) => {
+          const deferredIonian =
+            ship.ionian &&
+            !ship.gravityDrive &&
+            ships.slice(0, index).some((earlier) => earlier.gravityDrive);
+          return !currentChoice.options.some((option) => {
+            const p = getMovementPayload(option);
+            const sameHull =
+              option.kind === "move" &&
+              p.origin === ship.origin &&
+              p.unit?.toLowerCase() === ship.unitType.toLowerCase() &&
+              Boolean(p.damaged) === ship.damaged;
+            const exactBoost =
+              (option.payload?.gravity_drive === true) === !!ship.gravityDrive &&
+              (option.payload?.ionian === true) === !!ship.ionian;
+            return (
+              sameHull &&
+              (exactBoost ||
+                (deferredIonian &&
+                  option.payload?.gravity_drive === true &&
+                  option.payload?.ionian !== true))
+            );
+          });
+        })
       ) {
         planRef.current.active = false;
         setIsExecuting(false);
@@ -424,23 +566,38 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         );
         return;
       }
-      // Find the first staged ship that matches any offered move option
       let matchedShipIdx = -1;
       let matchedShipOpt: (typeof currentChoice.options)[0] | null = null;
 
       for (let i = 0; i < planRef.current.remainingShips.length; i++) {
+        // Recorded editor instructions are ordered: later boost offers may
+        // only become legal after this instruction has executed.
+        if (workspace.draft && i > 0) break;
         const ship = planRef.current.remainingShips[i];
-        const opt = currentChoice.options.find((o) => {
+        const matches = currentChoice.options.filter((o) => {
           if (o.kind !== "move") return false;
           const p = getMovementPayload(o);
           return (
             p.origin === ship.origin &&
             Boolean(p.damaged) === ship.damaged &&
+            (!workspace.draft ||
+              ((o.payload?.gravity_drive === true) === !!ship.gravityDrive &&
+                (o.payload?.ionian === true) === !!ship.ionian)) &&
             (p.unit?.toLowerCase() === ship.unitType.toLowerCase() ||
               (!workspace.draft &&
                 getUnitBaseType(p.unit ?? "") === getUnitBaseType(ship.unitType)))
           );
         });
+
+        if (workspace.draft && matches.length > 1) {
+          planRef.current.active = false;
+          setIsExecuting(false);
+          setLocalError(
+            "Selected ship has an ambiguous option. Remaining movement instructions were paused.",
+          );
+          return;
+        }
+        const opt = matches[0];
 
         if (opt) {
           matchedShipIdx = i;
@@ -455,11 +612,13 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         planRef.current.lastSubmittedNonce = currentChoice.nonce;
         try {
           await onSubmit(matchedShipOpt.id);
+          if (planRef.current !== execution) return;
           planRef.current.remainingShips.splice(matchedShipIdx, 1);
           planRef.current.currentShipOrigin = ship.origin;
           planRef.current.currentShipCapacity = ship.capacity;
           planRef.current.currentShipLoadedCount = 0;
         } catch (err) {
+          if (planRef.current !== execution) return;
           if (err instanceof PlanningRefreshError) {
             planRef.current.lastSubmittedNonce = null;
             return;
@@ -468,8 +627,10 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           setIsExecuting(false);
           setLocalError(err instanceof Error ? err.message : String(err));
         } finally {
-          planRef.current.submitting = false;
-          advance();
+          if (planRef.current === execution) {
+            planRef.current.submitting = false;
+            advance();
+          }
         }
         return;
       }
@@ -499,9 +660,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         planRef.current.lastSubmittedNonce = currentChoice.nonce;
         try {
           await onSubmit(doneOpt.id);
+          if (planRef.current !== execution) return;
           planRef.current.active = false;
           setIsExecuting(false);
         } catch (err) {
+          if (planRef.current !== execution) return;
           if (err instanceof PlanningRefreshError) {
             planRef.current.lastSubmittedNonce = null;
             return;
@@ -511,8 +674,10 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           setIsExecuting(false);
           setLocalError(msg);
         } finally {
-          planRef.current.submitting = false;
-          advance();
+          if (planRef.current === execution) {
+            planRef.current.submitting = false;
+            advance();
+          }
         }
       } else {
         planRef.current.active = false;
@@ -547,6 +712,8 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
               item.galvanized === undefined || (o.payload?.galvanized === true) === item.galvanized;
             return (
               matchesUnit &&
+              (typeof o.payload?.pickup_system !== "string" ||
+                o.payload.pickup_system === (item.pickupSystem ?? item.origin)) &&
               matchesSource &&
               matchesGalvanized &&
               (o.payload?.damaged === true) === item.damaged
@@ -574,9 +741,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           planRef.current.lastSubmittedNonce = currentChoice.nonce;
           try {
             await onSubmit(matchedCargoOpt.id);
+            if (planRef.current !== execution) return;
             planRef.current.remainingCargo.splice(matchedCargoIdx, 1);
             planRef.current.currentShipLoadedCount += 1;
           } catch (err) {
+            if (planRef.current !== execution) return;
             if (err instanceof PlanningRefreshError) {
               planRef.current.lastSubmittedNonce = null;
               return;
@@ -585,8 +754,10 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
             setIsExecuting(false);
             setLocalError(err instanceof Error ? err.message : String(err));
           } finally {
-            planRef.current.submitting = false;
-            advance();
+            if (planRef.current === execution) {
+              planRef.current.submitting = false;
+              advance();
+            }
           }
           return;
         }
@@ -607,7 +778,9 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         planRef.current.lastSubmittedNonce = currentChoice.nonce;
         try {
           await onSubmit(doneOpt.id);
+          if (planRef.current !== execution) return;
         } catch (err) {
+          if (planRef.current !== execution) return;
           if (err instanceof PlanningRefreshError) {
             planRef.current.lastSubmittedNonce = null;
             return;
@@ -616,8 +789,10 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           setIsExecuting(false);
           setLocalError(err instanceof Error ? err.message : String(err));
         } finally {
-          planRef.current.submitting = false;
-          advance();
+          if (planRef.current === execution) {
+            planRef.current.submitting = false;
+            advance();
+          }
         }
       } else {
         planRef.current.active = false;
@@ -662,8 +837,14 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
     // Collect capital ships to move
     const ships: ExecutionPlan["remainingShips"] = [];
     for (const g of shipGroups) {
-      if (g.isFighter || g.isGroundForce) continue;
-      const key = `${g.originSystemId}:${g.unitType}${g.damaged ? ":damaged" : ""}`;
+      if (!workspace.draft && (g.isFighter || g.isGroundForce)) continue;
+      const key = movementShipKey(
+        g.originSystemId,
+        g.unitType,
+        g.damaged,
+        g.gravityDrive,
+        g.ionian,
+      );
       const count = stagedMoves[key] ?? 0;
       for (let i = 0; i < count; i++) {
         ships.push({
@@ -671,18 +852,38 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           unitType: g.unitType,
           capacity: g.capacityPerUnit,
           damaged: g.damaged,
+          gravityDrive: g.gravityDrive,
+          ionian: g.ionian,
         });
       }
     }
 
+    const recordedOrder = (ship: ExecutionPlan["remainingShips"][number]) =>
+      workspace.movementEdit?.decisions.findIndex(
+        (d) =>
+          d.kind === "move" &&
+          d.payload.origin === ship.origin &&
+          d.payload.unit === ship.unitType &&
+          (d.payload.damaged === true) === ship.damaged &&
+          (d.payload.gravity_drive === true) === !!ship.gravityDrive &&
+          (d.payload.ionian === true) === !!ship.ionian,
+      ) ?? -1;
+    if (workspace.movementEdit)
+      ships.sort((a, b) => {
+        const ai = recordedOrder(a),
+          bi = recordedOrder(b);
+        return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi);
+      });
+
     // Collect cargo to load
     const cargo: ExecutionPlan["remainingCargo"] = [];
     for (const c of originCargoGroups) {
-      const key = `cargo:${c.originSystemId}:${c.unitType}:${c.source ?? "space"}${c.damaged ? ":damaged" : ""}${c.galvanized ? ":galvanized" : ""}`;
+      const key = movementCargoKey(c.originSystemId, c.unitType, c.source, c.damaged, c.galvanized);
       const count = stagedMoves[key] ?? 0;
       for (let i = 0; i < count; i++) {
         cargo.push({
-          origin: c.originSystemId,
+          origin: c.carrierOrigin ?? c.originSystemId,
+          pickupSystem: c.originSystemId,
           unitType: c.unitType,
           source: c.source,
           damaged: c.damaged,
@@ -691,8 +892,14 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
       }
     }
     for (const g of shipGroups) {
-      if (!g.isFighter && !g.isGroundForce) continue;
-      const key = `${g.originSystemId}:${g.unitType}${g.damaged ? ":damaged" : ""}`;
+      if (workspace.draft || (!g.isFighter && !g.isGroundForce)) continue;
+      const key = movementShipKey(
+        g.originSystemId,
+        g.unitType,
+        g.damaged,
+        g.gravityDrive,
+        g.ionian,
+      );
       const count = stagedMoves[key] ?? 0;
       for (let i = 0; i < count; i++) {
         cargo.push({
@@ -817,6 +1024,25 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
       {workspace.actionable && unavailableStaging && (
         <div role="alert">
           A staged ship or cargo is no longer available. Review your selections before moving.
+          <ul>
+            {unavailableSelections.map(([key, count]) => (
+              <li key={key}>
+                {key.replaceAll(":", " · ")} · Selected: {count}
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() =>
+                    setStagedMoves((current) => ({
+                      ...current,
+                      [key]: availableStaging.get(key) ?? 0,
+                    }))
+                  }
+                >
+                  Remove unavailable selection
+                </button>
+              </li>
+            ))}
+          </ul>
           <button
             type="button"
             className="button"
@@ -890,7 +1116,8 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
               const shipsForOrigin = shipGroups.filter(
                 (g) =>
                   g.originSystemId === originId &&
-                  (!g.isFighter ||
+                  (workspace.draft ||
+                    !g.isFighter ||
                     !originCargoGroups.some(
                       (cargo) =>
                         cargo.originSystemId === g.originSystemId &&
@@ -937,13 +1164,20 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                     <>
                       <div className="origin-system-group__section-title">Ships</div>
                       {shipsForOrigin.map((g) => {
-                        const key = `${g.originSystemId}:${g.unitType}${g.damaged ? ":damaged" : ""}`;
+                        const key = movementShipKey(
+                          g.originSystemId,
+                          g.unitType,
+                          g.damaged,
+                          g.gravityDrive,
+                          g.ionian,
+                        );
+                        const variant = `${g.damaged ? "-damaged" : ""}${g.gravityDrive ? "-gravity-drive" : ""}${g.ionian ? "-ionian" : ""}`;
                         const count = stagedMoves[key] ?? 0;
 
                         return (
                           <div
                             key={key}
-                            data-testid={`rally-row-${g.originSystemId}-${g.unitType}`}
+                            data-testid={`rally-row-${g.originSystemId}-${g.unitType}${variant}`}
                             className="workflow-card workflow-card--row"
                             style={{
                               display: "flex",
@@ -957,6 +1191,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                                 <div className="workflow-unit-name">
                                   {getUnitDisplayName(g.unitType)}
                                   {g.damaged ? " (Damaged)" : ""}
+                                  {workspace.draft && (g.isFighter || g.isGroundForce)
+                                    ? " (Independent move)"
+                                    : ""}
+                                  {g.gravityDrive ? " · Gravity Drive" : ""}
+                                  {g.ionian ? " · Ionian Fuel Refinery" : ""}
                                 </div>
                                 <div className="text-muted">
                                   Origin: #{g.originSystemId} • Available: {g.totalAvailable}
@@ -968,7 +1207,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                             <div className="workflow-row">
                               <button
                                 type="button"
-                                data-testid={`rally-dec-${g.originSystemId}-${g.unitType}`}
+                                data-testid={`rally-dec-${g.originSystemId}-${g.unitType}${variant}`}
                                 onClick={() => handleUpdateCount(key, -1, g.totalAvailable)}
                                 disabled={count <= 0 || isExecuting || isDirectSubmitting}
                                 className="button button--secondary button--icon workflow-button--stepper"
@@ -976,14 +1215,14 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                                 -
                               </button>
                               <span
-                                data-testid={`rally-count-${g.originSystemId}-${g.unitType}`}
+                                data-testid={`rally-count-${g.originSystemId}-${g.unitType}${variant}`}
                                 className="workflow-count"
                               >
                                 {count}
                               </span>
                               <button
                                 type="button"
-                                data-testid={`rally-inc-${g.originSystemId}-${g.unitType}`}
+                                data-testid={`rally-inc-${g.originSystemId}-${g.unitType}${variant}`}
                                 onClick={() => handleUpdateCount(key, 1, g.totalAvailable)}
                                 disabled={
                                   count >= g.totalAvailable || isExecuting || isDirectSubmitting
@@ -1003,7 +1242,13 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                     <>
                       <div className="origin-system-group__section-title">Carryable Cargo</div>
                       {cargoForOrigin.map((c) => {
-                        const key = `cargo:${c.originSystemId}:${c.unitType}:${c.source ?? "space"}${c.damaged ? ":damaged" : ""}${c.galvanized ? ":galvanized" : ""}`;
+                        const key = movementCargoKey(
+                          c.originSystemId,
+                          c.unitType,
+                          c.source,
+                          c.damaged,
+                          c.galvanized,
+                        );
                         const count = stagedMoves[key] ?? 0;
 
                         return (
@@ -1114,7 +1359,10 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
           data-testid="commit-moves-btn"
           onClick={handleCommitMoves}
           disabled={
-            isExecuting || isDirectSubmitting || (totalUnitsStaged > 0 && hasAnyOriginOverCapacity)
+            isExecuting ||
+            isDirectSubmitting ||
+            unavailableStaging ||
+            (totalUnitsStaged > 0 && hasAnyOriginOverCapacity)
           }
           className="button button--primary workflow-button--wide"
         >

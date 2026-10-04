@@ -367,6 +367,88 @@ describe("GameSessionClient ingress lifecycle", () => {
       },
     };
   }
+  it("reopens movement with an identity and accepts a replacement script shorter than the original", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const original = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: original });
+    const operation = client.editPlanningMovement(original.identity);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "edit_planning_movement",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: original.identity,
+    });
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    const editing = {
+      ...draftOffer(10, 6, 6),
+      identity: { ...original.identity, generation_id: 2, plan_revision: 6 },
+      editing_movement: true,
+      movement_edit_revision: 1,
+    };
+    send({ type: "planning_update", envelope: editing });
+    send({ type: "planning_result", identity: original.identity, rejection: null });
+    await operation;
+    expect(client.getState().planning.resetEpoch).toBe(0);
+    const answer = client.submitPlanningChoice(editing.identity, "move");
+    const requestId = JSON.parse(socket.sent.at(-1)!).request_id;
+    send({
+      type: "planning_update",
+      envelope: {
+        ...editing,
+        publication_id: editing.publication_id + 1,
+        identity: { ...editing.identity, plan_revision: 7 },
+        editing_movement: false,
+        progress: { ...editing.progress, recorded_answers: 3 },
+        recorded_request_ids: [requestId],
+      },
+    });
+    await answer;
+    expect(client.getState().planning.busy).toBe(false);
+    expect(client.getState().planning.error).toBeNull();
+    client.stop();
+  });
+  it("pauses a losing editor pipeline when another tab records a shorter replacement", async () => {
+    const { client, send } = await connectedPlayer();
+    const editing = { ...draftOffer(10, 6, 6), editing_movement: true, movement_edit_revision: 1 };
+    send({ type: "planning_update", envelope: editing });
+    const failure = client
+      .submitPlanningChoice(editing.identity, "move")
+      .catch((error: unknown) => error);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...editing,
+        publication_id: editing.publication_id + 1,
+        identity: { ...editing.identity, plan_revision: 7 },
+        editing_movement: false,
+        progress: { ...editing.progress, recorded_answers: 3 },
+        recorded_request_ids: ["other-tab"],
+      },
+    });
+    expect(((await failure) as Error).message).toContain("Another connection answered");
+    expect(client.getState().planning.busy).toBe(false);
+    client.stop();
+  });
+  it("cancels a pending pipeline when another tab reopens movement, including after reconnect", async () => {
+    const { client, send } = await connectedPlayer();
+    const original = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: original });
+    const failure = client
+      .submitPlanningChoice(original.identity, "move")
+      .catch((error: unknown) => error);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...draftOffer(11, 6, 6),
+        editing_movement: true,
+        movement_edit_revision: 1,
+      },
+    });
+    const error = await failure;
+    expect(error).not.toBeInstanceOf(PlanningRefreshError);
+    expect((error as Error).message).toContain("reopened");
+    client.stop();
+  });
   it("binds Apply draft to the confirmed live nonce and revision, and keeps execution server-owned", async () => {
     const { client, socket, send } = await connectedPlayer();
     const offer = draftOffer();

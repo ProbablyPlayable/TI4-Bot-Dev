@@ -721,6 +721,7 @@ export const GameShell: React.FC<GameShellProps> = ({
   const submittedNonce = useRef<string | null>(null);
   const productionSubmitting = useRef(false);
   const tacticalPlan = useRef<ExecutionPlan>(emptyMovementPlan());
+  const lastMovementEdit = useRef(workspace.movementEditRevision);
   const [tacticalStep, setTacticalStep] = useState(0);
   const lastHistoryGeneration = useRef(history?.generation);
   const pipelineRunner = useOwnedPipelineRunner(
@@ -733,6 +734,13 @@ export const GameShell: React.FC<GameShellProps> = ({
     tacticalPlan.current = emptyMovementPlan();
     lastHistoryGeneration.current = history?.generation;
   }
+  if (workspace.movementEditRevision !== lastMovementEdit.current) {
+    tacticalPlan.current = emptyMovementPlan();
+    lastMovementEdit.current = workspace.movementEditRevision;
+  }
+  useEffect(() => {
+    pipelineRunner.cancelPipeline();
+  }, [workspace.movementEditRevision]);
 
   useEffect(() => {
     if (historyBusy) setProductionQueue(null);
@@ -896,7 +904,7 @@ export const GameShell: React.FC<GameShellProps> = ({
       <div className="app-shell__overlays">
         <PipelineRunnerContext.Provider value={pipelineRunner}>
           <ChoiceRendererDispatcher
-            key={`${history?.generation ?? 0}:${boardView?.invasion?.invasion_seq ?? "none"}`}
+            key={`${history?.generation ?? 0}:${boardView?.invasion?.invasion_seq ?? "none"}:${workspace.movementEditRevision ?? 0}`}
             choice={choice}
             viewerSeat={viewerSeat}
             players={playersMap}

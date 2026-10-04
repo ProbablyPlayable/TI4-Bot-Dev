@@ -576,6 +576,18 @@ impl GameSession {
         lock.planning.reset(player, identity)
     }
 
+    pub fn edit_planning_movement(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), PlanningError> {
+        let mut lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+            return Err(PlanningError::Unavailable);
+        }
+        lock.planning.edit_movement(player, identity)
+    }
+
     /// Confirm the current validated draft at a real tactical action opportunity.
     /// Execution then stays with the live decider, independent of the connection.
     pub fn apply_planning(

@@ -393,6 +393,73 @@ async fn assert_private(socket: &mut Socket) {
 }
 
 #[tokio::test]
+async fn movement_editor_is_seat_private_and_reconnect_retains_the_original_script() {
+    let fixture = Fixture::new(true).await;
+    let mut a = fixture.socket(Some(A)).await;
+    let mut spectator = fixture.socket(None).await;
+    let mut b = fixture.socket(Some(B)).await;
+    let original = draft(&fixture, &mut b, true).await;
+    let edit = ClientMessage::EditPlanningMovement {
+        protocol_version: PROTOCOL_VERSION,
+        game_id: fixture.session.id().into(),
+        identity: original.identity,
+    };
+    send(&mut spectator, edit.clone()).await;
+    result(
+        &mut spectator,
+        Some(original.identity),
+        Some(PlanningRejection::Unauthorized),
+    )
+    .await;
+    assert_eq!(
+        fixture.registry.edit_player_planning_movement(
+            fixture.session.id(),
+            "invalid",
+            &PlayerId::new(B),
+            &fixture.session,
+            original.identity,
+        ),
+        Err(PlanningRejection::Unauthorized)
+    );
+    send(&mut b, edit.clone()).await;
+    let mut acknowledged = false;
+    let mut editing = None;
+    while !acknowledged || editing.is_none() {
+        match receive(&mut b).await {
+            ServerMessage::PlanningResult(message) => {
+                assert_eq!(message.identity, Some(original.identity));
+                assert_eq!(message.rejection, None);
+                acknowledged = true;
+            }
+            ServerMessage::PlanningUpdate(message) if message.envelope.awaiting_answer => {
+                assert!(message.envelope.editing_movement);
+                editing = Some(message.envelope);
+            }
+            _ => {}
+        }
+    }
+    let editing = editing.unwrap();
+    assert_eq!(editing.recorded_decisions, original.recorded_decisions);
+    assert_eq!(editing.progress.replayed, 2);
+    assert_private(&mut a).await;
+    assert_private(&mut spectator).await;
+    b.close(None).await.unwrap();
+    b = fixture.socket(Some(B)).await;
+    assert_eq!(offer(&mut b).await, editing);
+    send(&mut b, edit).await;
+    result(
+        &mut b,
+        Some(original.identity),
+        Some(PlanningRejection::Retired),
+    )
+    .await;
+    assert_eq!(
+        fixture.session.plans()[&PlayerId::new(B)].recorded_decisions,
+        original.recorded_decisions
+    );
+}
+
+#[tokio::test]
 async fn private_draft_refresh_reconnect_and_history() {
     let fixture = Fixture::new(true).await;
     let mut a = fixture.socket(Some(A)).await;

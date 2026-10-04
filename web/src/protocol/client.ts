@@ -228,7 +228,7 @@ export class GameSessionClient {
   private pingSequence = 0;
   private pendingBatch: { nonce: string; plan: string; requestId: string } | null = null;
   private planningSubmission: {
-    kind: "start" | "answer" | "reset" | "apply";
+    kind: "start" | "answer" | "reset" | "apply" | "edit";
     identity: AttemptIdentity | null;
     requestId: string;
     recorded: number;
@@ -269,6 +269,9 @@ export class GameSessionClient {
   resetPlanning(identity: AttemptIdentity): Promise<void> {
     return this.sendPlanning("reset", identity);
   }
+  editPlanningMovement(identity: AttemptIdentity): Promise<void> {
+    return this.sendPlanning("edit", identity);
+  }
   applyPlanning(identity: AttemptIdentity, nonce: string, expectedVersion: number): Promise<void> {
     if (!this.state.planning.availability?.can_apply || this.submission)
       return Promise.reject(new Error("The draft is not ready at this live action opportunity."));
@@ -289,7 +292,7 @@ export class GameSessionClient {
     return this.sendPlanning("answer", identity, optionId);
   }
   private sendPlanning(
-    kind: "start" | "answer" | "reset" | "apply",
+    kind: "start" | "answer" | "reset" | "apply" | "edit",
     identity?: AttemptIdentity,
     optionId?: string,
     live?: { nonce: string; expectedVersion: number },
@@ -306,9 +309,9 @@ export class GameSessionClient {
             protocol_version: PROTOCOL_VERSION,
             game_id: this.options.gameId,
           }
-        : kind === "reset"
+        : kind === "reset" || kind === "edit"
           ? {
-              type: "reset_planning",
+              type: kind === "edit" ? "edit_planning_movement" : "reset_planning",
               protocol_version: PROTOCOL_VERSION,
               game_id: this.options.gameId,
               identity: identity!,
@@ -721,11 +724,19 @@ export class GameSessionClient {
     }
     if (message.type === "planning_update" || message.type === "planning_status") {
       const previousResetEpoch = this.state.planning.resetEpoch;
+      const previousEditRevision = this.state.planning.envelope?.movement_edit_revision ?? 0;
       this.setState(reduceServerMessage(this.state, message));
       const pending = this.planningSubmission;
       const envelope = this.state.planning.envelope;
       if (pending?.kind === "answer" && this.state.planning.resetEpoch !== previousResetEpoch) {
         this.rejectPlanning("Draft reset; remaining instructions were cancelled.");
+        return;
+      }
+      if (
+        pending?.kind === "answer" &&
+        (envelope?.movement_edit_revision ?? 0) !== previousEditRevision
+      ) {
+        this.rejectPlanning("Draft movement reopened; remaining instructions were cancelled.");
         return;
       }
       if (
@@ -744,7 +755,13 @@ export class GameSessionClient {
         envelope.update !== "Preparing"
       ) {
         const recorded = envelope.recorded_request_ids.includes(pending.requestId);
-        if (!recorded && envelope.progress.recorded_answers > pending.recorded) {
+        if (
+          !recorded &&
+          (envelope.progress.recorded_answers > pending.recorded ||
+            envelope.progress.recorded_answers < pending.recorded ||
+            (envelope.identity.plan_revision > pending.identity!.plan_revision &&
+              sameAttempt(envelope.identity, pending.identity!)))
+        ) {
           this.rejectPlanning(
             "Another connection answered this draft offer. Remaining instructions were paused.",
           );

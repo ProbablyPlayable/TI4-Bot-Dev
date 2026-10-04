@@ -37,6 +37,11 @@ pub enum ClientMessage {
         game_id: String,
         identity: crate::planning::runner::AttemptIdentity,
     },
+    EditPlanningMovement {
+        protocol_version: u16,
+        game_id: String,
+        identity: crate::planning::runner::AttemptIdentity,
+    },
     ApplyPlanning {
         protocol_version: u16,
         game_id: String,
@@ -80,6 +85,13 @@ impl std::fmt::Debug for ClientMessage {
                 game_id, identity, ..
             } => f
                 .debug_struct("ResetPlanning")
+                .field("game_id", game_id)
+                .field("identity", identity)
+                .finish(),
+            Self::EditPlanningMovement {
+                game_id, identity, ..
+            } => f
+                .debug_struct("EditPlanningMovement")
                 .field("game_id", game_id)
                 .field("identity", identity)
                 .finish(),
@@ -157,6 +169,9 @@ impl ClientMessage {
             | Self::ResetPlanning {
                 protocol_version, ..
             }
+            | Self::EditPlanningMovement {
+                protocol_version, ..
+            }
             | Self::ApplyPlanning {
                 protocol_version, ..
             }
@@ -173,7 +188,9 @@ impl ClientMessage {
                 bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
                 bounded(nonce, MAX_NONCE_BYTES, "nonce")?;
             }
-            Self::StartPlanning { game_id, .. } | Self::ResetPlanning { game_id, .. } => {
+            Self::StartPlanning { game_id, .. }
+            | Self::ResetPlanning { game_id, .. }
+            | Self::EditPlanningMovement { game_id, .. } => {
                 bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?
             }
             Self::SubmitPlanningChoice {

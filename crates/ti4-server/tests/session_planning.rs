@@ -170,6 +170,156 @@ fn ready_to_apply(session: &GameSession) -> ti4_server::protocol::server::Planni
 }
 
 #[test]
+fn reopening_movement_retains_the_script_until_new_answers_and_applies_only_the_revision() {
+    let (mut config, _, origin, target, _) = fixture(true);
+    put(
+        &mut config.state,
+        &origin,
+        "cruiser",
+        &PlayerId::new("b"),
+        1,
+    );
+    config.state.system_mut(&origin).units.rotate_right(1);
+    let session = GameSession::start(config);
+    let _ = live_offer(&session, None);
+    let stopped = stopped_draft(
+        &session,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move|{origin}|0"),
+            format!("move|{origin}|0"),
+            "load|0".into(),
+            "done_moving".into(),
+        ],
+    );
+    let before = session.current_state();
+    session
+        .edit_planning_movement(&PlayerId::new("b"), stopped.identity)
+        .unwrap();
+    let editing = replayed_offer(&session);
+    assert!(editing.editing_movement);
+    assert_eq!(editing.recorded_decisions, stopped.recorded_decisions);
+    assert_eq!(editing.movement_edit_revision, 1);
+    assert_eq!(editing.reset_revision, stopped.reset_revision);
+    let PlanningUpdate::SafeOffer(publication) = &editing.update else {
+        unreachable!()
+    };
+    assert_eq!(
+        publication
+            .choice
+            .as_ref()
+            .unwrap()
+            .context
+            .as_ref()
+            .unwrap()
+            .subtype,
+        "movement_step"
+    );
+    assert_eq!(publication.position.board.systems[&origin].units.len(), 3);
+    assert!(!session.planning_status(&PlayerId::new("b")).can_apply);
+    assert_eq!(session.current_state(), before);
+    assert_eq!(
+        session.edit_planning_movement(&PlayerId::new("b"), stopped.identity),
+        Err(PlanningError::Submission(SubmissionError::Retired))
+    );
+    assert_eq!(
+        session.submit_planning_choice(&PlayerId::new("b"), stopped.identity, "done_moving"),
+        Err(PlanningError::Submission(SubmissionError::Retired))
+    );
+    session
+        .submit_planning_choice(
+            &PlayerId::new("b"),
+            editing.identity,
+            &format!("move|{origin}|1"),
+        )
+        .unwrap();
+    for answer in ["load|0", "done_moving"] {
+        let offered = planning_offer(&session);
+        assert!(!offered.editing_movement);
+        session
+            .submit_planning_choice(&PlayerId::new("b"), offered.identity, answer)
+            .unwrap();
+    }
+    loop {
+        let envelope = session
+            .recv_planning_timeout(&PlayerId::new("b"), DEADLINE)
+            .unwrap();
+        if matches!(envelope.update, PlanningUpdate::Stopped { .. }) {
+            break;
+        }
+    }
+    let revised = session.plans()[&PlayerId::new("b")]
+        .recorded_decisions
+        .clone();
+    assert_eq!(revised.len(), 5);
+    assert_eq!(revised[2].payload["unit"], "carrier");
+    assert_eq!(revised[2].option_id, format!("move|{origin}|1"));
+    assert_eq!(revised[3].payload["unit"], "fighter");
+    answer_live(&session, "pass");
+    let ready = ready_to_apply(&session);
+    let offer = live_offer(&session, None);
+    session
+        .apply_planning(
+            &PlayerId::new("b"),
+            ready.identity.unwrap(),
+            &offer.nonce,
+            offer.game_version,
+        )
+        .unwrap();
+    let _ = live_offer(&session, Some(&offer.nonce));
+    let state = session.current_state();
+    assert_eq!(state.system_state(&target).units.len(), 2);
+    assert_eq!(state.system_state(&origin).units.len(), 1);
+    assert_eq!(
+        state.system_state(&origin).units[0].type_id.as_str(),
+        "cruiser"
+    );
+    assert_eq!(
+        session
+            .planning_status(&PlayerId::new("b"))
+            .application
+            .unwrap()
+            .state,
+        DraftApplicationState::Applied
+    );
+}
+
+#[test]
+fn a_recovered_movement_editor_keeps_all_original_answers() {
+    let (config, _, origin, target, _) = fixture(true);
+    let session = GameSession::start(config.clone());
+    let _ = live_offer(&session, None);
+    let stopped = stopped_draft(
+        &session,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            format!("move|{origin}|0"),
+            "load|0".into(),
+            "done_moving".into(),
+        ],
+    );
+    session
+        .edit_planning_movement(&PlayerId::new("b"), stopped.identity)
+        .unwrap();
+    let _ = replayed_offer(&session);
+    let mut restored_config = config;
+    restored_config.plans =
+        serde_json::from_str(&serde_json::to_string(&session.plans()).unwrap()).unwrap();
+    session.stop();
+    let restored = GameSession::start(restored_config);
+    let _ = live_offer(&restored, None);
+    let editing = replayed_offer(&restored);
+    assert!(editing.editing_movement);
+    assert_eq!(editing.recorded_decisions, stopped.recorded_decisions);
+    assert!(editing.awaiting_answer);
+    assert_eq!(editing.progress.replayed, 2);
+    assert_eq!(editing.movement_edit_revision, 1);
+    assert!(!restored.planning_status(&PlayerId::new("b")).can_apply);
+}
+
+#[test]
 fn applying_a_draft_executes_live_activation_movement_and_cargo_once() {
     let (config, _, origin_b, target, _) = fixture(true);
     let session = GameSession::start(config);
