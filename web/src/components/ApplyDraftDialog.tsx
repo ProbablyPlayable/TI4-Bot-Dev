@@ -18,6 +18,16 @@ export function draftDecisionLabel(decision: RecordedDecisionDto): string {
       return decision.option_id === "done_loading"
         ? "Finish loading cargo"
         : `Load ${humanizeId(String(payload.unit))}${payload.source ? ` from ${humanizeId(String(payload.source))}` : " from space"}`;
+    case "commit_ground_forces":
+      return decision.option_id === "done_committing"
+        ? "Finish landing ground forces"
+        : `Land ${humanizeId(String(payload.unit))} on ${humanizeId(String(payload.planet))}`;
+    case "produce_unit":
+      return decision.option_id === "done_producing"
+        ? "Finish production"
+        : `Produce ${payload.count} × ${humanizeId(String(payload.unit))} in system ${payload.system}`;
+    case "place_unit":
+      return `Place ${payload.count} × ${humanizeId(String(payload.unit))} on ${humanizeId(String(payload.destination))}`;
     default:
       return decision.prompt;
   }
@@ -36,9 +46,9 @@ export const ApplyDraftDialog: React.FC<{
       <div className="apply-draft-dialog__panel">
         <Dialog.Title>Apply draft to the live game?</Dialog.Title>
         <Dialog.Description>
-          Apply these {decisions.length} recorded activation, movement, and cargo choices. Other
-          players make their normal live decisions. Execution pauses for their input and stops at
-          the first changed or unplanned choice.
+          Apply these {decisions.length} recorded tactical action choices. Other players make their
+          normal live decisions. Execution pauses for their input and stops at the first changed or
+          unplanned choice.
         </Dialog.Description>
         <ol className="apply-draft-dialog__choices">
           {decisions.map((decision, index) => (

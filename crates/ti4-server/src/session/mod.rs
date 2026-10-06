@@ -644,7 +644,9 @@ impl GameSession {
                 .submission_state = PendingSubmissionState::AwaitingSubmission;
             return Err(PlanningError::Unavailable);
         }
-        lock.planning.begin_application(player, plan);
+        let activation_seq = lock.latest_state.activation_seq;
+        lock.planning
+            .begin_application(player, plan, activation_seq);
         Ok(())
     }
 

@@ -24,7 +24,7 @@ use ti4_engine::preview::{Outcome, Quantity};
 use ti4_model::id::PlayerId;
 use ti4_model::state::GameState;
 
-use super::{DecisionRecording, RecordedDecision, RecordingDecider, ReplayDecider, ReplayStatus};
+use super::{DecisionRecording, RecordedDecision, RecordingDecider};
 use crate::projection::{project_game_view, project_game_view_full, project_pending_choice};
 use crate::protocol::status::ViewerRole;
 use crate::protocol::view::GameView;
@@ -43,6 +43,11 @@ pub struct PlayerPlan {
     pub editing_movement: bool,
     #[serde(default)]
     pub movement_edit_revision: u64,
+    /// Start of the retained tail awaiting semantic revalidation.
+    #[serde(default)]
+    pub revalidation_start: Option<usize>,
+    #[serde(default)]
+    pub replacing_movement: bool,
     pub base_checkpoint_id: u64,
     pub recorded_decisions: Vec<RecordedDecision>,
     /// Confirmation receipts survive refresh and session restoration with the script.
@@ -58,6 +63,8 @@ impl PlayerPlan {
             reset_revision: 0,
             editing_movement: false,
             movement_edit_revision: 0,
+            revalidation_start: None,
+            replacing_movement: false,
             base_checkpoint_id,
             recorded_decisions: Vec::new(),
             recorded_request_ids: Vec::new(),
@@ -116,8 +123,7 @@ pub enum FailureCategory {
 pub struct SafePublication {
     pub position: GameView,
     pub choice: Option<Choice>,
-    // Driver event strings are not a redaction boundary. This slice publishes
-    // only the audited public movement event names listed in `safe_events`.
+    // Driver events are validated internally, but never revealed by a draft.
     pub events: Vec<String>,
 }
 
@@ -400,6 +406,7 @@ impl PlanningRunner {
         let latest = shared.latest.as_ref()?;
         if shared.retired
             || shared.plan.editing_movement
+            || shared.plan.replacing_movement
             || shared.identity() != identity
             || latest.identity != identity
             || latest.progress.remaining != 0
@@ -474,6 +481,8 @@ impl PlanningRunner {
             if let Some(decisions) = decisions {
                 shared.plan.reset_revision += 1;
                 shared.plan.editing_movement = false;
+                shared.plan.revalidation_start = None;
+                shared.plan.replacing_movement = false;
                 shared.plan.recorded_decisions = decisions;
                 shared.plan.recorded_request_ids.clear();
             }
@@ -566,10 +575,11 @@ impl Gate {
                     choice
                 },
             );
+        audit_events(events)?;
         let publication = SafePublication {
             position: project_game_view_full(state, &viewer, &[], projected_choice.as_ref(), &[]),
             choice: projected_choice,
-            events: safe_events(events)?,
+            events: Vec::new(),
         };
         validate_knowledge(&self.baseline, &publication, &self.player)?;
         Ok(publication)
@@ -624,8 +634,7 @@ struct PlanningDecider {
     // The callback buffer is consumed once. Plain choose() cannot reuse an
     // earlier question's state and pretend it is a fresh observation.
     buffer: Arc<Mutex<Option<GameState>>>,
-    replay: ReplayDecider,
-    replay_status: ReplayStatus,
+    cursor: usize,
     recorder: RecordingDecider,
     recording: DecisionRecording,
 }
@@ -633,12 +642,7 @@ struct PlanningDecider {
 impl PlanningDecider {
     fn answer(&mut self, choice: &Choice, observed: bool) -> Result<ChoiceOption, IllegalChoice> {
         let state = self.buffer.lock().expect("offer buffer lock").take();
-        let replaying = !self
-            .replay_status
-            .lock()
-            .expect("replay lock")
-            .remaining()
-            .is_empty();
+        let mut replay_answer = None;
         {
             let mut shared = self.gate.shared.lock().expect("planning lock");
             if !self.gate.check(&mut shared) {
@@ -654,8 +658,30 @@ impl PlanningDecider {
             };
             match publication {
                 Ok(publication) => {
+                    let editing = shared.plan.editing_movement
+                        && shared.plan.movement_start() == Some(self.cursor);
+                    let inserting = shared.plan.replacing_movement
+                        && shared.plan.revalidation_start == Some(self.cursor);
+                    if !editing && !inserting {
+                        if let Some(expected) = shared.plan.recorded_decisions.get(self.cursor) {
+                            replay_answer = publication
+                                .choice
+                                .as_ref()
+                                .and_then(|choice| expected.replay_option(choice));
+                            if replay_answer.is_none()
+                                && !shared
+                                    .plan
+                                    .revalidation_start
+                                    .is_some_and(|start| self.cursor >= start)
+                            {
+                                shared.last_safe = Some(publication);
+                                shared.stop(StopReason::ReplayMismatch);
+                                return Err(refused(choice));
+                            }
+                        }
+                    }
                     shared.last_safe = Some(publication.clone());
-                    shared.pending = if replaying {
+                    shared.pending = if replay_answer.is_some() {
                         None
                     } else {
                         publication.choice.clone()
@@ -668,25 +694,9 @@ impl PlanningDecider {
                 }
             }
         }
-        if replaying {
-            let replay = self.replay_status.lock().expect("replay lock");
-            let expected = replay.remaining().front().expect("replay answer");
-            let mut shared = self.gate.shared.lock().expect("planning lock");
-            if !self.gate.check(&mut shared) {
-                return Err(refused(choice));
-            }
-            if !shared
-                .last_safe
-                .as_ref()
-                .and_then(|offer| offer.choice.as_ref())
-                .is_some_and(|choice| expected.replay_option(choice).is_some())
-            {
-                shared.stop(StopReason::ReplayMismatch);
-                return Err(refused(choice));
-            }
-        }
-        let answer = if replaying {
-            self.replay.choose(choice)
+        let replaying = replay_answer.is_some();
+        let answer = if let Some(answer) = replay_answer {
+            Ok(answer)
         } else {
             self.recorder.choose(choice)
         };
@@ -715,33 +725,67 @@ impl PlanningDecider {
             return Err(refused(choice));
         }
         if replaying {
-            let progress = self.replay_status.lock().expect("replay lock");
-            shared.progress.replayed = progress.consumed();
-            shared.progress.remaining = progress.remaining().len();
-            shared.plan.recorded_decisions[progress.consumed() - 1] =
+            shared.plan.recorded_decisions[self.cursor] =
                 RecordedDecision::from_answer(choice, &answer);
         } else {
             if shared.plan.editing_movement {
                 // Replace only when the new answer has passed the publication gate.
                 // Opening/reloading the editor never loses the original movement.
                 let start = shared.plan.movement_start().expect("editable movement");
-                shared.plan.recorded_decisions.truncate(start);
+                let end = shared.plan.recorded_decisions[start..]
+                    .iter()
+                    .position(|decision| {
+                        !decision.context.as_ref().is_some_and(|context| {
+                            matches!(context.subtype.as_str(), "movement_step" | "load_cargo")
+                        })
+                    })
+                    .map_or(shared.plan.recorded_decisions.len(), |offset| {
+                        start + offset
+                    });
+                shared.plan.recorded_decisions.drain(start..end);
+                shared.plan.revalidation_start = Some(start);
+                shared.plan.replacing_movement = true;
                 shared.plan.recorded_request_ids.clear();
                 shared.plan.editing_movement = false;
             }
-            shared.plan.recorded_decisions.push(
-                self.recording
-                    .lock()
-                    .expect("recording lock")
-                    .last()
-                    .expect("recorded answer")
-                    .clone(),
-            );
+            let recorded = self
+                .recording
+                .lock()
+                .expect("recording lock")
+                .last()
+                .expect("recorded answer")
+                .clone();
+            if shared.plan.replacing_movement && shared.plan.revalidation_start == Some(self.cursor)
+            {
+                shared.plan.recorded_decisions.insert(self.cursor, recorded);
+                shared.plan.revalidation_start = Some(self.cursor + 1);
+                if answer.id == "done_moving" {
+                    shared.plan.replacing_movement = false;
+                }
+            } else if self.cursor < shared.plan.recorded_decisions.len() {
+                if shared.plan.recorded_decisions[self.cursor].matches_replay_question(choice) {
+                    shared.plan.recorded_decisions[self.cursor] = recorded;
+                } else {
+                    // An extra fresh question (for example, a higher payment)
+                    // needs an inserted answer, not removal of the next intent.
+                    shared.plan.recorded_decisions.insert(self.cursor, recorded);
+                }
+            } else {
+                shared.plan.recorded_decisions.push(recorded);
+            }
             shared.plan.revision += 1;
             if let Some(request_id) = shared.reserved_request_id.take() {
                 shared.plan.recorded_request_ids.push(request_id);
             }
         }
+        self.cursor += 1;
+        shared.progress.replayed = self.cursor;
+        let replay_end = if shared.plan.editing_movement {
+            shared.plan.movement_start().expect("editable movement")
+        } else {
+            shared.plan.recorded_decisions.len()
+        };
+        shared.progress.remaining = replay_end.saturating_sub(self.cursor);
         // The answer survives even if applying it rolls a rift or draws a card.
         shared.progress.nested_answers_since_checkpoint += 1;
         shared.pending = None;
@@ -819,21 +863,19 @@ fn spawn(
             true
         }));
         let aftermath_observation = observation.clone();
-        game.on_aftermath(move |state, content, sources| {
+        game.on_aftermath(move |state, _content, _sources| {
             let (Some(system), Some(player)) = (&state.active_system, &state.active) else {
                 aftermath_observation.unsupported_segment();
                 return;
             };
-            // Only empty, uncontested, non-producing aftermath is audited. Its
-            // windows do no work; frontier exploration still marks the ordered draw.
-            let tile = ti4_content::galaxy::system(content, system.as_str(), sources);
-            if tile.is_none_or(|tile| !tile.planets().is_empty())
-                || state
-                    .system_state(system)
-                    .units
-                    .iter()
-                    .any(|unit| &unit.owner != player)
-                || ti4_engine::production::capacity(state, content, sources, player, system) > 0
+            // Space combat remains outside this slice. Invasion and production
+            // proceed through audited offers; dice and ordered draws latch
+            // uncertainty before any resulting position can be published.
+            if state
+                .system_state(system)
+                .units
+                .iter()
+                .any(|unit| &unit.owner != player)
             {
                 aftermath_observation.unsupported_segment();
             }
@@ -858,7 +900,6 @@ fn spawn(
             script
         };
         shared.lock().expect("planning lock").progress.remaining = script.len();
-        let (replay, replay_status) = ReplayDecider::for_planning(script);
         let (recorder, recording) = RecordingDecider::new(Box::new(InboxDecider {
             inbox,
             shared: shared.clone(),
@@ -868,8 +909,7 @@ fn spawn(
         game.table = Table::with_default(Box::new(PlanningDecider {
             gate: gate.clone(),
             buffer: buffer.clone(),
-            replay,
-            replay_status,
+            cursor: 0,
             recorder,
             recording,
         }));
@@ -955,29 +995,59 @@ fn run(mut game: Game<'static>, player: PlayerId, gate: &Gate, step_bound: usize
 /// activation and movement helpers; CargoWindow::pending_choice supplies loads.
 /// These options use public units, tokens and routes, plus the planner's known
 /// movement boosts. Applying a move uses Dice at a rift, so its outcome is
-/// marked before the next publication. Applying done_moving reaches on_aftermath,
-/// where we reject meaningful combat, invasion and production automatically.
+/// marked before the next publication. Invasion and production admit only their
+/// deterministic public choices; unknown outcomes stop the publication gate.
 fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
     let context = choice
         .context
         .as_ref()
         .ok_or(StopReason::UnsupportedOffer)?;
+    // The engine presents a one-option round trigger before rolling ground
+    // combat. Stop at that boundary without recording an automatic fight.
+    if context.version == CONTEXT_VERSION
+        && context.actor == choice.player
+        && context.phase == ti4_model::state::Phase::Action
+        && context.source == DecisionSource::Rule("42".into())
+        && context.subtype == "fight_ground_combat_round"
+    {
+        return Err(StopReason::Uncertainty);
+    }
     if context.version != CONTEXT_VERSION
         || context.actor != choice.player
         || context.phase != ti4_model::state::Phase::Action
         || context.space_battle
-        || context.invasion_seq.is_some()
+        || (context.invasion_seq.is_some() && context.subtype != "commit_ground_forces")
         || context.optional
-        || !context.outstanding.is_empty()
     {
         return Err(StopReason::UnsupportedOffer);
     }
-    let DecisionSource::Rule(rule) = &context.source else {
-        return Err(StopReason::UnsupportedOffer);
+    let rule = match &context.source {
+        DecisionSource::Rule(rule) => rule.as_str(),
+        DecisionSource::Content(id)
+            if id == "aida" && context.subtype == "exhaust_for_production_discount" =>
+        {
+            "aida"
+        }
+        _ => return Err(StopReason::UnsupportedOffer),
     };
+    // Constraints are admitted only for the producer that owns their semantics.
+    use ti4_engine::decision_context::ConstraintKind;
+    if context.outstanding.iter().any(|constraint| {
+        !matches!(
+            (context.subtype.as_str(), &constraint.kind),
+            ("produce_unit", ConstraintKind::ProductionCapacity)
+                | ("pay_resources", ConstraintKind::Resources)
+                | (
+                    "place_unit",
+                    ConstraintKind::FleetSupply | ConstraintKind::TransportCapacity
+                )
+        )
+    }) {
+        return Err(StopReason::UnsupportedOffer);
+    }
     let mut enabled = Vec::new();
     for option in &choice.options {
-        let permitted = match (rule.as_str(), context.subtype.as_str()) {
+        let permitted = match (rule, context.subtype.as_str()) {
             ("22", "action_menu") => {
                 // Publish a tactical-only wrapper. Other menu options may carry
                 // unaudited previews, so `publication` removes them below.
@@ -991,6 +1061,24 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
             ("95", "load_cargo") => {
                 option.kind == ti4_engine::transit::LOAD_KIND
                     || (option.kind == "decline" && option.id == "done_loading")
+            }
+            ("49", "commit_ground_forces") => {
+                option.kind == ti4_engine::invasion::COMMIT_KIND
+                    || (option.kind == "decline" && option.id == "done_committing")
+            }
+            ("68", "produce_unit") => {
+                option.kind == ti4_engine::production::PRODUCE_KIND
+                    || (option.kind == "decline" && option.id == "done_producing")
+            }
+            ("68", "place_unit") => option.kind == ti4_engine::production::PLACE_KIND,
+            ("34.3/75.2/75.3", "pay_resources") => option.kind == ti4_engine::production::PAY_KIND,
+            ("aida", "exhaust_for_production_discount") => {
+                (option.kind == "production_discount" && option.id == "exhaust")
+                    || (option.kind == "decline" && option.id == "decline")
+            }
+            ("tactical action", "mid_action_pause") => {
+                option.id == ti4_engine::game::CONTINUE_ACTION_ID
+                    && option.kind == ti4_engine::game::CONTINUE_ACTION_KIND
             }
             _ => return Err(StopReason::UnsupportedOffer),
         };
@@ -1020,6 +1108,45 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
                     "system",
                     "pickup_system",
                 ],
+                "commit_ground_forces" => &["planet", "unit", "damaged"],
+                "produce_unit" => &[
+                    "cost",
+                    "printed_cost",
+                    "discount",
+                    "count",
+                    "placed",
+                    "yield",
+                    "credit",
+                    "available_resources",
+                    "free_this_use",
+                    "credit_used",
+                    "owed",
+                    "production_spent",
+                    "unit",
+                    "system",
+                    "destination",
+                    "placement_pending",
+                    "capacity_used",
+                    "fleet_headroom_after",
+                    "capacity_free_after",
+                    "fleet_excess_after",
+                    "capacity_excess_after",
+                ],
+                "place_unit" => &[
+                    "system",
+                    "unit",
+                    "destination",
+                    "count",
+                    "placed",
+                    "capacity_used",
+                    "fleet_headroom_after",
+                    "capacity_free_after",
+                    "fleet_excess_after",
+                    "capacity_excess_after",
+                ],
+                "pay_resources" => &["worth", "owed", "kind", "source"],
+                "exhaust_for_production_discount" => &["technology", "discount_offered"],
+                "mid_action_pause" => &[],
                 _ => return Err(StopReason::UnsupportedOffer),
             };
             if option
@@ -1049,7 +1176,13 @@ fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason>
     // just because it was attached to an otherwise familiar move option.
     let permitted = match option.preview.as_ref() {
         None => {
-            subtype == "action_menu" || matches!(option.id.as_str(), "done_moving" | "done_loading")
+            matches!(
+                subtype,
+                "action_menu" | "exhaust_for_production_discount" | "mid_action_pause"
+            ) || matches!(
+                option.id.as_str(),
+                "done_moving" | "done_loading" | "done_committing" | "done_producing"
+            )
         }
         Some(preview) if !preview.truncated => match &preview.outcome {
             Outcome::Certain { deltas } => {
@@ -1061,6 +1194,21 @@ fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason>
                             Quantity::FleetSupplyHeadroom | Quantity::CapacityFree
                         ),
                         "load_cargo" => delta.quantity == Quantity::CapacityFree,
+                        "commit_ground_forces" => delta.quantity == Quantity::GroundForcesOnPlanet,
+                        "produce_unit" => matches!(
+                            delta.quantity,
+                            Quantity::ProductionRemaining
+                                | Quantity::ProductionFreeCapacity
+                                | Quantity::FleetSupplyHeadroom
+                                | Quantity::CapacityFree
+                        ),
+                        "place_unit" => matches!(
+                            delta.quantity,
+                            Quantity::FleetSupplyHeadroom | Quantity::CapacityFree
+                        ),
+                        "pay_resources" => {
+                            matches!(delta.quantity, Quantity::Resources | Quantity::TradeGoods)
+                        }
                         _ => false,
                     })
             }
@@ -1078,7 +1226,7 @@ fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason>
     }
 }
 
-fn safe_events(events: &[String]) -> Result<Vec<String>, StopReason> {
+fn audit_events(events: &[String]) -> Result<(), StopReason> {
     events
         .iter()
         .map(|event| {
@@ -1091,13 +1239,16 @@ fn safe_events(events: &[String]) -> Result<Vec<String>, StopReason> {
                     | "TACTICAL_ACTION_COMPLETE"
                     | "INVASION_BEGAN"
                     | "INVASION_RESOLVED"
+                    | "UNITS_COMMITTED"
+                    | "PLANET_CONTROL_GAINED"
+                    | "PRODUCTION_USED"
                     | "PRODUCTION_RESOLVED"
                     | "ACTION_COMPLETED"
                     | "TURN_PASSED"
                     | "TURN_CLOSING"
             ) || event.starts_with("SYSTEM_ACTIVATED:")
             {
-                Ok(event.clone())
+                Ok(())
             } else {
                 Err(StopReason::UnsupportedSegment)
             }
@@ -1157,7 +1308,6 @@ fn validate_knowledge(
     if view.table.revealed_objectives != baseline.table.revealed_objectives
         || view.table.scored_objectives != baseline.table.scored_objectives
         || view.board.combat.is_some()
-        || view.board.invasion.is_some()
     {
         return Err(StopReason::KnowledgeChanged);
     }
@@ -1249,20 +1399,24 @@ mod tests {
         let choice = game.legal_options().unwrap();
         let expected = RecordedDecision::from_answer(&choice, choice.option("tactical").unwrap());
         let (gate, output) = gate(&game.state);
-        let (replay, replay_status) = ReplayDecider::new(vec![expected]);
+        gate.shared
+            .lock()
+            .unwrap()
+            .plan
+            .recorded_decisions
+            .push(expected);
         let (recorder, recording) = RecordingDecider::new(Box::new(Scripted::new(["tactical"])));
         let buffer = Arc::new(Mutex::new(Some(game.state.clone())));
         let mut decider = PlanningDecider {
             gate,
             buffer: buffer.clone(),
-            replay,
-            replay_status: replay_status.clone(),
+            cursor: 0,
             recorder,
             recording,
         };
         assert!(decider.choose(&choice).is_err());
         assert!(buffer.lock().unwrap().is_none());
-        assert_eq!(replay_status.lock().unwrap().consumed(), 0);
+        assert_eq!(decider.cursor, 0);
         assert!(matches!(
             output.try_recv().unwrap().update,
             PlanningUpdate::Stopped {

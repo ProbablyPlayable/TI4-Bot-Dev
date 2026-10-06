@@ -5,6 +5,7 @@ import { BoardView, PendingChoiceDto } from "../protocol/types.ts";
 import { deriveChoiceRendererModel } from "../presentation/choiceModel.ts";
 import { PlayerIdentityProvider } from "../presentation/PlayerIdentity.tsx";
 import type { LobbyDto } from "../protocol/types.ts";
+import { WorkspaceContext } from "./WorkspaceContext.tsx";
 
 const choice: PendingChoiceDto = {
   prompt: "Choose a strategy card",
@@ -27,6 +28,60 @@ function renderShell(pendingChoice: PendingChoiceDto | null = null) {
 }
 
 describe("GameShell", () => {
+  it("retires queued draft production on refresh while a build receipt is pending", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    const produce: PendingChoiceDto = {
+      actor: "p1",
+      nonce: "planning:1",
+      prompt: "produce in 18",
+      context: {
+        subtype: "produce_unit",
+        target: { System: "18" },
+        outstanding: [{ amount: 3, paid: 0 }],
+      },
+      options: [
+        {
+          id: "build|fighter|1",
+          kind: "produce",
+          label: "Fighter",
+          payload: { unit: "fighter", production_spent: 1, cost: 1, available_resources: 3 },
+        },
+        { id: "done_producing", kind: "decline", label: "Done" },
+      ],
+    };
+    const view = (refreshKey: string, actionable: boolean, nonce: string) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <GameShell
+          header={<div>Header</div>}
+          board={<div>Board</div>}
+          playerSheet={<div>Players</div>}
+          events={[]}
+          choice={{ ...produce, nonce }}
+          viewerSeat="p1"
+          onSubmitChoice={onSubmit}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(view("1:1", true, "planning:1"));
+    fireEvent.click(screen.getByTestId("produce-unit-btn-build|fighter|1"));
+    fireEvent.click(screen.getByTestId("produce-unit-btn-build|fighter|1"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm builds" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    rerender(view("2:2", false, "planning:2"));
+    await act(async () => resolve());
+    rerender(view("2:2", true, "planning:3"));
+    await act(async () => {});
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("build|fighter|1");
+    expect(screen.queryByText(/remaining staged/i)).not.toBeInTheDocument();
+  });
   it("routes only battle-associated reactions and their card selection into the overlay", async () => {
     const board: BoardView = {
       systems: {

@@ -2,9 +2,9 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use ti4_content::{ContentStore, galaxy::all_systems};
-use ti4_engine::fixtures::{game, hub_with_centre, put};
+use ti4_engine::fixtures::{game, hub_with_centre, put, put_on_planet};
 use ti4_model::content_types::POK;
-use ti4_model::id::{PlayerId, SystemId};
+use ti4_model::id::{PlanetId, PlayerId, SystemId};
 use ti4_model::state::Phase;
 use ti4_server::planning::runner::{PlanningEnvelope, PlanningUpdate, StopReason, SubmissionError};
 use ti4_server::protocol::server::DraftApplicationState;
@@ -170,6 +170,320 @@ fn ready_to_apply(session: &GameSession) -> ti4_server::protocol::server::Planni
 }
 
 #[test]
+fn an_expansion_draft_can_apply_its_landing_prefix_before_live_exploration() {
+    let hub = hub_with_centre("35");
+    let system = SystemId::new("35");
+    let player = PlayerId::new("b");
+    let mut state = game(&["a", "b"]);
+    state.phase = Phase::Action;
+    state.active = Some(PlayerId::new("a"));
+    put(&mut state, &system, "carrier", &player, 1);
+    put(&mut state, &system, "infantry", &player, 1);
+    let config = SessionConfig::new("expansion_prefix", state)
+        .with_galaxy(hub.galaxy, vec![])
+        .with_player_ids(vec![PlayerId::new("a"), player.clone()])
+        .with_seat(PlayerId::new("a"), SeatController::Human)
+        .with_seat(player.clone(), SeatController::Human);
+    let session = GameSession::start(config);
+    let _ = live_offer(&session, None);
+    let script = vec![
+        "tactical".into(),
+        "35".into(),
+        "done_moving".into(),
+        "commit|0|bereg".into(),
+    ];
+    let stopped = stopped_draft(&session, &script);
+    assert!(matches!(
+        stopped.update,
+        PlanningUpdate::Stopped {
+            reason: StopReason::Uncertainty,
+            ..
+        }
+    ));
+    assert!(
+        !session
+            .current_state()
+            .system_state(&system)
+            .planet_control
+            .contains_key(&PlanetId::new("bereg"))
+    );
+    answer_live(&session, "pass");
+    let ready = ready_to_apply(&session);
+    let menu = live_offer(&session, None);
+    session
+        .apply_planning(
+            &player,
+            ready.identity.unwrap(),
+            &menu.nonce,
+            menu.game_version,
+        )
+        .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let app = session.planning_status(&player).application.unwrap();
+        if app.state == DraftApplicationState::Applied {
+            assert_eq!(app.applied, script.len());
+            break;
+        }
+        assert_ne!(app.state, DraftApplicationState::NeedsDecision, "{app:?}");
+        assert!(Instant::now() < deadline, "partial application deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        session.plans()[&player].recorded_decisions.len(),
+        script.len()
+    );
+}
+
+#[test]
+fn applying_deterministic_landing_and_production_executes_the_whole_recorded_action() {
+    let hub = hub_with_centre("35");
+    let system = SystemId::new("35");
+    let player = PlayerId::new("b");
+    let bereg = PlanetId::new("bereg");
+    let lirta = PlanetId::new("lirtaiv");
+    let mut state = game(&["a", "b"]);
+    state.phase = Phase::Action;
+    state.active = Some(PlayerId::new("a"));
+    put(&mut state, &system, "carrier", &player, 1);
+    put(&mut state, &system, "infantry", &player, 1);
+    for planet in [&bereg, &lirta] {
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), player.clone());
+        put_on_planet(&mut state, &system, planet, "spacedock", &player, 1);
+    }
+    state.player_mut(&player).unwrap().trade_goods = 5;
+    let config = SessionConfig::new("landing_production", state)
+        .with_galaxy(hub.galaxy, vec![])
+        .with_player_ids(vec![PlayerId::new("a"), player.clone()])
+        .with_seat(PlayerId::new("a"), SeatController::Human)
+        .with_seat(player.clone(), SeatController::Human);
+    let session = GameSession::start(config);
+    let _ = live_offer(&session, None);
+    let script = vec![
+        "tactical".into(),
+        "35".into(),
+        "done_moving".into(),
+        "commit|0|bereg".into(),
+        "build|infantry|2".into(),
+        "trade_good".into(),
+        "place|lirtaiv".into(),
+        "done_producing".into(),
+    ];
+    let stopped = stopped_draft(&session, &script);
+    assert!(matches!(
+        stopped.update,
+        PlanningUpdate::Stopped {
+            reason: StopReason::MovementComplete,
+            ..
+        }
+    ));
+    // Reconfirming identical movement revalidates the complete retained tail.
+    session
+        .edit_planning_movement(&player, stopped.identity)
+        .unwrap();
+    let editing = replayed_offer(&session);
+    assert_eq!(editing.recorded_decisions.len(), script.len());
+    session
+        .submit_planning_choice(&player, editing.identity, "done_moving")
+        .unwrap();
+    loop {
+        let envelope = session.recv_planning_timeout(&player, DEADLINE).unwrap();
+        assert_eq!(envelope.recorded_decisions.len(), script.len());
+        assert!(
+            !envelope.awaiting_answer,
+            "retained choices should replay: {envelope:?}"
+        );
+        if matches!(envelope.update, PlanningUpdate::Stopped { .. }) {
+            break;
+        }
+    }
+    answer_live(&session, "pass");
+    let ready = ready_to_apply(&session);
+    let menu = live_offer(&session, None);
+    session
+        .apply_planning(
+            &player,
+            ready.identity.unwrap(),
+            &menu.nonce,
+            menu.game_version,
+        )
+        .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    let application = loop {
+        let application = session.planning_status(&player).application.unwrap();
+        if !matches!(
+            application.state,
+            DraftApplicationState::Applying | DraftApplicationState::WaitingForPlayer
+        ) {
+            break application;
+        }
+        assert!(Instant::now() < deadline, "{application:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let next = loop {
+        let next = live_offer(&session, Some(&menu.nonce));
+        if next.choice.context.as_ref().unwrap().subtype == "action_menu" {
+            break next;
+        }
+        assert!(Instant::now() < deadline, "action completion deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(
+        application.state,
+        DraftApplicationState::Applied,
+        "{application:?}; next: {:?}",
+        next.choice
+    );
+    assert_eq!(application.applied, script.len());
+    assert_eq!(next.choice.context.as_ref().unwrap().subtype, "action_menu");
+    let state = session.current_state();
+    let board = state.system_state(&system);
+    assert_eq!(board.on_planet_of(&bereg, &player).len(), 2);
+    assert_eq!(board.on_planet_of(&lirta, &player).len(), 3);
+    assert_eq!(state.player(&player).unwrap().trade_goods, 4);
+    assert_eq!(
+        session.plans()[&player].recorded_decisions.len(),
+        script.len()
+    );
+}
+
+#[test]
+fn revised_movement_revalidates_landings_and_builds_and_repair_keeps_the_tail() {
+    for remove_cargo in [false, true] {
+        let hub = hub_with_centre("35");
+        let target = SystemId::new("35");
+        let origin = SystemId::new(&hub.outer[0]);
+        let player = PlayerId::new("b");
+        let mut state = game(&["a", "b"]);
+        state.phase = Phase::Action;
+        state.active = Some(PlayerId::new("a"));
+        put(&mut state, &origin, "carrier", &player, 1);
+        put(&mut state, &origin, "infantry", &player, 1);
+        put(&mut state, &origin, "cruiser", &player, 1);
+        for planet in ["bereg", "lirtaiv"] {
+            state
+                .system_mut(&target)
+                .set_control(PlanetId::new(planet), player.clone());
+            put_on_planet(
+                &mut state,
+                &target,
+                &PlanetId::new(planet),
+                "spacedock",
+                &player,
+                1,
+            );
+        }
+        state.player_mut(&player).unwrap().trade_goods = 5;
+        let config = SessionConfig::new("revalidate_tail", state)
+            .with_galaxy(hub.galaxy, vec![])
+            .with_player_ids(vec![PlayerId::new("a"), player.clone()])
+            .with_seat(PlayerId::new("a"), SeatController::Human)
+            .with_seat(player.clone(), SeatController::Human);
+        let session = GameSession::start(config);
+        let _ = live_offer(&session, None);
+        let script = vec![
+            "tactical".into(),
+            "35".into(),
+            format!("move|{origin}|0"),
+            "load|0".into(),
+            "done_moving".into(),
+            "commit|0|bereg".into(),
+            "build|destroyer|1".into(),
+            "trade_good".into(),
+            "done_producing".into(),
+        ];
+        let stopped = stopped_draft(&session, &script);
+        let tail = stopped.recorded_decisions[5..].to_vec();
+        session
+            .edit_planning_movement(&player, stopped.identity)
+            .unwrap();
+        let editing = replayed_offer(&session);
+        // Move the cruiser first while retaining the original landing intent.
+        session
+            .submit_planning_choice(&player, editing.identity, &format!("move|{origin}|2"))
+            .unwrap();
+        let answers = if remove_cargo {
+            vec!["done_moving".to_owned()]
+        } else {
+            vec![
+                format!("move|{origin}|0"),
+                "load|0".into(),
+                "done_moving".into(),
+            ]
+        };
+        for answer in answers {
+            let offer = planning_offer(&session);
+            assert!(offer.awaiting_answer);
+            session
+                .submit_planning_choice(&player, offer.identity, &answer)
+                .unwrap();
+        }
+        if remove_cargo {
+            let blocked = planning_offer(&session);
+            assert!(blocked.awaiting_answer);
+            assert_eq!(&blocked.recorded_decisions[4..], tail.as_slice());
+            assert_eq!(blocked.progress.remaining, tail.len());
+            assert!(!session.planning_status(&player).can_apply);
+            // Repair the unavailable landing by restoring its carrier and cargo.
+            session
+                .edit_planning_movement(&player, blocked.identity)
+                .unwrap();
+            let editing = replayed_offer(&session);
+            session
+                .submit_planning_choice(&player, editing.identity, &format!("move|{origin}|0"))
+                .unwrap();
+            for answer in ["load|0", "done_moving"] {
+                let offer = planning_offer(&session);
+                session
+                    .submit_planning_choice(&player, offer.identity, answer)
+                    .unwrap();
+            }
+        }
+        let mut landing = None;
+        loop {
+            let envelope = session.recv_planning_timeout(&player, DEADLINE).unwrap();
+            assert!(!envelope.awaiting_answer, "unexpected repair: {envelope:?}");
+            if let PlanningUpdate::SafeOffer(publication) = &envelope.update {
+                let choice = publication.choice.as_ref().unwrap();
+                if choice.context.as_ref().unwrap().subtype == "commit_ground_forces" {
+                    landing = Some(choice.clone());
+                }
+            }
+            if let PlanningUpdate::Stopped { reason, .. } = envelope.update {
+                assert_eq!(reason, StopReason::MovementComplete);
+                assert_eq!(envelope.progress.remaining, 0);
+                let decisions = envelope.recorded_decisions;
+                let rebound = decisions
+                    .iter()
+                    .find(|decision| decision.kind == "commit")
+                    .unwrap();
+                assert_eq!(rebound.payload, tail[0].payload);
+                assert!(landing.is_some());
+                assert_eq!(
+                    decisions[decisions.len() - 3..]
+                        .iter()
+                        .map(|decision| &decision.option_id)
+                        .collect::<Vec<_>>(),
+                    tail[1..]
+                        .iter()
+                        .map(|decision| &decision.option_id)
+                        .collect::<Vec<_>>()
+                );
+                if !remove_cargo {
+                    assert_ne!(
+                        decisions[decisions.len() - 3].payload["fleet_headroom_after"],
+                        tail[1].payload["fleet_headroom_after"]
+                    );
+                }
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn reopening_movement_retains_the_script_until_new_answers_and_applies_only_the_revision() {
     let (mut config, _, origin, target, _) = fixture(true);
     put(
@@ -267,6 +581,18 @@ fn reopening_movement_retains_the_script_until_new_answers_and_applies_only_the_
             offer.game_version,
         )
         .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    while session
+        .planning_status(&PlayerId::new("b"))
+        .application
+        .as_ref()
+        .unwrap()
+        .state
+        == DraftApplicationState::Applying
+    {
+        assert!(Instant::now() < deadline, "application deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let _ = live_offer(&session, Some(&offer.nonce));
     let state = session.current_state();
     assert_eq!(state.system_state(&target).units.len(), 2);

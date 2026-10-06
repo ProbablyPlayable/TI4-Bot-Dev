@@ -70,6 +70,27 @@ impl RecordedDecision {
             }
     }
 
+    pub(crate) fn matches_replay_question(&self, choice: &Choice) -> bool {
+        if let (Some(expected), Some(actual)) = (&self.context, &choice.context) {
+            let mut rebound = expected.clone();
+            if expected.subtype == "commit_ground_forces"
+                && expected.invasion_seq.is_some()
+                && actual.invasion_seq.is_some()
+            {
+                rebound.invasion_seq = actual.invasion_seq;
+            }
+            if matches!(
+                expected.subtype.as_str(),
+                "produce_unit" | "pay_resources" | "place_unit"
+            ) {
+                // Costs and remaining capacity are recomputed by the fresh engine.
+                rebound.outstanding.clone_from(&actual.outstanding);
+            }
+            return self.player == choice.player && rebound == *actual;
+        }
+        self.matches_question(choice)
+    }
+
     /// Resolve only the exact recorded instruction against a fresh live offer.
     pub(crate) fn offered_option(&self, choice: &Choice) -> Option<ChoiceOption> {
         if !self.matches_question(choice) {
@@ -86,7 +107,7 @@ impl RecordedDecision {
         }
     }
 
-    /// Movement/cargo vector indexes and hold counters are execution details.
+    /// Movement/cargo/landing vector indexes and hold counters are execution details.
     /// Reconstruction may rebind those, but keeps every other semantic field,
     /// including boost choices, unit condition, and the cargo's actual pickup
     /// system (which may differ from the carrier's origin). Live application stays exact.
@@ -97,6 +118,33 @@ impl RecordedDecision {
             .map(|context| context.subtype.as_str());
         let volatile: &[&str] = match (subtype, self.kind.as_str()) {
             (Some("movement_step"), "move") => &[],
+            (Some("commit_ground_forces"), "commit") => &[],
+            (Some("produce_unit"), _) => &[
+                "cost",
+                "printed_cost",
+                "discount",
+                "placed",
+                "credit",
+                "available_resources",
+                "free_this_use",
+                "credit_used",
+                "owed",
+                "production_spent",
+                "capacity_used",
+                "fleet_headroom_after",
+                "capacity_free_after",
+                "fleet_excess_after",
+                "capacity_excess_after",
+            ],
+            (Some("place_unit"), _) => &[
+                "placed",
+                "capacity_used",
+                "fleet_headroom_after",
+                "capacity_free_after",
+                "fleet_excess_after",
+                "capacity_excess_after",
+            ],
+            (Some("pay_resources"), _) => &["owed"],
             (Some("load_cargo"), "load" | "decline") => &[
                 "capacity_remaining",
                 "loaded_ground",
@@ -110,6 +158,10 @@ impl RecordedDecision {
             }
         };
         self.kind == option.kind
+            && (!matches!(
+                subtype,
+                Some("produce_unit" | "place_unit" | "pay_resources")
+            ) || self.option_id == option.id)
             && (self.kind != "decline" || self.option_id == option.id)
             && self
                 .payload
@@ -122,7 +174,7 @@ impl RecordedDecision {
     }
 
     pub(crate) fn replay_option(&self, choice: &Choice) -> Option<ChoiceOption> {
-        if !self.matches_question(choice) {
+        if !self.matches_replay_question(choice) {
             return None;
         }
         let mut matches = choice
@@ -279,7 +331,7 @@ pub type ReplayStatus = Arc<Mutex<ReplayProgress>>;
 /// and replay never searches ahead for another answer.
 pub struct ReplayDecider {
     progress: ReplayStatus,
-    semantic_movement: bool,
+    semantic_planning: bool,
 }
 
 impl ReplayDecider {
@@ -295,15 +347,16 @@ impl ReplayDecider {
         (
             Self {
                 progress: progress.clone(),
-                semantic_movement: false,
+                semantic_planning: false,
             },
             progress,
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn for_planning(decisions: Vec<RecordedDecision>) -> (Self, ReplayStatus) {
         let (mut decider, status) = Self::new(decisions);
-        decider.semantic_movement = true;
+        decider.semantic_planning = true;
         (decider, status)
     }
 }
@@ -319,11 +372,15 @@ impl Decider for ReplayDecider {
         let result = if let Some(reason) = progress.stop_reason {
             Err(reason)
         } else if let Some(expected) = progress.remaining.front() {
-            if !expected.matches_question(choice) {
+            if !(if self.semantic_planning {
+                expected.matches_replay_question(choice)
+            } else {
+                expected.matches_question(choice)
+            }) {
                 Err(ReplayStopReason::QuestionMismatch)
             } else {
                 let mut matching = choice.options.iter().filter(|option| {
-                    if self.semantic_movement {
+                    if self.semantic_planning {
                         expected.matches_replay_option(option)
                     } else {
                         option.id == expected.option_id

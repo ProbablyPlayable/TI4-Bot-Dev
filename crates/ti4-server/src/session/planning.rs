@@ -226,7 +226,16 @@ impl SessionPlanning {
                     || !decision.context.as_ref().is_some_and(|context| {
                         matches!(
                             context.subtype.as_str(),
-                            "action_menu" | "activate_system" | "movement_step" | "load_cargo"
+                            "action_menu"
+                                | "activate_system"
+                                | "movement_step"
+                                | "load_cargo"
+                                | "commit_ground_forces"
+                                | "produce_unit"
+                                | "pay_resources"
+                                | "place_unit"
+                                | "exhaust_for_production_discount"
+                                | "mid_action_pause"
                         )
                     })
             })
@@ -236,7 +245,23 @@ impl SessionPlanning {
         Ok(plan)
     }
 
-    pub fn begin_application(&mut self, player: &PlayerId, plan: PlayerPlan) {
+    pub fn begin_application(
+        &mut self,
+        player: &PlayerId,
+        mut plan: PlayerPlan,
+        activation_seq: u32,
+    ) {
+        // Hypothetical preparation advances scoped counters to invalidate old
+        // effects. Bind landing contexts to the upcoming authoritative activation
+        // once, while retaining exact live question/option matching thereafter.
+        for decision in &mut plan.recorded_decisions {
+            if let Some(context) = &mut decision.context
+                && context.subtype == "commit_ground_forces"
+                && context.invasion_seq.is_some()
+            {
+                context.invasion_seq = Some(u64::from(activation_seq.saturating_add(1)));
+            }
+        }
         let total = plan.recorded_decisions.len();
         self.applications.insert(
             player.clone(),

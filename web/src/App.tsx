@@ -368,7 +368,7 @@ const GameViewContainer: React.FC<{
           : "Preparing"
         : typeof update === "object" && "Stopped" in update
           ? {
-              MovementComplete: "Movement complete",
+              MovementComplete: "Tactical action complete",
               ReplayMismatch: "Replay mismatch",
               Uncertainty: "Uncertainty",
               KnowledgeChanged: "Known information changed",
@@ -405,7 +405,11 @@ const GameViewContainer: React.FC<{
           {application?.message ||
             (planning.envelope?.editing_movement
               ? "Edit the recorded fleet and cargo below, then commit to regenerate the preview."
-              : "Preview only. Apply draft executes the recorded choices when your live tactical action is available.")}
+              : typeof update === "object" &&
+                  "Stopped" in update &&
+                  update.Stopped.reason === "Uncertainty"
+                ? "Preview stopped before an unknown outcome. Recorded choices can still be applied."
+                : "Preview movement, invasion, and production until an unknown outcome. Apply draft executes recorded choices when your live tactical action is available.")}
         </p>
         {!!planning.envelope?.progress.recorded_answers && (
           <span className="draft-status__progress">

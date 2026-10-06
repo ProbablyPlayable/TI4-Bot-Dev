@@ -8,6 +8,7 @@ import {
 import { DecisionHeader } from "./DecisionHeader.tsx";
 import { UnitIcon, getUnitDisplayName } from "./UnitIcon.tsx";
 import { WorkflowShell } from "./WorkflowShell.tsx";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 
 export type Landing = { planet: string; unit: string; damaged: boolean };
 const same = (a: Landing, b: Landing) =>
@@ -48,6 +49,11 @@ export const InvasionLandingTray: React.FC<{
   onDraftChange,
   embedded = false,
 }) => {
+  const workspace = useWorkspace();
+  const binding = `${workspace.refreshKey}:${workspace.movementEditRevision ?? 0}`;
+  const currentBinding = useRef(binding);
+  currentBinding.current = binding;
+  const confirmedBinding = useRef(binding);
   const system = board?.invasion?.system_id ?? board?.active_system ?? "";
   const [localDraft, setLocalDraft] = useState<Landing[]>([]);
   const draft = controlledDraft ?? localDraft;
@@ -169,7 +175,18 @@ export const InvasionLandingTray: React.FC<{
   }, [previewKey, choice.actor, viewerSeat]);
 
   useEffect(() => {
-    if (!running || submitting.current || submittedNonce.current === choice.nonce || !draft.length)
+    if (running && confirmedBinding.current !== binding) {
+      setRunning(false);
+      setError("Draft refreshed. Review the remaining landings before confirming again.");
+      return;
+    }
+    if (
+      !workspace.actionable ||
+      !running ||
+      submitting.current ||
+      submittedNonce.current === choice.nonce ||
+      !draft.length
+    )
       return;
     if (
       choice.actor !== origin.current.actor ||
@@ -191,20 +208,36 @@ export const InvasionLandingTray: React.FC<{
     }
     submitting.current = true;
     const nonce = choice.nonce;
+    const submittedBinding = binding;
     void onSubmitRef
       .current(offered.option.id)
       .then(() => {
-        submittedNonce.current = nonce;
-        setDraft((current) => current.slice(1));
+        // Success confirms this instruction was recorded, including when a
+        // replacement envelope retained its request ID. Refresh retires automatic
+        // execution, not the receipt's reconciliation of the remaining draft.
+        if (currentBinding.current === submittedBinding) submittedNonce.current = nonce;
+        const current = draftRef.current;
+        const index = current.indexOf(next);
+        if (index >= 0) setDraft([...current.slice(0, index), ...current.slice(index + 1)]);
       })
       .catch((cause: unknown) => {
+        if (currentBinding.current !== submittedBinding) return;
         setRunning(false);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         submitting.current = false;
       });
-  }, [running, draft, choice.nonce, choice.actor, choice.context?.subtype, system]);
+  }, [
+    running,
+    draft,
+    choice.nonce,
+    choice.actor,
+    choice.context?.subtype,
+    system,
+    binding,
+    workspace.actionable,
+  ]);
 
   useEffect(() => {
     if (running && draft.length === 0) setRunning(false);
@@ -236,7 +269,10 @@ export const InvasionLandingTray: React.FC<{
         isActor && (
           <div className="invasion-landing-body">
             <p className="invasion-landing-instruction">
-              Stage forces to planets with + and −. Only confirmed landings are public.
+              Stage forces to planets with + and −.{" "}
+              {workspace.draft
+                ? "Confirmed draft landings remain private."
+                : "Only confirmed landings are public."}
             </p>
 
             <div className="invasion-landing-planets-container">
@@ -409,6 +445,7 @@ export const InvasionLandingTray: React.FC<{
                   origin.current = { actor: choice.actor, system };
                   submittedNonce.current = null;
                   setError(null);
+                  confirmedBinding.current = binding;
                   setRunning(true);
                 }}
               >

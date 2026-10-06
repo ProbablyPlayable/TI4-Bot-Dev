@@ -147,7 +147,7 @@ test("an undelivered movement pipeline retries after reconnect without losing or
   expect(trace.envelopes()[count].identity).toEqual(offer.identity);
   expect(trace.envelopes()[count].awaiting_answer).toBe(true);
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Unsupported boundary|Uncertainty/,
+    /Tactical action complete|Unsupported boundary|Uncertainty/,
   );
   const submissions = trace.outgoing.filter(
     (m): m is Extract<ClientMessage, { type: "submit_planning_choice" }> =>
@@ -380,7 +380,7 @@ for (const delivery of ["refresh", "reconnect"] as const) {
     const { draft } = await beginDraft(pages[b], trace, initial, players[b].id);
     await draft.getByTestId("commit-moves-btn").click();
     await expect(draft.getByTestId("draft-status").first()).toContainText(
-      /Movement complete|Unsupported boundary|Uncertainty/,
+      /Tactical action complete|Unsupported boundary|Uncertainty/,
     );
     await draft.getByRole("button", { name: "Edit movement", exact: true }).first().click();
     await expect(draft.getByTestId("tactical-movement-tray")).toBeVisible();
@@ -474,7 +474,7 @@ test("Apply draft confirms the supported prefix in Live and reconnect never appl
   const { draft, target } = await beginDraft(page, wires[b], initial, players[b].id);
   await draft.getByTestId("commit-moves-btn").click();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Unsupported boundary|Uncertainty/,
+    /Tactical action complete|Unsupported boundary|Uncertainty/,
   );
   await expect(
     draft.getByRole("button", { name: "Apply draft", exact: true }).first(),
@@ -649,7 +649,7 @@ test("reopening a recorded fleet preserves independent ships, cargo, and camera 
   await independent.click();
   await draft.getByTestId("commit-moves-btn").click();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Unsupported boundary|Uncertainty/,
+    /Tactical action complete|Unsupported boundary|Uncertainty/,
   );
   const original = wires[b].envelopes().at(-1)!;
   await draft.getByTitle("Zoom In", { exact: true }).click();
@@ -678,7 +678,7 @@ test("reopening a recorded fleet preserves independent ships, cargo, and camera 
   );
   await draft.getByTestId("commit-moves-btn").click();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Unsupported boundary|Uncertainty/,
+    /Tactical action complete|Unsupported boundary|Uncertainty/,
   );
   const revised = wires[b].envelopes().at(-1)!;
   const moves = revised.recorded_decisions!.filter((decision) => decision.kind === "move");
@@ -751,7 +751,7 @@ test("private tactical draft preserves staging, refreshes after live movement, s
   await draft.getByTestId("resume-decision-btn").click();
   await draft.getByTestId("commit-moves-btn").click();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Uncertainty|Unsupported boundary/,
+    /Tactical action complete|Uncertainty|Unsupported boundary/,
   );
   const completed = wires[b]
     .envelopes()
@@ -800,7 +800,7 @@ test("private tactical draft preserves staging, refreshes after live movement, s
     .toBeGreaterThan(completed.identity.checkpoint_id);
   await expect(draft).toBeVisible();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Replay mismatch|Uncertainty|Unsupported boundary/,
+    /Tactical action complete|Replay mismatch|Uncertainty|Unsupported boundary/,
   );
   const beforeUndo = wires[b].envelopes().at(-1)!.identity.checkpoint_id;
   await history(request, gameId, players[0].session, "undo");
@@ -1148,7 +1148,7 @@ test("an in-flight draft pipeline reconciles refresh and continues while Live is
     .first()
     .click();
   await expect(draft.getByTestId("draft-status").first()).toContainText(
-    /Movement complete|Uncertainty|Unsupported boundary/,
+    /Tactical action complete|Uncertainty|Unsupported boundary/,
   );
   // Re-deliver a genuinely old server offer/result after the replacement stopped.
   wires[b].deliver({

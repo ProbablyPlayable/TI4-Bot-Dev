@@ -199,6 +199,148 @@ function deliverDraft(socket: WebSocketRoute, envelope: PlanningEnvelope) {
   );
 }
 
+test("draft landings continue through production, payment and placement using only private choices", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...movementSnapshot, pending_choice: null });
+  const position = structuredClone(movementSnapshot.view);
+  position.players[0].trade_goods = 5;
+  position.board.systems["42"].planets = {
+    bereg: { planet_id: "bereg", controlled_by: seat, exhausted: false, attachments: [] },
+  };
+  position.board.systems["42"].units = [
+    { owner: seat, unit_type: "carrier", damaged: false },
+    { owner: seat, unit_type: "infantry", damaged: false },
+  ];
+  position.board.invasion = {
+    system_id: "42",
+    invasion_seq: 1,
+    invader: seat,
+    phase: "landing",
+    planets: ["bereg"],
+    current_planet: null,
+    defender: null,
+    ground_round: 0,
+  };
+  const produce = {
+    player: seat,
+    prompt: "produce in 42",
+    context: {
+      subtype: "produce_unit",
+      target: { System: "42" },
+      outstanding: [{ kind: "ProductionCapacity", amount: 4, paid: 0 }],
+    },
+    options: [
+      {
+        id: "build|infantry|2",
+        kind: "produce",
+        label: "Produce infantry",
+        payload: {
+          unit: "infantry",
+          count: 2,
+          production_spent: 2,
+          cost: 1,
+          available_resources: 5,
+        },
+      },
+      { id: "done_producing", kind: "decline", label: "Finish production" },
+    ],
+  };
+  const choices = [
+    {
+      player: seat,
+      prompt: "commit ground forces in 42",
+      context: { subtype: "commit_ground_forces", target: { System: "42" }, invasion_seq: 1 },
+      options: [
+        {
+          id: "commit|0|bereg",
+          kind: "commit",
+          label: "Land infantry on Bereg",
+          payload: { unit: "infantry", planet: "bereg", damaged: false },
+        },
+        { id: "done_committing", kind: "decline", label: "Finish landings" },
+      ],
+    },
+    produce,
+    {
+      player: seat,
+      prompt: "pay 1 more resources",
+      context: {
+        subtype: "pay_resources",
+        target: { System: "42" },
+        outstanding: [{ kind: "Resources", amount: 1, paid: 0 }],
+      },
+      options: [
+        {
+          id: "trade_good",
+          kind: "pay",
+          label: "Spend a trade good",
+          payload: { worth: 1, owed: 1, kind: "resources" },
+        },
+      ],
+    },
+    {
+      player: seat,
+      prompt: "place the infantry",
+      context: { subtype: "place_unit", target: { System: "42" } },
+      options: [
+        {
+          id: "place|bereg",
+          kind: "place",
+          label: "Place on Bereg",
+          payload: { unit: "infantry", count: 2, destination: "bereg", system: "42" },
+        },
+      ],
+    },
+    produce,
+  ];
+  let envelope = movementDraft();
+  const messages: ClientMessage[] = [];
+  const receipts: string[] = [];
+  const offer = (index: number) => {
+    const currentPosition = structuredClone(position);
+    if (index > 0) currentPosition.board.invasion = null;
+    const publication = { position: currentPosition, choice: choices[index] ?? null, events: [] };
+    envelope = {
+      ...envelope,
+      publication_id: index + 1,
+      identity: { ...envelope.identity, plan_revision: index + 2 },
+      recorded_request_ids: receipts,
+      awaiting_answer: index < choices.length,
+      progress: { ...envelope.progress, recorded_answers: index + 2 },
+      update:
+        index < choices.length
+          ? { SafeOffer: publication }
+          : { Stopped: { reason: "MovementComplete", last_safe_publication: publication } },
+    };
+    deliverDraft(socket, envelope);
+  };
+  socket.onMessage((raw) => {
+    const message = JSON.parse(String(raw)) as ClientMessage;
+    messages.push(message);
+    if (message.type !== "submit_planning_choice") return;
+    receipts.push(message.request_id!);
+    offer(receipts.length);
+  });
+  offer(0);
+  const draft = await showDraft(page);
+  await draft.getByRole("button", { name: /Land infantry on Bereg/ }).click();
+  await draft.getByRole("button", { name: "Confirm landings" }).click();
+  await expect(draft.getByTestId("production-builder-drawer")).toBeVisible();
+  await draft.getByTestId("produce-unit-btn-build|infantry|2").click();
+  await draft.getByRole("button", { name: "Confirm builds" }).click();
+  await expect(draft.getByTestId("payment-drawer")).toBeVisible();
+  await draft.getByTestId("tg-increment-btn").click();
+  await draft.getByTestId("confirm-payment-btn").click();
+  await draft.getByTestId("place-spot-btn-place|bereg").click();
+  await draft.getByTestId("done-producing-btn").click();
+  await expect(draft.getByTestId("draft-status").first()).toContainText("Tactical action complete");
+  expect(
+    messages.filter((m) => m.type === "submit_planning_choice").map((m) => m.option_id),
+  ).toEqual(["commit|0|bereg", "build|infantry|2", "trade_good", "place|bereg", "done_producing"]);
+  expect(messages.some((m) => m.type === "submit_choice")).toBe(false);
+});
+
 function recordedMove(payload: Record<string, unknown>, option_id = "old-move") {
   return {
     player: seat,

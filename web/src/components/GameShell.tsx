@@ -705,7 +705,13 @@ export const GameShell: React.FC<GameShellProps> = ({
   const [openDrawer, setOpenDrawer] = useState<"events" | "players" | null>(null);
   const workspace = useWorkspace();
   const [isChoiceMinimized, setIsChoiceMinimized] = useState(false);
+  const queueBinding = workspace.draft
+    ? `${workspace.refreshKey}:${workspace.movementEditRevision ?? 0}`
+    : `${history?.generation ?? 0}`;
+  const currentQueueBinding = useRef(queueBinding);
+  currentQueueBinding.current = queueBinding;
   const [productionQueue, setProductionQueue] = useState<{
+    binding: string;
     actor: string;
     system: string;
     units: string[];
@@ -745,12 +751,20 @@ export const GameShell: React.FC<GameShellProps> = ({
   useEffect(() => {
     if (historyBusy) setProductionQueue(null);
   }, [historyBusy]);
+  useEffect(() => {
+    setProductionQueue((current) => (current?.binding === queueBinding ? current : null));
+    productionSubmitting.current = false;
+    submittedNonce.current = null;
+    setProductionError(null);
+  }, [queueBinding]);
 
   // A build may open payment and placement decisions before the next production offer.
   // Keep the queue above the workflow renderer and resume only on a fresh legal offer.
   useEffect(() => {
     if (
       !productionQueue?.units.length ||
+      productionQueue.binding !== queueBinding ||
+      !workspace.actionable ||
       !choice ||
       productionSubmitting.current ||
       choice.nonce === submittedNonce.current
@@ -798,20 +812,32 @@ export const GameShell: React.FC<GameShellProps> = ({
       : onSubmitChoice(option.id);
     void submit
       .then(() => {
+        if (currentQueueBinding.current !== productionQueue.binding) return;
         productionSubmitting.current = false;
         setProductionQueue((current) =>
-          current && current.actor === choice.actor && current.system === system
+          current &&
+          current.binding === productionQueue.binding &&
+          current.actor === choice.actor &&
+          current.system === system
             ? { ...current, units: current.units.slice(1) }
             : current,
         );
       })
       .catch((error: unknown) => {
+        if (currentQueueBinding.current !== productionQueue.binding) return;
         productionSubmitting.current = false;
         setProductionError(error instanceof Error ? error.message : String(error));
         setProductionQueue(null);
         submittedNonce.current = null;
       });
-  }, [choice, productionQueue, onSubmitChoice, onSubmitBasketBatch]);
+  }, [
+    choice,
+    productionQueue,
+    onSubmitChoice,
+    onSubmitBasketBatch,
+    queueBinding,
+    workspace.actionable,
+  ]);
 
   const playersMap = React.useMemo<Record<string, PlayerView>>(() => {
     if (!players) return {};
@@ -941,7 +967,7 @@ export const GameShell: React.FC<GameShellProps> = ({
                   : "";
               setProductionError(null);
               submittedNonce.current = null;
-              setProductionQueue({ actor: choice.actor, system, units });
+              setProductionQueue({ binding: queueBinding, actor: choice.actor, system, units });
             }}
           />
         </PipelineRunnerContext.Provider>

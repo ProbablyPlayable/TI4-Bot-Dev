@@ -2259,6 +2259,11 @@ impl InvasionWindow {
                     == Some(&self.system)
             });
             if lost_home {
+                // This public trigger opens a window that inspects the former
+                // holder's private secret objectives, even when none is scoreable.
+                // Latch before that inspection so disposable executions cannot
+                // disclose the hand through whether a scoring offer appears.
+                ctx.rng.observe_hidden_information();
                 let holder = previous.as_ref().expect("lost home has a former holder");
                 let occurrence = state.begin_feat_occurrence();
                 state.record_event_feat(holder, Feat::LostAHomePlanet, occurrence);

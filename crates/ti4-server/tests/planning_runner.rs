@@ -17,7 +17,7 @@ use ti4_engine::game::Game;
 use ti4_engine::observation::ExecutionObservation;
 use ti4_engine::timing::{Ability, Relation};
 use ti4_model::content_types::POK;
-use ti4_model::id::{ActionCardId, PlanetId, PlayerId, SystemId, TechnologyId};
+use ti4_model::id::{ActionCardId, PlanetId, PlayerId, SecretObjectiveId, SystemId, TechnologyId};
 use ti4_model::state::Phase;
 use ti4_server::planning::RecordingDecider;
 use ti4_server::planning::runner::{
@@ -257,11 +257,13 @@ fn collect(runner: &PlanningRunner, answers: &[String]) -> Vec<PlanningEnvelope>
         let envelope = next(runner);
         assert_eq!(envelope.assumptions, vec![ASSUMPTION]);
         if let PlanningUpdate::SafeOffer(offer) = &envelope.update {
-            if envelope.progress.remaining == 0 {
+            if envelope.awaiting_answer {
                 let answer = answers.next().expect("expected question");
                 runner
                     .submit(envelope.identity, answer)
-                    .expect("safe answer");
+                    .unwrap_or_else(|error| {
+                        panic!("safe answer {answer}: {error:?}; offer: {:?}", offer.choice)
+                    });
             }
             assert!(offer.choice.is_some());
         }
@@ -752,6 +754,8 @@ fn replay_does_not_supply_an_answer_to_an_unaudited_nested_offer() {
         reset_revision: 0,
         editing_movement: false,
         movement_edit_revision: 0,
+        revalidation_start: None,
+        replacing_movement: false,
         base_checkpoint_id: 10,
         recorded_decisions: retained.clone(),
         recorded_request_ids: vec![],
@@ -790,6 +794,8 @@ fn replay_stops_at_a_rift_before_consuming_a_matching_later_answer() {
             reset_revision: 0,
             editing_movement: false,
             movement_edit_revision: 0,
+            revalidation_start: None,
+            replacing_movement: false,
             base_checkpoint_id: 10,
             recorded_decisions: retained.clone(),
             recorded_request_ids: vec![],
@@ -845,21 +851,481 @@ fn unknown_optional_eligibility_is_excluded_before_it_can_inspect_a_hand() {
 }
 
 #[test]
-fn a_public_aftermath_handoff_stops_before_its_automatic_effects_are_published() {
+fn uncontested_planetary_aftermath_can_complete_without_revealing_events() {
     let (live, _, origin) = checkpoint(false, false);
     let transcript = collect(
         &runner(&live),
         &["tactical".into(), origin.to_string(), "done_moving".into()],
     );
-    assert_eq!(reason(&transcript), StopReason::UnsupportedSegment);
-    assert_eq!(transcript.last().unwrap().progress.completed_steps, 2);
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    assert_no_events(&transcript);
+}
+
+fn planetary_checkpoint(production: bool) -> (Game<'static>, SystemId, Vec<PlanetId>) {
+    let content = ContentStore::embedded();
+    let hub = hub_with_centre("35");
+    let system = SystemId::new(&hub.centre);
+    let planets: Vec<_> = ti4_content::galaxy::system(content, "35", POK)
+        .unwrap()
+        .planets()
+        .iter()
+        .map(|id| PlanetId::new(*id))
+        .collect();
+    let player = PlayerId::new("b");
+    let mut state = game(&["a", "b"]);
+    state.phase = Phase::Action;
+    state.active = Some(PlayerId::new("a"));
+    put(&mut state, &system, "carrier", &player, 1);
+    put(&mut state, &system, "infantry", &player, 1);
+    if production {
+        for planet in &planets {
+            state
+                .system_mut(&system)
+                .set_control(planet.clone(), player.clone());
+            put_on_planet(&mut state, &system, planet, "spacedock", &player, 1);
+        }
+        state.player_mut(&player).unwrap().trade_goods = 5;
+    }
+    (
+        Game::new(state, content).with_galaxy(hub.galaxy),
+        system,
+        planets,
+    )
+}
+
+fn assert_no_events(transcript: &[PlanningEnvelope]) {
+    for envelope in transcript {
+        let publication = match &envelope.update {
+            PlanningUpdate::SafeOffer(publication) | PlanningUpdate::SafeStep(publication) => {
+                Some(publication)
+            }
+            PlanningUpdate::Stopped {
+                last_safe_publication,
+                ..
+            } => last_safe_publication.as_ref(),
+            _ => None,
+        };
+        if let Some(publication) = publication {
+            assert!(publication.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn expansion_records_landing_but_stops_before_exploration_results() {
+    let (live, system, planets) = planetary_checkpoint(false);
+    let original = live.state.clone();
+    let planner = runner(&live);
+    let transcript = collect(
+        &planner,
+        &[
+            "tactical".into(),
+            system.to_string(),
+            "done_moving".into(),
+            format!("commit|0|{}", planets[0]),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::Uncertainty);
     assert_eq!(
-        transcript
+        planner
+            .plan()
+            .recorded_decisions
             .last()
             .unwrap()
-            .progress
-            .nested_answers_since_checkpoint,
-        1
+            .context
+            .as_ref()
+            .unwrap()
+            .subtype,
+        "commit_ground_forces"
+    );
+    assert_no_events(&transcript);
+    assert_eq!(live.state, original);
+    let PlanningUpdate::Stopped {
+        last_safe_publication: Some(publication),
+        ..
+    } = &transcript.last().unwrap().update
+    else {
+        panic!("safe landing offer")
+    };
+    assert_eq!(
+        publication
+            .choice
+            .as_ref()
+            .unwrap()
+            .context
+            .as_ref()
+            .unwrap()
+            .subtype,
+        "commit_ground_forces"
+    );
+    assert!(
+        publication.position.board.systems[&system]
+            .planets
+            .get(&planets[0])
+            .is_none()
+    );
+    let mut different_draws = live.fork();
+    for deck in different_draws.state.exploration_decks.values_mut() {
+        deck.reverse();
+    }
+    let alternate = collect(
+        &runner(&different_draws),
+        &[
+            "tactical".into(),
+            system.to_string(),
+            "done_moving".into(),
+            format!("commit|0|{}", planets[0]),
+        ],
+    );
+    assert_eq!(
+        serde_json::to_value(&transcript).unwrap(),
+        serde_json::to_value(&alternate).unwrap()
+    );
+}
+
+#[test]
+fn landing_production_payment_and_placement_match_normal_execution_and_replay() {
+    let (mut live, system, planets) = planetary_checkpoint(true);
+    let player = PlayerId::new("b");
+    live.state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .insert(TechnologyId::new("st"));
+    let original = live.state.clone();
+    let script = vec![
+        "tactical".into(),
+        system.to_string(),
+        "done_moving".into(),
+        format!("commit|0|{}", planets[0]),
+        "build|carrier|1".into(),
+        format!("exhaust|{}", planets[0]),
+        "build|infantry|2".into(),
+        format!("place|{}", planets[1]),
+        "done_producing".into(),
+    ];
+    let mut runner = runner(&live);
+    let transcript = collect(&runner, &script);
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    assert_no_events(&transcript);
+    let mut normal = live.fork();
+    normal.prepare_hypothetical_turn(&player).unwrap();
+    normal.table = Table::with_default(Box::new(Scripted::new(script.clone())));
+    for _ in 0..32 {
+        let result = normal.step();
+        assert!(result.error.is_none(), "{:?}", result.error);
+        if normal
+            .events
+            .iter()
+            .any(|event| event == "TACTICAL_ACTION_COMPLETE")
+        {
+            break;
+        }
+    }
+    let PlanningUpdate::Stopped {
+        last_safe_publication: Some(publication),
+        ..
+    } = &transcript.last().unwrap().update
+    else {
+        panic!("complete position")
+    };
+    assert_eq!(
+        publication.position,
+        project_game_view(&normal.state, &ViewerRole::Player(player))
+    );
+    assert_eq!(runner.plan().recorded_decisions.len(), script.len());
+    live.state.activation_seq += 5;
+    runner.refresh(&live, 11);
+    let replay = collect(&runner, &[]);
+    assert_eq!(reason(&replay), StopReason::MovementComplete);
+    assert_eq!(replay.last().unwrap().progress.remaining, 0);
+    let restored_plan =
+        serde_json::from_str(&serde_json::to_string(&runner.plan()).unwrap()).unwrap();
+    let restored = PlanningRunner::start(&live, PlayerId::new("b"), restored_plan, 32);
+    assert_eq!(
+        reason(&collect(&restored, &[])),
+        StopReason::MovementComplete
+    );
+    live.state.activation_seq -= 5;
+    assert_eq!(live.state, original);
+}
+
+#[test]
+fn repairing_a_retained_landing_resumes_payment_and_placement_after_restoration() {
+    let (mut live, system, planets) = planetary_checkpoint(true);
+    let player = PlayerId::new("b");
+    let script = vec![
+        "tactical".into(),
+        system.to_string(),
+        "done_moving".into(),
+        format!("commit|0|{}", planets[0]),
+        "build|infantry|2".into(),
+        "trade_good".into(),
+        format!("place|{}", planets[1]),
+        "done_producing".into(),
+    ];
+    let initial = runner(&live);
+    collect(&initial, &script);
+    let mut plan = initial.plan();
+    plan.revalidation_start = Some(3);
+    let tail = plan.recorded_decisions[4..].to_vec();
+    let ground = live
+        .state
+        .system_mut(&system)
+        .units
+        .iter_mut()
+        .find(|unit| unit.type_id.as_str() == "infantry")
+        .unwrap();
+    ground.type_id = ti4_model::id::UnitTypeId::new("mech");
+    let restored = PlanningRunner::start(&live, player, plan, 32);
+    loop {
+        let blocked = next(&restored);
+        if blocked.awaiting_answer {
+            assert_eq!(blocked.progress.remaining, 5);
+            assert_eq!(&blocked.recorded_decisions[4..], tail.as_slice());
+            restored.submit(blocked.identity, &script[3]).unwrap();
+            break;
+        }
+        assert!(!matches!(
+            blocked.update,
+            PlanningUpdate::Stopped { .. } | PlanningUpdate::Failed(_)
+        ));
+    }
+    let resumed = collect(&restored, &[]);
+    assert_eq!(reason(&resumed), StopReason::MovementComplete);
+    assert_eq!(resumed.last().unwrap().progress.remaining, 0);
+    let repaired = restored.plan();
+    assert_eq!(repaired.recorded_decisions[3].payload["unit"], "mech");
+    assert_eq!(&repaired.recorded_decisions[4..], tail.as_slice());
+}
+
+#[test]
+fn revalidation_recomputes_costs_and_inserts_extra_payment_without_losing_placement() {
+    let (mut live, system, planets) = planetary_checkpoint(true);
+    let player = PlayerId::new("b");
+    live.state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .insert(TechnologyId::new("st"));
+    let script = vec![
+        "tactical".into(),
+        system.to_string(),
+        "done_moving".into(),
+        format!("commit|0|{}", planets[0]),
+        "build|carrier|1".into(),
+        format!("exhaust|{}", planets[0]),
+        "build|infantry|2".into(),
+        format!("place|{}", planets[1]),
+        "done_producing".into(),
+    ];
+    let initial = runner(&live);
+    collect(&initial, &script);
+    let mut plan = initial.plan();
+    plan.revalidation_start = Some(3);
+    live.state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .remove(&TechnologyId::new("st"));
+    let refreshed = PlanningRunner::start(&live, player, plan, 32);
+    let transcript = collect(&refreshed, &["trade_good".into()]);
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    let repaired = refreshed.plan().recorded_decisions;
+    assert_eq!(repaired.len(), script.len() + 1);
+    assert_eq!(repaired[4].payload["cost"], 3);
+    assert_eq!(repaired[6].payload["cost"], 1);
+    assert_eq!(repaired[7].option_id, "trade_good");
+    assert_eq!(repaired[8].option_id, script[7]);
+    assert_eq!(repaired[9].option_id, "done_producing");
+}
+
+#[test]
+fn ai_development_discount_is_recorded_before_normal_production() {
+    let (mut live, system, _) = planetary_checkpoint(true);
+    let player = PlayerId::new("b");
+    live.state
+        .player_mut(&player)
+        .unwrap()
+        .technologies
+        .extend([TechnologyId::new("aida"), TechnologyId::new("cr2")]);
+    let runner = runner(&live);
+    let transcript = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            system.to_string(),
+            "done_moving".into(),
+            "done_committing".into(),
+            "exhaust".into(),
+            "build|destroyer|1".into(),
+            "done_producing".into(),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    assert!(runner.plan().recorded_decisions.iter().any(|answer| {
+        answer.context.as_ref().unwrap().subtype == "exhaust_for_production_discount"
+    }));
+    let PlanningUpdate::Stopped {
+        last_safe_publication: Some(publication),
+        ..
+    } = &transcript.last().unwrap().update
+    else {
+        panic!("complete")
+    };
+    let player = publication
+        .position
+        .players
+        .iter()
+        .find(|seat| seat.id == player)
+        .unwrap();
+    assert!(
+        player
+            .exhausted_technologies
+            .contains(&TechnologyId::new("aida"))
+    );
+    assert_eq!(player.trade_goods, 5);
+}
+
+#[test]
+fn taking_an_undefended_controlled_planet_does_not_explore_and_can_reach_production() {
+    let (mut live, system, planets) = planetary_checkpoint(true);
+    live.state
+        .system_mut(&system)
+        .set_control(planets[0].clone(), PlayerId::new("a"));
+    let runner = runner(&live);
+    let transcript = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            system.to_string(),
+            "done_moving".into(),
+            format!("commit|0|{}", planets[0]),
+            "build|fighter|2".into(),
+            "trade_good".into(),
+            "done_producing".into(),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    let PlanningUpdate::Stopped {
+        last_safe_publication: Some(publication),
+        ..
+    } = &transcript.last().unwrap().update
+    else {
+        panic!("complete")
+    };
+    assert_eq!(
+        publication.position.board.systems[&system].planets[&planets[0]].controlled_by,
+        Some(PlayerId::new("b"))
+    );
+    assert_no_events(&transcript);
+}
+
+#[test]
+fn uncontested_home_planet_capture_transcripts_do_not_depend_on_defenders_secret() {
+    let mut transcripts = Vec::new();
+    let mut public_states = Vec::new();
+    for secret in ["bam", "eap"] {
+        let (mut live, system, planets) = planetary_checkpoint(false);
+        let defender = PlayerId::new("a");
+        let seat = live.state.player_mut(&defender).unwrap();
+        seat.home_system = Some(system.clone());
+        seat.secret_objectives = vec![SecretObjectiveId::new(secret)];
+        live.state
+            .system_mut(&system)
+            .set_control(planets[0].clone(), defender);
+        public_states.push(project_game_view(
+            &live.state,
+            &ViewerRole::Player(PlayerId::new("b")),
+        ));
+        let original = live.state.clone();
+        let planner = runner(&live);
+        let transcript = collect(
+            &planner,
+            &[
+                "tactical".into(),
+                system.to_string(),
+                "done_moving".into(),
+                format!("commit|0|{}", planets[0]),
+            ],
+        );
+        assert_eq!(reason(&transcript), StopReason::Uncertainty);
+        assert_eq!(planner.plan().recorded_decisions.len(), 4);
+        assert_no_events(&transcript);
+        assert_eq!(live.state, original);
+        transcripts.push(serde_json::to_value(transcript).unwrap());
+    }
+    assert_eq!(public_states[0], public_states[1]);
+    assert_eq!(transcripts[0], transcripts[1]);
+}
+
+#[test]
+fn ground_combat_stops_after_recording_the_landing_without_publishing_dice() {
+    let (mut live, system, planets) = planetary_checkpoint(false);
+    let defender = PlayerId::new("a");
+    live.state
+        .system_mut(&system)
+        .set_control(planets[0].clone(), defender.clone());
+    put_on_planet(
+        &mut live.state,
+        &system,
+        &planets[0],
+        "infantry",
+        &defender,
+        1,
+    );
+    let runner = runner(&live);
+    let transcript = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            system.to_string(),
+            "done_moving".into(),
+            format!("commit|0|{}", planets[0]),
+        ],
+    );
+    assert_eq!(reason(&transcript), StopReason::Uncertainty);
+    assert_eq!(runner.plan().recorded_decisions.len(), 4);
+    assert_no_events(&transcript);
+    let serialized = serde_json::to_string(&transcript).unwrap();
+    assert!(!serialized.contains("GROUND_ROLLS_MADE"));
+    assert!(!serialized.contains("assign_ground"));
+}
+
+#[test]
+fn bombardment_stops_before_offering_landings() {
+    let (mut live, system, planets) = planetary_checkpoint(false);
+    let defender = PlayerId::new("a");
+    live.state
+        .system_mut(&system)
+        .set_control(planets[0].clone(), defender.clone());
+    put_on_planet(
+        &mut live.state,
+        &system,
+        &planets[0],
+        "infantry",
+        &defender,
+        1,
+    );
+    put(
+        &mut live.state,
+        &system,
+        "dreadnought",
+        &PlayerId::new("b"),
+        1,
+    );
+    let runner = runner(&live);
+    let transcript = collect(
+        &runner,
+        &["tactical".into(), system.to_string(), "done_moving".into()],
+    );
+    assert_eq!(reason(&transcript), StopReason::Uncertainty);
+    assert_eq!(runner.plan().recorded_decisions.len(), 3);
+    assert_no_events(&transcript);
+    assert!(
+        !serde_json::to_string(&transcript)
+            .unwrap()
+            .contains("commit_ground_forces")
     );
 }
 

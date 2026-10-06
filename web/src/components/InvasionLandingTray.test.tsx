@@ -1,8 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { InvasionLandingTray } from "./InvasionLandingTray.tsx";
+import { InvasionLandingTray, type Landing } from "./InvasionLandingTray.tsx";
 import { galleryBoard, galleryPlayers } from "../dev/galleryBoard.ts";
 import { actor } from "../dev/decisionGalleryCases.ts";
+import { WorkspaceContext } from "./WorkspaceContext.tsx";
 
 const choice = {
   actor,
@@ -21,6 +23,89 @@ const choice = {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("pauses on refresh but reconciles a retained receipt before confirming remaining landings", async () => {
+  let resolve!: () => void;
+  const onSubmit = vi.fn().mockImplementation(
+    () =>
+      new Promise<void>((done) => {
+        resolve = done;
+      }),
+  );
+  const board = {
+    ...galleryBoard,
+    active_system: "18",
+    invasion: {
+      system_id: "18",
+      invasion_seq: 8,
+      invader: actor,
+      phase: "landing",
+      planets: ["jord"],
+      current_planet: null,
+      defender: null,
+      ground_round: 0,
+    },
+    systems: {
+      ...galleryBoard.systems,
+      "18": {
+        ...galleryBoard.systems["18"],
+        units: [
+          { owner: actor, unit_type: "infantry", damaged: false },
+          { owner: actor, unit_type: "infantry", damaged: false },
+          { owner: actor, unit_type: "infantry", damaged: false },
+        ],
+      },
+    },
+  };
+  const replayedBoard = {
+    ...board,
+    systems: {
+      ...board.systems,
+      "18": {
+        ...board.systems["18"],
+        units: board.systems["18"].units.map((unit, index) =>
+          index === 0 ? { ...unit, planet: "jord" } : unit,
+        ),
+      },
+    },
+  };
+  function Harness({ refreshKey, nonce = refreshKey }: { refreshKey: string; nonce?: string }) {
+    const [draft, setDraft] = useState<Landing[]>([]);
+    return (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable: true, draft: true, refreshKey, chrome: null }}
+      >
+        <InvasionLandingTray
+          choice={{ ...choice, nonce }}
+          board={refreshKey === "1:1" ? board : replayedBoard}
+          draft={draft}
+          onDraftChange={setDraft}
+          viewerSeat={actor}
+          onSubmit={onSubmit}
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+  }
+  const { rerender } = render(<Harness refreshKey="1:1" />);
+  fireEvent.click(screen.getByRole("button", { name: /Land infantry on Jord/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Land infantry on Jord/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm landings" }));
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  rerender(<Harness refreshKey="2:2" />);
+  expect(screen.getByText(/Draft refreshed. Review/)).toBeInTheDocument();
+  await act(async () => resolve());
+  expect(onSubmit).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/Already on planet: 1 · Staged: 1/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm landings" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Confirm landings" }));
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+  await act(async () => resolve());
+  // A fresh offer must not execute a third instruction from the original two-copy selection.
+  rerender(<Harness refreshKey="2:2" nonce="landing-3" />);
+  expect(screen.getByText(/Staged: 0/)).toBeInTheDocument();
+  expect(onSubmit).toHaveBeenCalledTimes(2);
+});
 
 it("uses the engine's classified defender, all standing guns and legal Harrow in a draft-keyed request", async () => {
   const fetch = vi.fn().mockResolvedValue({
