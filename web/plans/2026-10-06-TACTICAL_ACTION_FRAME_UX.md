@@ -10,6 +10,8 @@ The dummy can show a function that the engine does not have yet. Each such funct
 
 This document adds to [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md) and follows the [UI/UX guidelines](2026-10-04-UI_UX_GUIDELINES.md).
 
+[Game shell integration UX](2026-10-06-GAME_SHELL_INTEGRATION_UX.md) describes how the frame fits into the full game view. In that shell the board is the large area, the frame is a panel on the right, and the stepper is in the panel. The dummy shows eight players and 61 systems.
+
 ## Terms
 
 | Term | Meaning |
@@ -25,7 +27,7 @@ This document adds to [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md) 
 
 ## UX design goals
 
-1. **The content starts near the top.** The header uses two rows. The task starts at 90 px on a desktop screen.
+1. **The content starts near the top.** The toolbar uses 48 px. The board and the right column start below it. The player table is at the top of the right column.
 2. **One view for each concept.** Each roll uses the battle table. Each quantity uses the same counter. A player learns a control one time.
 3. **The player sees each die.** Each unit type shows its target number, its dice, and its hits. The player can check the result without help.
 4. **Rows do not move.** A unit type that is destroyed keeps its row with the count 0. Columns have the same position in each row.
@@ -61,6 +63,15 @@ This document adds to [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md) 
 | Sustain and Destroy buttons on the row, then one "Assign hits" button | The player sees the full assignment before it is final. One confirmation prevents a wrong click on one unit. |
 | Reaction card with Play and Pass | It shows the card name, the timing, and the effect. The player does not open the hand to decide. |
 
+### Activation
+
+| Control | Reason |
+| --- | --- |
+| No list of systems. The player clicks a system on the board | The player can activate almost each system. A list of 61 systems has no value. |
+| Find system field | A keyboard path to each system. |
+| Card for the selected system with the number of ships in range | The player sees what the activation makes possible before the token is spent. |
+| Message for a system with a command token of the player | The system stays visible on the board, and the player gets the reason. |
+
 ### Movement
 
 | Control | Reason |
@@ -80,8 +91,7 @@ This document adds to [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md) 
 
 | Control | Reason |
 | --- | --- |
-| Map frames the systems of the current step | The player does not move the map to find the systems. |
-| Wider map for Activation, Movement, and payment | These three tasks are about places. Other tasks keep the narrow map. |
+| Board that the player moves and zooms | The full board is visible by default. The player goes nearer when the units are small. |
 | Anomaly and wormhole symbols with a text label | They decide where ships can move. A symbol with text does not depend on colour. |
 | Dotted line between two wormholes of the same type | The two systems are adjacent. The line makes this visible. |
 | Ship counts for each player on a system | The player sees which enemy ships are near a planet. |
@@ -96,6 +106,7 @@ This document adds to [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md) 
 | Four gauges: production, resources, fleet supply, capacity | Each gauge is one rule that can stop the build. |
 | Payment rows with a checkbox | A planet is used or not used. The row shows the resources and the influence that the player gives up. |
 | Planet on the map as a second checkbox | The player selects planets by their position. This helps the player use planets that are near enemy ships first. |
+| Value stays on a selected planet, with a gold ring and a check mark | The player sees what each selected planet gives and which selection to undo. A mark that replaces the value hides this. |
 | Placement buttons on the unit row | The choice between a planet and the space area belongs to the unit. |
 
 ## What the engine and server must supply
@@ -142,6 +153,7 @@ Status: **Available** means the data is there now. **Partly** means some of the 
 
 | Need | Status | Notes |
 | --- | --- | --- |
+| Ships that can reach a system before it is activated | Missing | See [Game shell integration UX](2026-10-06-GAME_SHELL_INTEGRATION_UX.md). |
 | The result of each completed step of the action, kept until the action ends | Missing | The stepper shows a result line for each step, and the player can open each step again. |
 | The boundary type of a Draft (rift roll, space cannon, space combat, bombardment, ground combat) | Partly | The Draft runner stops at a boundary. It must name the type, so the frame can show the correct text and table. |
 | Undo and Redo groups, and Apply | Planned | See [Tactical draft UX](2026-10-04-TACTICAL_DRAFT_UX_PLAN.md). |
@@ -152,4 +164,4 @@ Status: **Available** means the data is there now. **Partly** means some of the 
 1. **Bombardment before landings.** The rules roll bombardment before the player commits ground forces. A Draft with a bombardment unit and a defended planet stops there, so the player cannot plan the landings. Decide if a Draft can plan landings after this boundary.
 2. **Third player.** A player who is not in the action sees the same frame in read-only mode. A smaller view can be better.
 3. **Pickup in the active system.** The rules allow it. The dummy does not show it.
-4. **Many origins.** The dummy has five origins. Test the closed cards with a late-game board.
+4. **Many origins.** The dummy has 61 systems, but the units of the player are in nine of them. Test the closed cards with a late-game board.

@@ -234,7 +234,7 @@
       max-width: 100%;
     }
 
-    /* Two header rows: toolbar and stepper. Everything below is content. */
+    /* One header row: the toolbar. Everything below is content. */
     .app {
       display: flex;
       flex-direction: column;
@@ -482,23 +482,679 @@
       flex: 0 0 auto;
     }
 
-    .action-body {
+    /* Shell: toolbar, then the board and the right column (player table, action panel). */
+    .refs {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .refs .button[aria-expanded="true"] {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .side .panel {
+      flex: 1;
+      border-left: 0;
+    }
+
+    /* Player table: one row for each player, one column for each value. */
+    .ptable {
+      position: relative;
+      flex: none;
+      background: #0e151f;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .ptable table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      line-height: 1.3;
+    }
+
+    .ptable th,
+    .ptable td {
+      padding: 2px 5px;
+      text-align: right;
+      white-space: nowrap;
+      font-weight: 400;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ptable thead th,
+    .ptable thead td {
+      padding-block: 3px;
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .ptable abbr {
+      text-decoration: none;
+      cursor: help;
+    }
+
+    .ptable tbody tr {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .ptable tbody tr+tr td,
+    .ptable tbody tr+tr th {
+      border-top: 1px solid #ffffff0a;
+    }
+
+    .ptable tbody tr.me {
+      background: #8cd5ef12;
+    }
+
+    .ptable tbody tr:hover,
+    .ptable tbody tr:focus-within {
+      background: #ffffff0d;
+    }
+
+    .ptable tr.passed td,
+    .ptable tr.passed .pt-who,
+    .ptable tr.passed .pt-faction {
+      color: var(--faint);
+    }
+
+    .ptable th[scope="row"],
+    .ptable thead th:nth-child(2) {
+      width: 99%;
+      max-width: 0;
+      padding-left: 0;
+      text-align: left;
+      font-family: inherit;
+    }
+
+    .ptable td.pt-turn {
+      width: 18px;
+      padding: 0 0 0 6px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .pt-turn .now {
+      color: var(--accent);
+    }
+
+    .pt-toggle {
+      padding: 0 2px;
+      background: none;
+      border: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pt-name {
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+      width: 100%;
+      min-width: 0;
+      padding: 0;
+      background: none;
+      border: 0;
+      color: var(--text);
+      font-size: 12px;
+      text-align: left;
+      overflow: hidden;
+    }
+
+    .pt-name:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 1px;
+    }
+
+    .pt-who {
+      font-weight: 650;
+    }
+
+    .pt-faction {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--muted);
+    }
+
+    .pt-tag {
+      color: var(--gold);
+      font-size: 11px;
+    }
+
+    .pt-tag.quiet {
+      color: var(--faint);
+    }
+
+    .ptable td strong {
+      color: var(--text);
+    }
+
+    .ptable td {
+      color: var(--muted);
+    }
+
+    .ptable .me td {
+      color: var(--text);
+    }
+
+    .ptable .used {
+      opacity: .6;
+    }
+
+    .pt-free {
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .seat-pop {
+      display: none;
+      position: absolute;
+      top: 0;
+      right: calc(100% + 6px);
+      z-index: 20;
+      width: min(340px, 90vw);
+      padding: 10px 12px;
+      background: var(--raised);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px #0008;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.45;
+      text-align: left;
+      white-space: normal;
+      cursor: default;
+    }
+
+    .seat-pop p {
+      margin: 5px 0 0;
+    }
+
+    .ptable tbody tr:hover .seat-pop,
+    .ptable tbody tr:focus-within .seat-pop {
+      display: block;
+    }
+
+    /* Board detail: far away, small text is hidden. Marks and task values stay. */
+    .galaxy.far .t-id,
+    .galaxy.far .t-name:not(.keep) {
+      display: none;
+    }
+
+    .galaxy.far .system:hover .t-name,
+    .galaxy.far .system.linked .t-name,
+    .galaxy.far .system:focus-visible .t-name {
+      display: inline;
+    }
+
+    .galaxy.far .t-name {
+      font-size: 11px;
+    }
+
+    .galaxy.far .t-mark {
+      font-size: 12.5px;
+    }
+
+    .galaxy .planet.chosen circle {
+      fill: var(--gold);
+      fill-opacity: .32;
+      stroke: var(--gold);
+      stroke-opacity: 1;
+      stroke-width: 2.4;
+    }
+
+    .galaxy .planet.chosen.picked circle {
+      fill: var(--green);
+      stroke: var(--green);
+    }
+
+    .galaxy .chosen-badge circle {
+      fill: var(--gold);
+      fill-opacity: 1;
+      stroke: #0b1017;
+      stroke-width: 1;
+    }
+
+    .galaxy .planet.picked .chosen-badge circle {
+      fill: var(--green);
+      stroke: #0b1017;
+      stroke-width: 1;
+    }
+
+    .galaxy .chosen-badge path {
+      fill: none;
+      stroke: #0b1017;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .map-tools button.wide {
+      width: auto;
+      padding: 0 8px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .find {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .find input {
+      flex: 1;
+      min-width: 0;
+      padding: 5px 8px;
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text);
+      font: inherit;
+    }
+
+    .order-row {
+      min-height: 0;
+      padding-block: 4px;
+    }
+
+    .order-row .unit-label small {
+      display: inline;
+      margin-left: 6px;
+    }
+
+    .inspector-action {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+
+
+    .shell-body {
       display: grid;
-      grid-template-columns: 330px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) 500px;
       flex: 1;
       min-height: 0;
     }
 
-    .action-body.map-wide {
-      grid-template-columns: minmax(330px, 44%) minmax(0, 1fr);
+    .shell-body.wide {
+      grid-template-columns: minmax(0, 1fr) 56%;
     }
 
-    .context-pane {
+    .board {
+      position: relative;
+      display: flex;
+      min-width: 0;
       min-height: 0;
-      overflow-y: auto;
+      overflow: hidden;
       background: #0e151f;
+    }
+
+    .board .galaxy {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      margin: 0;
+    }
+
+    .board .galaxy svg {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      touch-action: none;
+      cursor: grab;
+    }
+
+    .board .galaxy svg.dragging {
+      cursor: grabbing;
+    }
+
+    .board-bar {
+      position: absolute;
+      top: 8px;
+      left: 10px;
+      right: 210px;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      pointer-events: none;
+    }
+
+    .board-bar>* {
+      pointer-events: auto;
+    }
+
+    .board-bar .segmented {
+      background: var(--surface);
+    }
+
+    .board-bar .segmented button {
+      padding-inline: 8px;
+      white-space: nowrap;
+    }
+
+    .board .map-tools {
+      top: 8px;
+      right: 10px;
+      bottom: auto;
+      z-index: 2;
+    }
+
+    .board .map-legend {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 2;
+      max-width: 42%;
+      margin: 0;
+    }
+
+    .inspector {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      z-index: 2;
+      width: 280px;
+      max-height: 40%;
+      margin: 0;
+      overflow: auto;
+      background: #121a25f2;
+    }
+
+    .result-strip {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100% - 310px);
+      padding: 4px 6px 4px 12px;
+      background: #121a25f2;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .drawer {
+      position: absolute;
+      inset: 0 auto 0 0;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      width: min(420px, 94%);
+      background: var(--surface);
       border-right: 1px solid var(--line);
-      padding: 12px 14px 16px;
+      box-shadow: 12px 0 30px #0006;
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px 8px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-head h2 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .drawer-body {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 4px 16px 16px;
+      font-size: 13px;
+    }
+
+    .drawer-body h3 {
+      margin-top: 14px;
+      color: var(--muted);
+    }
+
+    .drawer-body ul,
+    .drawer-body ol {
+      margin: 4px 0 0;
+      padding-left: 18px;
+    }
+
+    .drawer-body li {
+      margin-top: 3px;
+    }
+
+    .log-round {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 6px 0;
+      background: none;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-weight: 650;
+    }
+
+    .log-row {
+      padding: 8px 0;
+      border-bottom: 1px solid #28344680;
+    }
+
+    .log-row.current {
+      border-left: 2px solid var(--cyan);
+      padding-left: 8px;
+    }
+
+    .log-main {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .log-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 5px;
+    }
+
+    .panel {
+      container-type: inline-size;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border-left: 1px solid var(--line);
+    }
+
+    .panel .task-panel {
+      flex: 1;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 4px 8px 4px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-title strong {
+      white-space: nowrap;
+    }
+
+    .inspector-close {
+      float: right;
+      margin: -4px -6px 0 6px;
+      padding: 2px 6px;
+      background: none;
+      border: 0;
+      color: var(--muted);
+    }
+
+    .panel-title .muted {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .panel-title .button {
+      margin-left: auto;
+    }
+
+    .panel-title .badge+.button {
+      margin-left: 0;
+    }
+
+    .panel-title .badge {
+      margin-left: auto;
+    }
+
+    .panel .stepper {
+      padding: 0 6px;
+    }
+
+    .panel .stepper-side {
+      justify-content: flex-end;
+      padding: 5px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .history-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 6px 10px 6px 16px;
+      background: #8dd2b012;
+      border-bottom: 1px solid #8dd2b040;
+      font-size: 13px;
+    }
+
+    .draft-card {
+      border: 1px dashed #edbd7b80;
+      border-radius: 8px;
+      background: #edbd7b06;
+    }
+
+    .draft-card.live {
+      border: 1px solid #8cd5ef80;
+      background: #8cd5ef06;
+    }
+
+    .draft-card .card {
+      margin: 10px;
+    }
+
+    .order-no {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .step-tab[data-state="draft"] .step-chip {
+      border-style: dashed;
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    .galaxy .planet.picked circle {
+      stroke: var(--green);
+      stroke-opacity: 1;
+      stroke-width: 2.4;
+    }
+
+    @container (max-width: 900px) {
+      .battle-sides {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+    @container (max-width: 640px) {
+      .step-caption {
+        display: none;
+      }
+
+      .step-tab {
+        justify-content: center;
+        padding: 0 4px;
+        gap: 5px;
+        font-size: 12px;
+      }
+
+      .step-chip {
+        width: 18px;
+        height: 18px;
+      }
+
+      .step-name {
+        text-transform: capitalize;
+      }
+
+      .step-name .long {
+        display: none;
+      }
+
+      .battle-side {
+        grid-template-columns: minmax(112px, 1.3fr) 24px 28px minmax(52px, 2fr) 40px auto;
+        column-gap: 4px;
+      }
+
+      .task-head,
+      .task-content {
+        padding-inline: 14px;
+      }
+
+      .task-footer {
+        flex-wrap: wrap;
+        padding-inline: 14px;
+      }
+
+      .footer-actions {
+        margin-left: auto;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .unit-row {
+        flex-wrap: wrap;
+      }
+
+      .unit-controls {
+        margin-left: auto;
+      }
     }
 
     .context-label {
@@ -738,38 +1394,6 @@
       height: 7px;
       background: var(--faint);
       border-radius: 50%;
-    }
-
-    .owner-dot--sol {
-      background: var(--cyan);
-    }
-
-    .owner-dot--hacan {
-      background: var(--orange);
-    }
-
-    .economy {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-      margin-top: 10px;
-    }
-
-    .economy div {
-      padding: 7px 8px;
-      border: 1px solid var(--line);
-      border-radius: 5px;
-    }
-
-    .economy strong {
-      display: block;
-      font-size: 16px;
-      font-weight: 500;
-    }
-
-    .economy span {
-      font-size: 12px;
-      color: var(--muted);
     }
 
     .task-panel {
@@ -1596,12 +2220,27 @@
     }
 
     @media (max-width: 1180px) {
-      .action-body {
-        grid-template-columns: 280px minmax(0, 1fr);
+      .shell-body {
+        grid-template-columns: minmax(0, 1fr) 440px;
       }
 
-      .action-body.map-wide {
-        grid-template-columns: minmax(280px, 44%) minmax(0, 1fr);
+      .inspector {
+        width: 230px;
+        max-height: 30%;
+      }
+
+      .board .map-legend {
+        display: none;
+      }
+
+      .board-bar {
+        right: 10px;
+      }
+
+      .board .map-tools {
+        top: 44px;
+        right: auto;
+        left: 10px;
       }
 
       .tb-status span {
@@ -1641,31 +2280,53 @@
         flex: 0 0 auto;
       }
 
-      .action-body {
+      .shell-body,
+      .shell-body.wide {
         display: flex;
         flex-direction: column;
       }
 
-      .context-pane {
-        order: 2;
-        border-right: 0;
+      .board {
+        flex: none;
+        height: 58vh;
+      }
+
+      .inspector {
+        display: none;
+      }
+
+      .result-strip {
+        max-width: calc(100% - 20px);
+      }
+
+      .panel {
+        border-left: 0;
         border-top: 1px solid var(--line);
+      }
+
+      .side {
+        display: contents;
+      }
+
+      .ptable {
+        order: -1;
+        overflow-x: auto;
+      }
+
+      .seat-pop {
+        display: none !important;
+      }
+
+      .refs {
+        order: 4;
+        flex-basis: 100%;
+        margin-left: 0;
+        overflow-x: auto;
       }
 
       .galaxy {
         max-width: 360px;
         margin-inline: auto;
-      }
-
-      .map-wide .context-pane {
-        order: 0;
-        border-top: 0;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .map-wide .economy,
-      .map-wide .system-context {
-        display: none;
       }
 
       .task-content {
@@ -1728,6 +2389,15 @@
         <option value="draft-review">Draft · Changed selection</option>
         <option value="draft-cannon">Draft · Space cannon boundary</option>
       </optgroup>
+      <optgroup label="Game shell">
+        <option value="live-picker">Live · Choose an action</option>
+        <option value="live-strategic">Live · Strategic action (your primary)</option>
+        <option value="live-secondary">Live · Draft a secondary in seat order</option>
+        <option value="live-component">Live · Component action</option>
+        <option value="h-mining" hidden>History</option>
+        <option value="h-leadership" hidden>History</option>
+        <option value="h-cannon" hidden>History</option>
+      </optgroup>
       <optgroup label="Live action">
         <option value="live-combat">Live · Space combat decisions</option>
         <option value="live-invasion">Live · Waiting in ground combat</option>
@@ -1772,6 +2442,8 @@
       mech: '<rect x="8" y="4" width="8" height="7" rx="1"/><path d="M6 11h12v5H6zM9 16v4m6-4v4M4 12v4m16-4v4"/>',
       pds: '<path d="M5 20h14M8 20v-5h8v5M12 15V9m0 0 6-5"/>',
       dock: '<circle cx="12" cy="12" r="3"/><path d="M12 3v6m0 6v6M3 12h6m6 0h6"/>',
+      token: '<path d="M12 4 21 19H3Z"/>',
+      card: '<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 8h6m-6 4h6"/>',
       planet: '<circle cx="12" cy="12" r="6"/><path d="M6 9c-6 1-5 7 6 5s13-8 6-6"/>',
     };
     const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.planet}</svg>`;
@@ -1791,26 +2463,103 @@
     const ROLE = { att: 'Attacker', def: 'Defender' };
     const other = (side) => side === 'att' ? 'def' : 'att';
     const SUPPLY = 3;
-    // q and r are axial hex coordinates. The active system's planets live in state.planets.
+    // q and r are axial hex coordinates on a five-ring board (61 systems, eight players).
+    // The active system's planets live in state.planets. `fleets` holds the ships of the other players.
     const MAP = {
-      '27': { q: 0, r: 0, name: 'Starpoint / New Albion', planets: [{ id: 'starpoint', name: 'Starpoint', res: 3, inf: 1, owner: 'sol' }, { id: 'newalbion', name: 'New Albion', res: 1, inf: 1, owner: 'hacan' }] },
-      '1': { q: 0, r: -1, name: 'Jord', note: 'Sol home system', planets: [{ id: 'jord', name: 'Jord', res: 4, inf: 2, owner: 'sol' }] },
-      '23': { q: 1, r: -1, name: 'Tar’Mann', planets: [{ id: 'tarmann', name: 'Tar’Mann', res: 1, inf: 1, owner: 'sol' }] },
-      '38': { q: 1, r: 0, name: 'Empty space', token: true },
-      '40': { q: 0, r: 1, name: 'Asteroid field', anomaly: 'asteroid' },
-      '19': { q: -1, r: 1, name: 'Wellon', wormhole: 'α', planets: [{ id: 'wellon', name: 'Wellon', res: 1, inf: 2, owner: null }] },
-      '41': { q: -1, r: 0, name: 'Gravity rift', anomaly: 'rift' },
-      '43': { q: -1, r: -1, name: 'Supernova', anomaly: 'supernova' },
-      '42': { q: 1, r: -2, name: 'Nebula', anomaly: 'nebula' },
-      '26': { q: 2, r: -1, name: 'Lodor', planets: [{ id: 'lodor', name: 'Lodor', res: 1, inf: 1, owner: 'sol' }] },
-      '36': { q: 2, r: -2, name: 'Arnor', planets: [{ id: 'arnor', name: 'Arnor', res: 2, inf: 1, owner: 'sol' }] },
-      '34': { q: 3, r: -2, name: 'Quann', wormhole: 'α', planets: [{ id: 'quann', name: 'Quann', res: 2, inf: 1, owner: 'sol' }] },
-      '31': { q: -2, r: 1, name: 'Vefut', planets: [{ id: 'vefut', name: 'Vefut', res: 2, inf: 2, owner: 'sol' }] },
-      '33': { q: 0, r: 2, name: 'Corneeq', planets: [{ id: 'corneeq', name: 'Corneeq', res: 1, inf: 2, owner: 'sol' }] },
-      '22': { q: 1, r: 1, name: 'Abyz', planets: [{ id: 'abyz', name: 'Abyz', res: 3, inf: 0, owner: 'hacan' }], hacan: { carrier: 1, fighter: 2 }, hacanGround: '3 Infantry on Abyz' },
+      '27': { q: 1, r: -3, name: 'Starpoint / New Albion', planets: [{ id: 'starpoint', name: 'Starpoint', res: 3, inf: 1, owner: 'sol' }, { id: 'newalbion', name: 'New Albion', res: 1, inf: 1, owner: 'hacan' }] },
+      '1': { q: 1, r: -4, name: 'Jord', note: 'Sol home system', home: 'sol', planets: [{ id: 'jord', name: 'Jord', res: 4, inf: 2, owner: 'sol' }] },
+      '23': { q: 2, r: -4, name: 'Tar’Mann', planets: [{ id: 'tarmann', name: 'Tar’Mann', res: 1, inf: 1, owner: 'sol' }] },
+      '38': { q: 2, r: -3, name: 'Empty space', token: true },
+      '40': { q: 1, r: -2, name: 'Asteroid field', anomaly: 'asteroid' },
+      '19': { q: 0, r: -2, name: 'Wellon', wormhole: 'α', planets: [{ id: 'wellon', name: 'Wellon', res: 1, inf: 2, owner: null }] },
+      '41': { q: 0, r: -3, name: 'Gravity rift', anomaly: 'rift' },
+      '43': { q: 0, r: -4, name: 'Supernova', anomaly: 'supernova' },
+      '42': { q: 3, r: -3, name: 'Nebula', anomaly: 'nebula' },
+      '26': { q: 3, r: -4, name: 'Lodor', planets: [{ id: 'lodor', name: 'Lodor', res: 1, inf: 1, owner: 'sol' }] },
+      '36': { q: 4, r: -4, name: 'Arnor', planets: [{ id: 'arnor', name: 'Arnor', res: 2, inf: 1, owner: 'sol' }] },
+      '34': { q: 4, r: -3, name: 'Quann', wormhole: 'α', planets: [{ id: 'quann', name: 'Quann', res: 2, inf: 1, owner: 'sol' }] },
+      '31': { q: -1, r: -2, name: 'Vefut', planets: [{ id: 'vefut', name: 'Vefut', res: 2, inf: 2, owner: 'sol' }] },
+      '33': { q: 1, r: -1, name: 'Corneeq', planets: [{ id: 'corneeq', name: 'Corneeq', res: 1, inf: 2, owner: 'sol' }] },
+      '22': { q: 2, r: -2, name: 'Abyz', planets: [{ id: 'abyz', name: 'Abyz', res: 3, inf: 0, owner: 'hacan', troops: 3 }], fleets: { hacan: { carrier: 1, fighter: 2 } } },
     };
+    // The rest of the board: [q, r, name, planets as "Name res/inf owner", extra]. Fictional positions.
+    [
+      [0, 0, 'Mecatol Rex', ['Mecatol Rex 1/6 hacan'], { fleets: { hacan: { dreadnought: 1, cruiser: 1 } }, note: 'Centre of the galaxy' }],
+      [4, -2, 'Hercant', ['Hercant 1/1 hacan', 'Arretze 2/0 hacan'], { home: 'hacan', fleets: { hacan: { carrier: 1, cruiser: 1, fighter: 2 } } }],
+      [3, 1, 'Archon Ren', ['Archon Ren 2/3 xxcha', 'Archon Tau 1/1 xxcha'], { home: 'xxcha', fleets: { xxcha: { cruiser: 2 } } }],
+      [0, 4, 'Arc Prime', ['Arc Prime 4/0 letnev', 'Wren Terra 2/1 letnev'], { home: 'letnev', fleets: { letnev: { dreadnought: 1, destroyer: 1 } } }],
+      [-2, 4, 'Jol / Nar', ['Jol 1/2 jolnar', 'Nar 2/3 jolnar'], { home: 'jolnar', fleets: { jolnar: { carrier: 1, fighter: 2 } } }],
+      [-4, 3, 'Moll Primus', ['Moll Primus 4/1 mentak'], { home: 'mentak', fleets: { mentak: { cruiser: 2, carrier: 1 } } }],
+      [-4, 0, 'Retillion', ['Retillion 2/3 yssaril', 'Shalloq 1/2 yssaril'], { home: 'yssaril', fleets: { yssaril: { carrier: 1, fighter: 3 } } }],
+      [-2, -2, 'Maaluuk', ['Maaluuk 0/2 naalu', 'Druaa 3/1 naalu'], { home: 'naalu', fleets: { naalu: { carrier: 1, fighter: 4 } } }],
+      [-1, -3, 'Empty space'],
+      [3, -2, 'Arinam / Meer', ['Arinam 1/2 hacan', 'Meer 0/4 hacan R']],
+      [-3, -1, 'Empty space'],
+      [-2, -1, 'Mehar Xull', ['Mehar Xull 1/3 naalu R']],
+      [-1, -1, 'Bereg / Lirta IV', ['Bereg 3/1 naalu', 'Lirta IV 2/3 -'], { fleets: { naalu: { cruiser: 1 } } }],
+      [0, -1, 'Thibah', ['Thibah 1/1 hacan B'], { fleets: { hacan: { destroyer: 1 } } }],
+      [2, -1, 'Qucen’n / Rarron', ['Qucen’n 1/2 hacan', 'Rarron 0/3 -']],
+      [3, -1, 'Asteroid field', [], { anomaly: 'asteroid' }],
+      [4, -1, 'Empty space', [], { wormhole: 'β' }],
+      [-3, 0, 'Saudor', ['Saudor 2/2 yssaril']],
+      [-2, 0, 'Mellon / Zohbat', ['Mellon 0/2 yssaril', 'Zohbat 3/1 naalu']],
+      [-1, 0, 'Empty space', [], { fleets: { yssaril: { destroyer: 2 } } }],
+      [1, 0, 'Dal Bootha / Xxehan', ['Dal Bootha 0/2 xxcha', 'Xxehan 1/1 xxcha']],
+      [2, 0, 'Nebula', [], { anomaly: 'nebula' }],
+      [3, 0, 'Tequ’ran', ['Tequ’ran 2/0 xxcha'], { fleets: { xxcha: { carrier: 1, fighter: 2 } } }],
+      [4, 0, 'Empty space'],
+      [-4, 1, 'Empty space'],
+      [-3, 1, 'Centauri / Gral', ['Centauri 1/3 yssaril', 'Gral 1/1 yssaril B']],
+      [-2, 1, 'Gravity rift', [], { anomaly: 'rift' }],
+      [-1, 1, 'Lazar / Sakulag', ['Lazar 1/0 mentak Y', 'Sakulag 2/1 -']],
+      [0, 1, 'Resculon', ['Resculon 2/0 letnev']],
+      [1, 1, 'Lisis II / Ragh', ['Lisis II 1/0 letnev', 'Ragh 2/1 xxcha']],
+      [2, 1, 'Empty space', [], { fleets: { xxcha: { destroyer: 1 } } }],
+      [-4, 2, 'Empty space'],
+      [-3, 2, 'Empty space', [], { wormhole: 'β' }],
+      [-2, 2, 'Vega Major / Vega Minor', ['Vega Major 2/1 mentak', 'Vega Minor 1/2 mentak B']],
+      [-1, 2, 'Hope’s End', ['Hope’s End 3/0 jolnar'], { fleets: { jolnar: { cruiser: 1 } } }],
+      [0, 2, 'Supernova', [], { anomaly: 'supernova' }],
+      [1, 2, 'Primor', ['Primor 2/1 letnev'], { fleets: { letnev: { cruiser: 1, destroyer: 1 } } }],
+      [2, 2, 'Cealdri / Xanhact', ['Cealdri 0/2 xxcha Y', 'Xanhact 0/1 -']],
+      [-3, 3, 'Atlas', ['Atlas 3/1 mentak']],
+      [-2, 3, 'Abaddon / Ashtroth', ['Abaddon 1/0 jolnar', 'Ashtroth 2/0 mentak']],
+      [-1, 3, 'Rigel I / Rigel II', ['Rigel I 0/1 jolnar', 'Rigel II 1/2 jolnar G']],
+      [0, 3, 'Empty space', [], { fleets: { letnev: { carrier: 1, fighter: 2 } } }],
+      [1, 3, 'Perimeter', ['Perimeter 2/1 letnev']],
+      [-4, 4, 'Empty space'],
+      [-3, 4, 'Semlore', ['Semlore 3/2 mentak Y']],
+      [-1, 4, 'Vorhal', ['Vorhal 0/2 letnev G']],
+    ].forEach(([q, r, name, planets = [], extra = {}], index) => {
+      MAP[String(50 + index)] = { q, r, name, ...extra, planets: planets.map((text) => {
+        const [, planet, res, inf, owner, tech] = text.match(/^(.+) (\d)\/(\d) (\S+)(?: (\w))?$/);
+        return { id: planet.toLowerCase().replace(/[^a-z]/g, ''), name: planet, res: Number(res), inf: Number(inf), owner: owner === '-' ? null : owner, tech };
+      }) };
+    });
+    // The player table: what every player needs to see at almost every moment. Key order is seat order.
+    const SEATS = {
+      sol: { name: 'Jamie', faction: 'Sol', symbol: '●', color: '#8cd5ef', vp: 6, res: [5, 9], inf: [3, 7], tg: 2, comm: [1, 4], tokens: [3, 4, 2], ac: 4, so: [1, 2], planets: 8, abilities: ['Orbital Drop: spend 1 strategy token to place 2 infantry on a planet you control.', 'Versatile: gain 1 extra command token in the status phase.'], tech: ['Neural Motivator', 'Antimass Deflectors', 'Gravity Drive', 'Cruiser II'], leaders: 'Agent ready · Commander unlocked · Hero locked' },
+      hacan: { name: 'Alex', faction: 'Hacan', symbol: '◆', color: '#d69a75', vp: 7, speaker: true, res: [2, 8], inf: [6, 13], tg: 7, comm: [0, 6], tokens: [2, 5, 1], ac: 2, so: [0, 1], planets: 10, abilities: ['Masters of Trade: no token cost for the Trade secondary.', 'Guild Ships: may trade with players who are not neighbours.', 'Arbiters: may trade action cards.'], tech: ['Sarween Tools', 'Antimass Deflectors', 'Production Biomes'], leaders: 'Agent exhausted · Commander locked · Hero locked' },
+      xxcha: { name: 'Blair', faction: 'Xxcha', symbol: '▲', color: '#8dd2b0', vp: 5, res: [4, 6], inf: [5, 9], tg: 4, comm: [2, 4], tokens: [1, 3, 2], ac: 5, so: [1, 1], planets: 7, abilities: ['Peace Accords: after Diplomacy resolves, gain control of an adjacent planet without units.', 'Quash: spend 1 strategy token to discard an agenda.'], tech: ['Graviton Laser System', 'Plasma Scoring', 'Magen Defense Grid'], leaders: 'Agent ready · Commander unlocked · Hero locked' },
+      letnev: { name: 'Casey', faction: 'Letnev', symbol: '■', color: '#ec7f8f', vp: 4, res: [9, 13], inf: [1, 4], tg: 1, comm: [0, 2], tokens: [2, 6, 1], ac: 3, so: [0, 2], planets: 7, abilities: ['Munitions Reserves: spend 2 trade goods at the start of a combat round to re-roll your dice.', 'Armada: your fleet limit is 2 higher than your fleet pool.'], tech: ['Antimass Deflectors', 'Plasma Scoring', 'Dreadnought II'], leaders: 'Agent ready · Commander locked · Hero locked' },
+      jolnar: { name: 'Drew', faction: 'Jol-Nar', symbol: '✚', color: '#b79cf0', vp: 6, res: [3, 7], inf: [2, 9], tg: 3, comm: [4, 4], tokens: [2, 3, 3], ac: 6, so: [1, 3], planets: 6, abilities: ['Fragile: −1 to all combat rolls.', 'Brilliant: research 2 technologies with the Technology secondary.', 'Analytical: ignore 1 prerequisite when you research.'], tech: ['Neural Motivator', 'Antimass Deflectors', 'Sarween Tools', 'Plasma Scoring', 'Gravity Drive', 'Fleet Logistics'], leaders: 'Agent exhausted · Commander unlocked · Hero locked' },
+      mentak: { name: 'Erin', faction: 'Mentak', symbol: '✖', color: '#e6c15c', vp: 3, passed: true, res: [0, 12], inf: [0, 6], tg: 5, comm: [0, 2], tokens: [0, 4, 1], ac: 1, so: [0, 1], planets: 7, abilities: ['Ambush: at the start of a space combat, roll for up to 2 cruisers or destroyers.', 'Pillage: take 1 trade good from a neighbour who gains or trades goods.'], tech: ['Sarween Tools', 'Plasma Scoring', 'Cruiser II'], leaders: 'Agent ready · Commander locked · Hero locked' },
+      yssaril: { name: 'Finley', faction: 'Yssaril', symbol: '♣', color: '#f0a6d0', vp: 5, res: [2, 5], inf: [4, 9], tg: 0, comm: [3, 3], tokens: [3, 3, 0], ac: 9, so: [1, 2], planets: 5, abilities: ['Stall Tactics: discard 1 action card as an action.', 'Scheming: draw 1 extra action card, then discard 1.', 'Crafty: no limit to action cards in hand.'], tech: ['Neural Motivator', 'Transit Diodes', 'Mageon Implants'], leaders: 'Agent ready · Commander unlocked · Hero locked' },
+      naalu: { name: 'Gale', faction: 'Naalu', symbol: '★', color: '#b9d86a', vp: 4, res: [4, 9], inf: [3, 9], tg: 2, comm: [1, 3], tokens: [1, 4, 2], ac: 4, so: [0, 2], planets: 6, abilities: ['Telepathic: you are always first in initiative order.', 'Foresight: spend 1 strategy token to move a ship out of a system that an opponent moves into.'], tech: ['Neural Motivator', 'Sarween Tools', 'Hybrid Crystal Fighter I'], leaders: 'Agent ready · Commander locked · Hero locked' },
+    };
+    const SEAT_IDS = Object.keys(SEATS);
+    const seatSym = (seat) => `<span style="color:${SEATS[seat].color}">${SEATS[seat].symbol}</span>`;
+    const CARDS = ['Leadership', 'Diplomacy', 'Politics', 'Construction', 'Trade', 'Warfare', 'Technology', 'Imperial'];
+    const CARD_SHORT = ['Lead', 'Dipl', 'Pol', 'Cons', 'Trade', 'War', 'Tech', 'Imp'];
+    const TECH = { tarmann: 'G', vefut: 'R', arnor: 'B', wellon: 'Y', newalbion: 'G', ...Object.fromEntries(Object.values(MAP).flatMap((system) => (system.planets || []).filter((planet) => planet.tech).map((planet) => [planet.id, planet.tech]))) };
+    const TECH_COLOR = { B: '#7fb2f0', G: '#8dd2b0', Y: '#e6c15c', R: '#f3a098' };
+    const VIEWS = [['standard', 'Standard'], ['economy', 'Res / Inf'], ['space', 'Space combat'], ['ground', 'Ground combat'], ['tech', 'Tech skips']];
+    const SIM = { hacan: 'Followed · bought 1 token for 3 influence', xxcha: 'Passed', letnev: 'Passed', jolnar: 'Followed · bought 2 tokens for 6 influence', mentak: 'Passed', yssaril: 'Followed · bought 1 token for 3 influence', naalu: 'Passed' };
     const HEX = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, -1], [-1, 1]];
-    const TARGETS = ['27', '19'];
+    // A player can activate every system without their command token. The demo scripts the action for these two.
+    const SCRIPTED = ['27', '19'];
+    const ADJ = Object.fromEntries(Object.keys(MAP).map((id) => [id, Object.keys(MAP).filter((other) => HEX.some(([q, r]) => MAP[other].q === MAP[id].q + q && MAP[other].r === MAP[id].r + r))]));
+    const NEAR = Object.fromEntries(Object.keys(MAP).map((id) => [id, [...ADJ[id], ...Object.keys(MAP).filter((other) => other !== id && MAP[id].wormhole && MAP[other].wormhole === MAP[id].wormhole)]]));
     const ANOMALY = {
       asteroid: { label: 'Asteroid field', rule: 'Ships cannot move into or through it.' },
       supernova: { label: 'Supernova', rule: 'Ships cannot move into or through it.' },
@@ -1882,7 +2631,7 @@
     };
     const examples = {
       'draft-combat': { mode: 'draft', route: 'hostile', tip: 'The draft stops before the first combat roll. Open Movement to change the fleet; the odds follow.' },
-      'draft-start': { mode: 'draft', route: 'hostile', until: 0, tip: 'Pick a system in the list or on the map. Wellon is reached through the gravity rift or the α wormhole.' },
+      'draft-start': { mode: 'draft', route: 'hostile', until: 0, tip: 'Click any system on the board, or use Find system. The demo scripts Starpoint and Wellon. Wellon is reached through the gravity rift or the α wormhole.' },
       'draft-movement': { mode: 'draft', route: 'hostile', until: 1, movement: { 'j-dreadnought': 0, 'j-cruiser': 0, 'j-infantry': 2, 'l-carrier': 1, 'l-fighter': 2, '26>t-infantry': 2, 'q-cruiser': 1 }, tip: 'Three origins. The Lodor carrier picks up infantry at Tar’Mann; change its route and the pickup needs review. Hover a row to see its route.' },
       'draft-rift': { mode: 'draft', route: 'hostile', movement: { 'j-dreadnought': 0, 'j-cruiser': 0, 'j-infantry': 2, 'v-dreadnought': 1, 'v-destroyer': 1, '@v-destroyer': 1, 'v-infantry': 1 }, tip: 'Two ships leave the gravity rift, so the draft stops at the rift roll. Edit Movement to send the destroyer through Wellon instead.' },
       'draft-invasion': { mode: 'draft', route: 'ground', until: 3, movement: { 'j-dreadnought': 0, 'j-fighter': 1, 'j-infantry': 2, 'j-mech': 1 }, invasion: { 'starpoint:infantry': 1, 'newalbion:infantry': 1, 'newalbion:mech': 1 }, tip: 'Distribute forces and watch the projected odds. The draft stops at ground combat.' },
@@ -1891,11 +2640,25 @@
       'draft-cannon': { mode: 'draft', route: 'cannon', tip: 'Space cannon offense belongs to Movement, so the draft stops there. Apply to see the roll.' },
       'live-combat': { mode: 'live', route: 'hostile', until: 2, tip: 'Roll, play Direct Hit or Morale Boost, then assign hits on the rows. Try “View as” Alex.' },
       'live-invasion': { mode: 'live', route: 'hostile', until: 4, hold: true, show: 3, tip: 'Ground combat waits for Alex. Earlier results stay one click away in the stepper.' },
+      'live-picker': { mode: 'live', kind: 'picker', flow: {}, tip: 'Your turn, no action open. A tactical action is one entry: choose it, then click any system on the board. The demo scripts Starpoint and Wellon.' },
+      'live-strategic': { mode: 'live', kind: 'strategic', flow: { card: 'Leadership', owner: 'sol', stage: 'primary', order: SEAT_IDS.slice(1), turn: 0, results: {}, mine: { buy: 1, pools: { t: 2, f: 1, s: 1 }, pay: {} } }, tip: 'A strategic action has two steps. Pay on the rows or on the board, resolve the primary, then watch the secondaries resolve in seat order.' },
+      'live-secondary': { mode: 'live', kind: 'strategic', show: 1, flow: { card: 'Leadership', owner: 'hacan', stage: 'primary', order: [...SEAT_IDS.slice(2), 'sol'], turn: 0, results: {}, mine: { buy: 1, pools: { t: 1, f: 0, s: 0 }, pay: {} } }, tip: 'Alex resolves the primary. You draft your secondary at the same time. Your seat is last of seven, so it resolves after Gale. Mark it ready, then simulate.' },
+      'live-component': { mode: 'live', kind: 'component', flow: { card: 'Mining Initiative', owner: 'sol', stage: 'target', target: null }, tip: 'A one-step action has no stepper. Choose the planet in the list or on the board.' },
+      'h-mining': { mode: 'live', kind: 'component', flow: { card: 'Mining Initiative', owner: 'xxcha', stage: 'done', result: 'Blair gained 3 trade goods for Archon Ren. Trade goods 1 → 4.' } },
+      'h-leadership': { mode: 'live', kind: 'strategic', show: 1, flow: { card: 'Leadership', owner: 'hacan', stage: 'done', primaryResult: 'Alex gained 3 command tokens and bought 1 for 3 influence.', order: [...SEAT_IDS.slice(2), 'sol'], turn: 7, results: { ...SIM, xxcha: 'Followed · bought 2 tokens for 6 influence', sol: 'Passed' }, mine: { buy: 0, pools: { t: 0, f: 0, s: 0 }, pay: {}, resolved: true } } },
+      'h-cannon': { mode: 'live', route: 'cannon', show: 1 },
       summary: { mode: 'live', route: 'hostile', show: 2, tip: 'Every step keeps its result. Step through barrage and rounds; dice are grouped per unit type.' },
     };
 
     let mode = 'draft';
     let viewer = 'sol';
+    let drawer = null;
+    let mapView = 'standard';
+    let panelWide = null;
+    let tableOpen = true;
+    let pendingFit = true;
+    const camera = { x: 0, y: 0, k: 1 };
+    const logOpen = { r3: true };
     let toastTimer;
 
     // ---- Forces and dice ------------------------------------------------------------------------
@@ -2095,18 +2858,20 @@
     // ---- Map and movement rules -----------------------------------------------------------------
     const activeId = (state) => state.data.activation.system;
     const garrison = (state) => ['hostile', 'cannon'].includes(state.route) ? { dreadnought: 1, destroyer: 1, fighter: 1 } : null;
-    const hacanShips = (state, id) => id === activeId(state) ? (size(state.enemyFleet) ? Object.fromEntries(types(state.enemyFleet).map((type) => [type, state.enemyFleet[type].n])) : null) : id === '27' ? garrison(state) : MAP[id].hacan || null;
-    const planetsOf = (state, id) => id === activeId(state) ? state.planets : MAP[id].planets || [];
+    // Ships of the other players in a system: { seat: { type: count } }.
+    const others = (state, id) => id === activeId(state) ? (size(state.enemyFleet) ? { hacan: Object.fromEntries(types(state.enemyFleet).map((type) => [type, state.enemyFleet[type].n])) } : {}) : id === '27' ? (garrison(state) ? { hacan: garrison(state) } : {}) : MAP[id].fleets || {};
+    const planetsOf = (state, id) => id === activeId(state) && state.kind === 'tactical' ? state.planets : MAP[id].planets || [];
     const sysLabel = (id) => `${MAP[id].name} · #${id}`;
-    const adjacent = (id) => Object.keys(MAP).filter((other) => HEX.some(([q, r]) => MAP[other].q === MAP[id].q + q && MAP[other].r === MAP[id].r + r));
-    const neighbours = (id) => [...adjacent(id), ...Object.keys(MAP).filter((other) => other !== id && MAP[id].wormhole && MAP[other].wormhole === MAP[id].wormhole)];
+    const adjacent = (id) => ADJ[id];
+    const neighbours = (id) => NEAR[id];
     const rifts = (path) => path.slice(0, -1).filter((id) => MAP[id].anomaly === 'rift');
     const cargoAt = (id) => LINES.filter((line) => line.origin === id && !U[line.type].ship);
     function blocker(state, id) {
       const anomaly = MAP[id].anomaly;
       if (anomaly === 'asteroid' || anomaly === 'supernova') return `${ANOMALY[anomaly].label} #${id} blocks the route`;
       if (anomaly === 'nebula') return `Nebula #${id} cannot be moved through`;
-      return hacanShips(state, id) ? `Hacan ships in #${id} block the route` : '';
+      const seat = Object.keys(others(state, id))[0];
+      return seat ? `${SEATS[seat].faction} ships in #${id} block the route` : '';
     }
     // Every route from origin to the active system within the move value. `free` ignores blockers, to name them.
     function routes(state, origin, move, free = false) {
@@ -2136,6 +2901,12 @@
       return `${MAP[line.origin].anomaly === 'nebula' ? `Move ${base} → 1 in the nebula` : `Move ${base}`} · ${plural(hops(state, line.origin), 'system')} away`;
     }
     const moveCache = new Map();
+    // How many of the player's ships can move to a system, before it is activated.
+    function reach(state, id) {
+      const probe = { ...state, data: { ...state.data, activation: { system: id } } };
+      const lines = LINES.filter((line) => U[line.type].ship && moveInfo(probe, line).routes.length);
+      return { ships: lines.reduce((sum, line) => sum + line.n, 0), systems: new Set(lines.map((line) => line.origin)).size };
+    }
     // What one ship line can do: its move value, whether it needs Gravity Drive, and the routes worth offering.
     function moveInfo(state, line) {
       const key = [activeId(state), state.route, !!size(state.enemyFleet), state.stale, line.id].join('|');
@@ -2200,6 +2971,11 @@
       };
     }
     function problem(state, step, data) {
+      if (step === 0) {
+        if (!data.system) return 'Click a system on the board to activate it.';
+        if (MAP[data.system].token) return `Your command token is already in ${MAP[data.system].name}. Choose a different system.`;
+        if (!SCRIPTED.includes(data.system)) return 'This demo scripts only Starpoint and Wellon. Choose one of them to continue.';
+      }
       if (step === 1) {
         const entries = stagedEntries(data);
         if (entries.some((entry) => entry.count > available(state, data, entry.key))) return 'A staged selection is no longer available. Remove the marked rows.';
@@ -2406,12 +3182,16 @@
 
     // ---- Workspaces -----------------------------------------------------------------------------
     function blankState(example, workspace, route, data) {
-      const state = { example, mode: workspace, route, data: clone(data), stale: false, frontier: 0, blocker: 'decision', skipped: {}, done: {}, open: {}, selected: 0, edit: null, view: {}, inspect: '27', zoom: 1, hands: { sol: [...P.sol.hand], hacan: [...P.hacan.hand] }, history: [], cursor: -1 };
+      const state = { example, mode: workspace, route, data: clone(data), stale: false, frontier: 0, blocker: 'decision', kind: 'tactical', skipped: {}, done: {}, open: {}, selected: 0, edit: null, view: {}, inspect: '27', zoom: 1, hands: { sol: [...P.sol.hand], hacan: [...P.hacan.hand] }, history: [], cursor: -1 };
       setup(state);
       return state;
     }
     function makeState(example) {
       const config = examples[example];
+      if (config.kind) {
+        const flow = blankState(example, 'live', 'hostile', baseData);
+        return Object.assign(flow, { kind: config.kind, flow: clone(config.flow), tip: config.tip || '', selected: config.show || 0, inspect: null });
+      }
       const state = blankState(example, config.mode, config.route, baseData);
       const until = config.until ?? 5;
       Object.assign(state.data.movement, config.movement);
@@ -2463,6 +3243,7 @@
     }
     // The current step needs no click to start: its controls are open as soon as it is the viewer's.
     function normalize(state) {
+      if (state.kind !== 'tactical') return;
       const battle = activeBattle(state);
       if (battle?.stage === 'waiting' && controls(state, battle.side)) Object.assign(battle, { stage: 'assign', staged: [] });
       const decides = state.mode === 'draft' || viewer === 'sol';
@@ -2517,45 +3298,105 @@
       const total = productionTotals(state, state.data.production);
       return `${plural(total.count, 'unit')} · ${plural(total.cost, 'resource')}`;
     }
-    function renderHeader(state) {
-      const draft = state.mode === 'draft', done = state.frontier === null;
-      const status = draft ? 'Your turn · Preparing a tactical action' : done ? 'Tactical action complete' : mine(state) ? `Your decision · ${need(state).what}` : `Waiting for ${waitingFor(state)} · ${need(state).what}`;
-      const away = !done && state.selected !== state.frontier;
+    const isTactical = (state) => state.kind === 'tactical';
+    const actor = (state) => state.flow?.owner || 'sol';
+    function flowNeed(state) {
+      const flow = state.flow;
+      if (state.kind === 'picker') return { mine: true, text: 'Choose an action' };
+      if (state.kind === 'component') return flow.stage === 'done' ? null : { mine: true, text: 'Choose a planet' };
+      if (flow.stage === 'done') return null;
+      const seat = flow.stage === 'primary' ? flow.owner : flow.order[flow.turn];
+      return { mine: seat === 'sol', seat, text: `${flow.card} ${flow.stage === 'primary' ? 'primary' : 'secondary'}` };
+    }
+    function statusText(state) {
+      if (mode === 'history') return 'Viewing a past action';
+      if (isTactical(state)) {
+        const draft = state.mode === 'draft', done = state.frontier === null;
+        return draft ? 'Your turn · Preparing a tactical action' : done ? 'Tactical action complete' : mine(state) ? `Your decision · ${need(state).what}` : `Waiting for ${waitingFor(state)} · ${need(state).what}`;
+      }
+      const wait = flowNeed(state);
+      if (!wait) return `${state.kind === 'strategic' ? 'Strategic' : 'Component'} action complete`;
+      if (state.kind === 'picker') return 'Your turn · Choose an action';
+      return wait.mine ? `Your decision · ${wait.text}` : `Waiting for ${SEATS[wait.seat].name} · ${wait.text}`;
+    }
+    function renderToolbar(state) {
+      const draft = state.mode === 'draft' && mode === 'draft';
       const controls = draft ? `<button class="button button--quiet button--icon" data-action="undo" aria-label="Undo" title="Undo" ${state.cursor > 0 ? '' : 'disabled'}>${icon('undo')}</button>
           <button class="button button--quiet button--icon" data-action="redo" aria-label="Redo" title="Redo" ${state.cursor < state.history.length - 1 ? '' : 'disabled'}>${icon('redo')}</button>
           <button class="button button--primary" data-action="open-apply" title="${applyReadiness(state)}" ${canApply(state) && viewer === 'sol' && !state.edit ? '' : 'disabled'}>Apply to Live ${icon('arrow')}</button>
           <details class="menu"><summary class="button button--quiet button--icon" aria-label="More draft actions">${icon('more')}</summary><div class="menu-items"><button data-action="start-over">Start over</button><button data-action="discard">Discard draft</button></div></details>` : '';
+      const past = workspaces.history;
       return `<header class="toolbar">
-          <div class="tb-status"><span>Round 3 · Action phase</span><strong><i class="status-dot"></i>${status}</strong></div>
-          <nav class="workspace-switch" aria-label="Workspace">${['live', 'draft'].map((workspace) => `<button data-action="workspace" data-mode="${workspace}" aria-pressed="${mode === workspace}" ${workspace === 'draft' && viewer !== 'sol' ? 'disabled title="A draft is private to the acting player"' : ''}>${workspace === 'live' ? 'Live' : 'Draft'}</button>`).join('')}</nav>
-          <div class="tb-title"><strong>Tactical action</strong><span class="muted">#${state.data.activation.system} ${systemName(state)} · ${P.sol.name} (${P.sol.faction})</span><span class="badge badge--${draft ? 'draft' : done ? 'done' : 'live'}">${draft ? 'Private draft' : done ? 'Complete' : 'In progress'}</span></div>
+          <div class="tb-status"><span>Round 3 · Action phase</span><strong><i class="status-dot"></i>${statusText(state)}</strong></div>
+          <nav class="workspace-switch" aria-label="Workspace">${['live', 'draft'].map((workspace) => `<button data-action="workspace" data-mode="${workspace}" aria-pressed="${mode === workspace}" ${workspace === 'draft' && viewer !== 'sol' ? 'disabled title="A draft is private to the acting player"' : ''}>${workspace === 'live' ? 'Live' : 'Draft'}</button>`).join('')}${past ? `<button data-action="workspace" data-mode="history" aria-pressed="${mode === 'history'}">History · ${past.past.label}</button><button data-action="close-history" aria-label="Close history view" title="Close history view">✕</button>` : ''}</nav>
+          <nav class="refs" aria-label="Reference">${[['objectives', 'Objectives'], ['technology', 'Technology'], ['cards', 'Cards'], ['log', 'Log']].map(([id, label]) => `<button class="button button--quiet button--small" data-action="drawer" data-drawer="${id}" aria-expanded="${drawer === id}">${label}</button>`).join('')}</nav>
           <div class="tb-controls">${controls}</div>
-        </header>
-        <div class="stepper"><nav class="step-tabs" role="tablist" aria-label="Tactical action steps">${STEPS.map((name, step) => {
+        </header>`;
+    }
+    function cardOwners(state) {
+      const owners = [['sol'], ['xxcha', true], ['letnev'], ['jolnar', true], ['hacan'], ['mentak', true], ['yssaril', true], ['naalu']].map(([owner, used, tg]) => ({ owner, used: !!used, tg }));
+      if (state.flow?.card === 'Leadership') {
+        if (state.flow.owner === 'hacan') [owners[0].owner, owners[4].owner] = ['hacan', 'sol'];
+        owners[0].used = true;
+      }
+      return owners;
+    }
+    // One row for each player, in seat order. Rows do not move; ▶ and › show the turn.
+    function renderTable(state) {
+      const owners = cardOwners(state), now = mode === 'history' ? null : actor(state);
+      const card = (seat) => owners.findIndex((item) => item.owner === seat);
+      const queue = SEAT_IDS.filter((seat) => !SEATS[seat].passed && card(seat) >= 0).sort((a, b) => card(a) - card(b));
+      const next = now && queue.length > 1 ? queue[(queue.indexOf(now) + 1) % queue.length] : null;
+      const me = viewer === 'observer' ? 'sol' : viewer;
+      const cols = [['VP', 'Victory points of 10'], ['SC', 'Strategy card · ✓ used'], ['R', 'Resources: ready / total'], ['I', 'Influence: ready / total'], ['TG', 'Trade goods'], ['C', 'Commodities / limit'], ['T·F·S', 'Command tokens: tactic · fleet · strategy'], ['AC', 'Action cards in hand'], ['SO', 'Secret objectives: scored / held'], ['Pl', 'Planets']];
+      const row = (seat) => {
+        const player = SEATS[seat], index = card(seat), used = owners[index]?.used;
+        const tokens = seat === 'sol' && isTactical(state) && state.mode === 'live' && state.done[0] ? [player.tokens[0] - 1, ...player.tokens.slice(1)] : player.tokens;
+        const turn = now === seat ? '<span class="turn now" title="Active player">▶</span>' : next === seat ? '<span class="turn" title="Next player">›</span>' : '';
+        const values = [`<strong>${player.vp}</strong>`, index < 0 ? '–' : `<span class="${used ? 'used' : ''}" title="${index + 1} ${CARDS[index]}${used ? ' · used' : ''}">${index + 1} ${CARD_SHORT[index]}${used ? ' ✓' : ''}</span>`, player.res.join('/'), player.inf.join('/'), player.tg, player.comm.join('/'), tokens.join('·'), player.ac, player.so.join('/'), player.planets];
+        return `<tr class="${seat === me ? 'me' : ''} ${player.passed ? 'passed' : ''}" data-action="drawer" data-drawer="player:${seat}">
+            <td class="pt-turn">${turn}</td>
+            <th scope="row"><button class="pt-name" data-action="drawer" data-drawer="player:${seat}" aria-label="${player.name}, ${player.faction}${now === seat ? ', active player' : ''}${player.speaker ? ', speaker' : ''}${player.passed ? ', passed' : ''}. Open player sheet."><span class="pt-sym" style="color:${player.color}">${player.symbol}</span><span class="pt-who">${player.name}</span><span class="pt-faction">${player.faction}</span>${player.speaker ? '<span class="pt-tag" title="Speaker">Spk</span>' : ''}${player.passed ? '<span class="pt-tag quiet">passed</span>' : ''}</button>
+              <div class="seat-pop"><strong>${seatSym(seat)} ${player.name} · ${player.faction}</strong>${player.abilities.map((text) => `<p>${text}</p>`).join('')}<p class="muted">${player.tech.join(' · ')}</p><p class="muted">${player.leaders}</p></div></th>
+            ${values.map((value, column) => `<td class="${column === 1 ? 'pt-card' : ''}">${value}</td>`).join('')}
+          </tr>`;
+      };
+      const shown = tableOpen ? SEAT_IDS : SEAT_IDS.filter((seat) => seat === me || seat === now);
+      const free = owners.map((item, index) => item.owner ? '' : `${index + 1} ${CARDS[index]} +${item.tg} TG`).filter(Boolean);
+      return `<section class="ptable" aria-label="Players">
+          <table><thead><tr><td class="pt-turn"><button class="pt-toggle" data-action="table-toggle" aria-expanded="${tableOpen}" aria-label="${tableOpen ? 'Show only you and the active player' : 'Show all players'}" title="${tableOpen ? 'Show only you and the active player' : 'Show all players'}">${tableOpen ? '▾' : '▸'}</button></td><th scope="col">${tableOpen ? 'Player' : `Player · ${shown.length} of ${SEAT_IDS.length}`}</th>${cols.map(([label, title]) => `<th scope="col" title="${title}"><abbr title="${title}">${label}</abbr></th>`).join('')}</tr></thead>
+          <tbody>${shown.map(row).join('')}</tbody></table>
+          ${free.length ? `<div class="pt-free">Free strategy cards: ${free.join(' · ')}</div>` : ''}
+        </section>`;
+    }
+    function tacticalStepper(state) {
+      const done = state.frontier === null, away = !done && state.selected !== state.frontier;
+      return `<div class="stepper"><nav class="step-tabs" role="tablist" aria-label="Tactical action steps">${STEPS.map((name, step) => {
         const status = stepState(state, step), current = state.frontier === step, caption = stepCaption(state, step, status);
         const chip = status === 'future' ? icon('lock') : status === 'skipped' ? icon('minus') : status === 'done' ? icon('check') : step + 1;
-        return `<button type="button" id="step-tab-${step}" class="step-tab" role="tab" data-action="select-step" data-step="${step}" data-state="${status}" aria-controls="step-panel" aria-selected="${state.selected === step}" ${current ? 'aria-current="step"' : ''} tabindex="${state.selected === step ? 0 : -1}" ${status === 'future' ? 'disabled' : ''} title="${name}${caption ? ' · ' + caption : ''}"><span class="step-chip">${chip}</span><span class="step-name">${name}</span><span class="step-caption">${caption}</span></button>`;
-      }).join('')}</nav>
-          <div class="stepper-side">${state.edit?.dirty && state.selected !== state.edit.step ? `<button class="button button--quiet button--small" data-action="return-edit">${icon('edit')}${STEPS[state.edit.step]} · uncommitted</button>` : ''}${away ? `<button class="button button--quiet button--small" data-action="return-current">Go to current ${icon('arrow')}</button>` : ''}</div>
-        </div>`;
+        return `<button type="button" id="step-tab-${step}" class="step-tab" role="tab" data-action="select-step" data-step="${step}" data-state="${status}" aria-controls="step-panel" aria-selected="${state.selected === step}" ${current ? 'aria-current="step"' : ''} tabindex="${state.selected === step ? 0 : -1}" ${status === 'future' ? 'disabled' : ''} title="${name}${caption ? ' · ' + caption : ''}"><span class="step-chip">${chip}</span><span class="step-name">${name === 'Space combat' ? '<span class="long">Space </span>combat' : name}</span><span class="step-caption">${caption}</span></button>`;
+      }).join('')}</nav></div>
+        ${state.edit?.dirty && state.selected !== state.edit.step || away ? `<div class="stepper-side">${state.edit?.dirty && state.selected !== state.edit.step ? `<button class="button button--quiet button--small" data-action="return-edit">${icon('edit')}${STEPS[state.edit.step]} · uncommitted</button>` : ''}${away ? `<button class="button button--quiet button--small" data-action="return-current">Go to current ${icon('arrow')}</button>` : ''}</div>` : ''}`;
     }
 
     // ---- System context -------------------------------------------------------------------------
     const hexPoints = (x, y, radius) => Array.from({ length: 6 }, (_, index) => { const angle = (index * 60 - 30) * Math.PI / 180; return `${(x + radius * Math.cos(angle)).toFixed(1)},${(y + radius * Math.sin(angle)).toFixed(1)}`; }).join(' ');
-    const ownerLabel = (seat) => `<span class="owner"><i class="owner-dot ${seat ? 'owner-dot--' + seat : ''}"></i>${seat ? P[seat].faction : 'Nobody'}</span>`;
+    const ownerLabel = (seat) => `<span class="owner">${seat ? seatSym(seat) : '<i class="owner-dot"></i>'}${seat ? SEATS[seat].faction : 'Nobody'}</span>`;
     function systemCard(state) {
       const id = state.inspect, system = MAP[id], draft = state.mode === 'draft';
       const row = (label, body) => `<div class="context-row"><span>${label}</span><span>${body}</span></div>`;
       const partner = system.wormhole && Object.keys(MAP).find((other) => other !== id && MAP[other].wormhole === system.wormhole);
-      const facts = [id === activeId(state) ? `Active system · ${draft ? 'latest preview' : 'live board'}` : system.note, system.anomaly && ANOMALY[system.anomaly].label, system.wormhole && `${system.wormhole} wormhole`, system.token && 'Your command token is here'].filter(Boolean).join(' · ');
+      const here = isTactical(state) && state.done[0] && id === activeId(state);
+      const pick = state.kind === 'picker' && mode === 'live' && viewer === 'sol' ? `<div class="inspector-action">${system.token ? '<span class="muted">Your command token is here. You cannot activate this system again.</span>' : `<button class="button button--small" data-action="pick-tactical" data-system="${id}">Activate this system ${icon('arrow')}</button>`}</div>` : '';
+      const facts = [here ? `Active system · ${draft ? 'latest preview' : 'live board'}` : system.note, system.anomaly && ANOMALY[system.anomaly].label, system.wormhole && `${system.wormhole} wormhole`, system.token && 'Your command token is here'].filter(Boolean).join(' · ');
       const head = `<h3>${sysLabel(id)}</h3><div class="muted">${facts || 'No anomaly'}</div>${system.anomaly ? `<div class="muted">${ANOMALY[system.anomaly].rule}</div>` : ''}${partner ? `<div class="muted">Adjacent to ${sysLabel(partner)} through the wormhole.</div>` : ''}`;
       const planetRow = (planet, body = '') => row(`${planet.name}<div class="muted">${planet.res} / ${planet.inf}</div>`, `${ownerLabel(planet.owner)}${body}`);
-      if (id !== activeId(state)) {
+      if (!here) {
         const moved = state.edit?.step === 1 ? state.edit.value : state.done[1] ? state.data.movement : {};
         const taken = (line) => stagedEntries(moved).filter((entry) => entry.line === line).reduce((sum, entry) => sum + entry.count, 0);
         const left = LINES.filter((line) => line.origin === id).map((line) => [line, line.n - taken(line)]).filter(([, count]) => count > 0);
-        const enemy = hacanShips(state, id);
-        return `${head}${left.length ? row(ownerLabel('sol'), left.map(([line, count]) => `${count} ${line.label || unitName(line.type, count)}${line.damaged ? ' (damaged)' : ''}`).join(' · ')) : ''}${enemy ? row(ownerLabel('hacan'), `${list(force(enemy))}${system.hacanGround ? `<div class="muted">${system.hacanGround}</div>` : ''}`) : ''}${planetsOf(state, id).map((planet) => planetRow(planet)).join('')}`;
+        const fleets = others(state, id);
+        return `${head}${left.length ? row(ownerLabel('sol'), left.map(([line, count]) => `${count} ${line.label || unitName(line.type, count)}${line.damaged ? ' (damaged)' : ''}`).join(' · ')) : ''}${Object.keys(fleets).map((seat) => row(ownerLabel(seat), list(force(fleets[seat])))).join('')}${planetsOf(state, id).map((planet) => planetRow(planet, planet.owner && planet.owner !== 'sol' ? `<div class="muted">${plural(planet.troops || 2, 'ground force')}</div>` : '')).join('')}${pick}`;
       }
       const carrying = [state.ground.infantry && `${state.ground.infantry} Infantry`, state.ground.mech && plural(state.ground.mech, 'Mech')].filter(Boolean).join(' · ');
       const space = [size(state.fleet) || carrying ? row(ownerLabel('sol'), `${list(state.fleet)}${carrying ? `<div class="muted">Carrying ${carrying}</div>` : ''}`) : '', size(state.enemyFleet) ? row(ownerLabel('hacan'), list(state.enemyFleet)) : ''].join('');
@@ -2585,58 +3426,251 @@
         return `Q${(mx + (y - hexY(before)) * .18).toFixed(1)} ${(my - (x - hexX(before)) * .18).toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}`;
       }).join(' ');
     }
+    function frame(ids, padX = HEX_R * 1.4, padY = HEX_R * 1.7) {
+      const xs = ids.map(hexX), ys = ids.map(hexY);
+      return { w: Math.max(...xs) - Math.min(...xs) + padX * 2, h: Math.max(...ys) - Math.min(...ys) + padY * 2, cx: (Math.max(...xs) + Math.min(...xs)) / 2, cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
+    }
+    const BOX = frame(Object.keys(MAP), HEX_R * .87 + 14, HEX_R + 44);
+    const viewBox = () => { const w = BOX.w / camera.k, h = BOX.h / camera.k; return `${(BOX.cx + camera.x - w / 2).toFixed(1)} ${(BOX.cy + camera.y - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`; };
+    // The systems of the open task: where the player's units and planets are, and the active system.
+    function taskIds(state) {
+      const active = isTactical(state) ? (state.edit?.step === 0 ? state.edit.value.system : activeId(state)) : null;
+      return [...new Set([...LINES.map((line) => line.origin), ...PAY.filter((source) => source.system).map((source) => source.system), ...SCRIPTED, ...(active ? [active] : [])])];
+    }
+    function fit(ids) {
+      const area = ids ? frame(ids) : BOX;
+      Object.assign(camera, { x: area.cx - BOX.cx, y: area.cy - BOX.cy, k: Math.min(5, BOX.w / area.w, BOX.h / area.h) });
+    }
+    // What the open task lets the player choose on planets. It is drawn over any map view.
+    function payContext(state) {
+      if (mode === 'history') return null;
+      const values = (key) => Object.fromEntries(PAY.filter((source) => source.system).map((source) => [source.id, source[key]]));
+      if (isTactical(state)) {
+        if (mapStep(state) === 4) return { values: values('res'), chosen: state.edit.value.pay, action: 'map-pay', verb: 'Exhaust', unit: 'resource', kind: 'pay' };
+        return state.done[4] ? { values: {}, chosen: state.data.production.pay, kind: 'pay' } : null;
+      }
+      const flow = state.flow;
+      if (state.kind === 'strategic' && flowEditing(state) && flow.mine.buy) return { values: values('inf'), chosen: flow.mine.pay, action: 'flow-pay', verb: 'Exhaust', unit: 'influence', kind: 'pay' };
+      if (state.kind === 'component' && flow.stage === 'target') return { values: values('res'), chosen: flow.target ? { [flow.target]: true } : {}, action: 'flow-target', verb: 'Choose', unit: 'resource', kind: 'pick' };
+      return null;
+    }
     function renderMap(state) {
-      const step = mapStep(state), draft = state.mode === 'draft';
-      const active = step === 0 ? state.edit.value.system : activeId(state);
-      const moving = step === 1 ? state.edit.value : state.done[1] ? state.data.movement : {};
-      const pay = step === 4 ? state.edit.value.pay : state.done[4] ? state.data.production.pay : {};
-      const focus = step === 4 ? [active, ...PAY.filter((source) => source.system).map((source) => source.system)] : step === null ? [active, ...adjacent(active)] : Object.keys(MAP);
-      const xs = focus.map(hexX), ys = focus.map(hexY), pad = 6;
-      const box = { x: Math.min(...xs) - HEX_R * .87 - pad, y: Math.min(...ys) - HEX_R - pad, w: Math.max(...xs) - Math.min(...xs) + HEX_R * 1.74 + pad * 2, h: Math.max(...ys) - Math.min(...ys) + HEX_R * 2 + pad * 2 };
-      const w = box.w / state.zoom, h = box.h / state.zoom, view = `${(box.x + (box.w - w) / 2).toFixed(1)} ${(box.y + (box.h - h) / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
+      const step = mapStep(state), tactical = isTactical(state);
+      const active = !tactical ? null : step === 0 ? state.edit.value.system : activeId(state);
+      const moving = !tactical ? {} : step === 1 ? state.edit.value : state.done[1] ? state.data.movement : {};
+      const task = payContext(state);
       const entries = stagedEntries(moving);
       const taken = (line) => entries.filter((entry) => entry.line === line).reduce((sum, entry) => sum + entry.count, 0);
+      const strength = mapView === 'space';
+      const hits = (group) => types(group).reduce((sum, type) => sum + group[type].n * (11 - U[type].combat) / 10, 0).toFixed(1);
+      const shipCount = (counts) => Object.keys(counts).reduce((sum, type) => sum + (U[type].ship ? counts[type] : 0), 0);
       const tile = (id) => {
         const system = MAP[id], x = hexX(id), y = hexY(id), on = id === active, names = system.name.toUpperCase().split(' / ');
-        const planets = planetsOf(state, id), target = step === 0 && TARGETS.includes(id);
-        const solShips = id === activeId(state) ? ships(state.fleet) : LINES.filter((line) => line.origin === id && U[line.type].ship).reduce((sum, line) => sum + line.n - taken(line), 0);
-        const hacan = hacanShips(state, id), hacanCount = hacan ? Object.keys(hacan).filter((type) => U[type].ship).reduce((sum, type) => sum + hacan[type], 0) : 0;
+        const planets = planetsOf(state, id), target = step === 0 && !system.token;
+        const here = tactical && state.done[0] && id === activeId(state);
+        const solCounts = here ? Object.fromEntries(types(state.fleet).map((type) => [type, state.fleet[type].n])) : Object.fromEntries([...new Set(LINES.filter((line) => line.origin === id && (U[line.type].ship || line.type === 'fighter')).map((line) => line.type))].map((type) => [type, LINES.filter((line) => line.origin === id && line.type === type).reduce((sum, line) => sum + line.n - taken(line), 0)]));
+        const fleets = { ...(shipCount(solCounts) ? { sol: solCounts } : {}), ...others(state, id) };
         const picked = entries.filter((entry) => entry.key.includes('>') && entry.line.origin === id).reduce((sum, entry) => sum + entry.count, 0);
-        const marks = [solShips ? ['#8cd5ef', solShips, 'Sol'] : null, hacanCount ? ['#d69a75', hacanCount, 'Hacan'] : null].filter(Boolean);
-        const label = `${system.name}, system ${id}${system.anomaly ? ', ' + ANOMALY[system.anomaly].label : ''}${system.wormhole ? `, ${system.wormhole} wormhole` : ''}${solShips ? `, ${plural(solShips, 'Sol ship')}` : ''}${hacanCount ? `, ${plural(hacanCount, 'Hacan ship')}` : ''}`;
+        const marks = Object.keys(fleets).map((seat) => [seat, shipCount(fleets[seat]), strength ? `·${hits(force(fleets[seat]))}` : '']).filter(([, count]) => count);
+        const troops = (planet) => here ? size(planet.units, (type) => U[type].ground) : planet.owner === 'sol' ? LINES.filter((line) => line.origin === id && line.from === planet.name).reduce((sum, line) => sum + line.n - taken(line), 0) : planet.owner ? planet.troops || 2 : 0;
+        const label = `${system.name}, system ${id}${system.home ? `, ${SEATS[system.home].faction} home system` : ''}${system.anomaly ? ', ' + ANOMALY[system.anomaly].label : ''}${system.wormhole ? `, ${system.wormhole} wormhole` : ''}${system.token ? ', your command token is here' : ''}${marks.map(([seat, count]) => `, ${plural(count, SEATS[seat].faction + ' ship')}`).join('')}`;
+        const keep = on || system.home || id === '50' || id === state.inspect;
         return `<g class="system" role="button" tabindex="0" data-action="inspect-system" data-system="${id}" data-link="sys:${id}" aria-label="${target ? 'Activate' : 'Inspect'} ${label}">
-            <polygon class="hex" points="${hexPoints(x, y, HEX_R - 2)}" fill="${on ? '#212228' : '#131c28'}" stroke="${on ? '#b18e60' : id === state.inspect ? '#4b6f86' : '#2a384a'}" stroke-width="${on ? 1.8 : 1}" ${system.anomaly === 'asteroid' || system.anomaly === 'supernova' ? 'stroke-dasharray="2 3"' : ''}/>
-            <text x="${x}" y="${y - 31}" fill="#6f8198" text-anchor="middle" font-size="8">#${id}</text>
+            <polygon class="hex" points="${hexPoints(x, y, HEX_R - 2)}" fill="${on ? '#212228' : system.home ? '#161f2c' : '#131c28'}" stroke="${on ? '#b18e60' : id === state.inspect ? '#4b6f86' : system.home ? SEATS[system.home].color + '88' : '#2a384a'}" stroke-width="${on ? 1.8 : 1}" ${system.anomaly === 'asteroid' || system.anomaly === 'supernova' ? 'stroke-dasharray="2 3"' : ''}/>
+            <text class="t-id" x="${x}" y="${y - 31}" fill="#6f8198" text-anchor="middle" font-size="8">#${id}</text>
             ${system.token ? `<path d="m${x + 9} ${y - 33} 9 0-4.5 8Z" fill="#8cd5ef"><title>Sol command token</title></path>` : ''}
             ${system.anomaly ? `<g transform="translate(${x} ${y - 10})">${GLYPH[system.anomaly]}</g>` : ''}
             ${planets.map((planet, index) => {
-              const px = x + (planets.length > 1 ? index * 24 - 12 : 0) - (system.wormhole ? 8 : 0), source = PAY.find((item) => item.id === planet.id), payable = step === 4 && source;
-              return `<g class="planet ${pay[planet.id] ? 'exhausted' : ''}" data-link="pl:${planet.id}" ${payable ? `role="button" tabindex="0" data-action="map-pay" data-id="${planet.id}" aria-pressed="${!!pay[planet.id]}" aria-label="Exhaust ${planet.name}, ${plural(planet.res, 'resource')}"` : ''}><circle cx="${px}" cy="${y - 10}" r="10" fill="${planet.owner === 'sol' ? '#193747' : planet.owner ? '#3d3028' : '#262f3b'}" stroke="${planet.owner === 'sol' ? '#8cd5ef' : planet.owner ? '#d69a75' : '#73849a'}" stroke-opacity=".7"/>${payable || pay[planet.id] ? `<text x="${px}" y="${y - 6.5}" fill="#eef2f6" text-anchor="middle" font-size="10" font-weight="600">${pay[planet.id] ? '✕' : planet.res}</text>` : ''}</g>`;
+              const px = x + (planets.length > 1 ? index * 24 - 12 : 0) - (system.wormhole ? 8 : 0), payable = task?.action && planet.id in task.values, chosen = !!task?.chosen[planet.id];
+              const color = planet.owner ? SEATS[planet.owner].color : '#73849a';
+              const text = (body, size = 10, fill = '#eef2f6') => `<text x="${px}" y="${y - 10 + size * .35}" fill="${fill}" text-anchor="middle" font-size="${size}" font-weight="600">${body}</text>`;
+              // A planet that the task can use keeps its value when chosen. A ring and a check mark show the choice.
+              const inside = payable ? text(task.values[planet.id]) : mapView === 'economy' ? text(`<tspan fill="#edbd7b">${planet.res}</tspan><tspan fill="#73849a">/</tspan><tspan fill="#8cd5ef">${planet.inf}</tspan>`, 8) : mapView === 'ground' ? text(`${troops(planet)}${here && planet.structures?.includes('pds') ? '◈' : ''}`, 9) : mapView === 'tech' ? (TECH[planet.id] ? text(TECH[planet.id], 10, TECH_COLOR[TECH[planet.id]]) : '') : planet.owner ? text(SEATS[planet.owner].symbol, 8, color) : '';
+              const badge = chosen && payable ? `<g class="chosen-badge" transform="translate(${px + 8} ${y - 18})"><circle r="4.6"/><path d="m-2.2 0 1.6 1.7 2.8-3.2"/></g>` : '';
+              return `<g class="planet ${chosen ? (payable ? (task.kind === 'pay' ? 'chosen' : 'chosen picked') : 'exhausted') : ''}" data-link="pl:${planet.id}" ${payable ? `role="button" tabindex="0" data-action="${task.action}" data-id="${planet.id}" aria-pressed="${chosen}" aria-label="${task.verb} ${planet.name}, ${task.values[planet.id]} ${task.unit}"` : ''}><title>${planet.name} · ${planet.res} resources / ${planet.inf} influence${planet.owner ? ' · ' + SEATS[planet.owner].faction : ''}</title><circle cx="${px}" cy="${y - 10}" r="10" fill="${color}" fill-opacity="${planet.owner ? .2 : .12}" stroke="${color}" stroke-opacity=".75"/>${inside}${badge}</g>`;
             }).join('')}
             ${system.wormhole ? `<g transform="translate(${x + (planets.length ? 14 : 0)} ${y - 10})"><circle r="7.5" fill="#0b1017" stroke="#e6c15c" stroke-dasharray="2 2"/><text y="3" fill="#e6c15c" text-anchor="middle" font-size="9">${system.wormhole}</text></g>` : ''}
-            ${names.map((name, index) => `<text x="${x}" y="${y + 13 + index * 10}" fill="${on ? '#edbd7b' : '#c2d0de'}" text-anchor="middle" font-size="${name.length > 10 ? 7.5 : 9}" font-weight="600" letter-spacing=".4">${name}</text>`).join('')}
-            ${on && names.length === 1 ? `<text x="${x}" y="${y + 13 + names.length * 10}" fill="#c3a06e" text-anchor="middle" font-size="7">ACTIVE</text>` : ''}
-            ${marks.map(([color, count], index) => { const mx = x + (index - (marks.length - 1) / 2) * 24; return `<path d="m${mx - 9} ${y + 37} 4-8 4 8Z" fill="${color}"/><text x="${mx + 1}" y="${y + 37}" fill="${color}" font-size="9" font-weight="600">${count}</text>`; }).join('')}
+            ${(system.name === 'Empty space' && !on ? [] : names).map((name, index) => `<text class="t-name ${keep ? 'keep' : ''}" x="${x}" y="${y + 13 + index * 9.5}" fill="${on ? '#edbd7b' : '#c2d0de'}" text-anchor="middle" font-size="${name.length > 10 ? 7.5 : 9}" font-weight="600" letter-spacing=".3">${name}</text>`).join('')}
+            ${on && names.length === 1 ? `<text class="t-name keep" x="${x}" y="${y + 22.5}" fill="#c3a06e" text-anchor="middle" font-size="7">ACTIVE</text>` : ''}
+            ${marks.map(([seat, count, extra], index) => `<text class="t-mark" x="${x + (index - (marks.length - 1) / 2) * (strength ? 34 : 26)}" y="${y + 38}" fill="${SEATS[seat].color}" text-anchor="middle" font-size="9.5" font-weight="700">${SEATS[seat].symbol}${count}${extra}</text>`).join('')}
             ${picked ? `<text x="${x - 24}" y="${y - 22}" fill="#edbd7b" font-size="9" font-weight="700">+${picked}</text>` : ''}
           </g>`;
       };
       const pairs = Object.keys(MAP).filter((id) => MAP[id].wormhole).flatMap((id) => Object.keys(MAP).filter((other) => other > id && MAP[other].wormhole === MAP[id].wormhole).map((other) => [id, other]));
-      const lines = state.selected !== 1 ? [] : LINES.filter((line) => U[line.type].ship && moveInfo(state, line).routes.length);
-      const tokens = draft || !state.done[0] ? [3, 3] : [3, 2];
-      const goods = state.data.production.pay.goods && state.done[4] ? [2, 0] : [2, 2];
-      const change = ([before, after]) => before === after ? before : `${before} → ${after}`;
-      return `<aside class="context-pane" aria-label="System context">
-          <div class="context-label"><span class="eyebrow">${step === 4 ? 'Your planets' : step === 1 ? 'Ships in range' : 'System context'}</span><span class="small">${draft ? 'Latest preview' : 'Live board'}</span></div>
-          <div class="galaxy"><svg viewBox="${view}" role="group" aria-label="Galaxy map around the active system">
+      const lines = !tactical || state.selected !== 1 || !state.done[0] ? [] : LINES.filter((line) => U[line.type].ship && moveInfo(state, line).routes.length);
+      return `<svg viewBox="${viewBox()}" role="group" aria-label="Galaxy board">
             <defs><marker id="route-end" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1 7 4 1 7" fill="none" stroke="#8cd5ef" stroke-width="1.5"/></marker></defs>
             ${Object.keys(MAP).map(tile).join('')}
             ${pairs.map((pair) => `<path class="wormhole-arc" d="${routePath(pair)}"><title>${MAP[pair[0]].wormhole} wormholes: these systems are adjacent</title></path>`).join('')}
             ${lines.map((line) => `<path class="route ${moving[line.id] > 0 ? 'staged' : 'idle'}" data-link="rt:${line.id}" d="${routePath(chosen(state, moving, line))}" marker-end="url(#route-end)"/>`).join('')}
-          </svg><div class="map-tools" aria-label="Map zoom"><button data-action="zoom" data-delta="-0.1" aria-label="Zoom out">−</button><button data-action="zoom" data-delta="0.1" aria-label="Zoom in">+</button><button data-action="center-map" aria-label="Reset map zoom">⌾</button></div></div>
-          <div class="map-legend"><span><i style="background:#8cd5ef"></i>Sol ships</span><span><i style="background:#d69a75"></i>Hacan ships</span><span>▼ Command token</span><span>α Wormhole</span></div>
-          <div class="system-context">${systemCard(state)}</div>
-          <div class="economy"><div><strong class="mono">${change(tokens)}</strong><span>Tactic tokens</span></div><div><strong class="mono">${ships(state.fleet)} / ${SUPPLY}</strong><span>Fleet supply here</span></div><div><strong class="mono">${change(goods)}</strong><span>Trade goods</span></div></div>
-        </aside>`;
+          </svg>`;
+    }
+    function latestResult(state) {
+      if (mode === 'history') return 'Board: the result of this action (demo). The real board stays on the present state.';
+      if (isTactical(state)) {
+        const last = [4, 3, 2, 1, 0].find((step) => state.done[step] && !state.skipped[step]);
+        if (last !== undefined) return `Jamie · ${STEPS[last]} · ${stepCaption(state, last, 'done')}${state.mode === 'draft' ? ' (draft)' : ''}`;
+      }
+      return 'Blair gained 3 trade goods with Mining Initiative.';
+    }
+    function renderBoard(state) {
+      const legend = { standard: 'symbol + number: ships of that player', economy: 'resources / influence per planet', space: 'ships · average hits per round', ground: 'ground forces per planet · ◈ Planetary Shield', tech: 'B G Y R technology specialty' }[mapView];
+      return `<section class="board" aria-label="Galaxy board">
+          <div class="board-bar"><div class="segmented" role="group" aria-label="Map view">${VIEWS.map(([id, label]) => `<button data-action="map-view" data-view="${id}" aria-pressed="${mapView === id}">${label}</button>`).join('')}</div></div>
+          ${state.inspect ? '' : `<span class="map-legend board-legend"><span>${legend}</span><span>▼ your command token</span><span>α β wormholes</span></span>`}
+          <div class="map-tools" aria-label="Map zoom"><button data-action="zoom" data-delta="-0.2" aria-label="Zoom out">−</button><button data-action="zoom" data-delta="0.2" aria-label="Zoom in">+</button><button class="wide" data-action="fit-task" title="Show the systems of this action">Fit task</button><button class="wide" data-action="center-map" title="Show the full board">Fit board</button></div>
+          <div class="galaxy" id="galaxy">${renderMap(state)}</div>
+          ${state.inspect ? `<div class="system-context inspector"><button class="inspector-close" data-action="close-inspector" aria-label="Close system details">✕</button>${systemCard(state)}</div>` : ''}
+          <div class="result-strip"><span>${latestResult(state)}</span><button class="button button--quiet button--small" data-action="drawer" data-drawer="log" aria-expanded="${drawer === 'log'}">Log</button></div>
+          ${drawer ? renderDrawer(state) : ''}
+        </section>`;
+    }
+
+    // ---- Reference drawers and the log -----------------------------------------------------------
+    const HISTORY = [
+      { id: 'h1', round: 3, seat: 'xxcha', type: 'Component', example: 'h-mining', label: 'Blair · Mining Initiative' },
+      { id: 'h2', round: 3, seat: 'hacan', type: 'Strategic', example: 'h-leadership', label: 'Alex · Leadership' },
+      { id: 'h3', round: 2, seat: 'sol', type: 'Tactical', example: 'summary', label: 'Jamie · Tactical #27' },
+      { id: 'h4', round: 2, seat: 'sol', type: 'Tactical', example: 'h-cannon', label: 'Jamie · Tactical #27' },
+    ];
+    const pastState = (entry) => entry.state ||= Object.assign(makeState(entry.example), { past: { label: `R${entry.round} · ${entry.label}` }, tip: 'A past action from the log, read-only. It uses the same frame as Live and Draft.' });
+    // One line per stage: for a tactical action these are the stepper captions.
+    function stagesOf(state) {
+      if (isTactical(state)) return STEPS.map((name, step) => [name, stepCaption(state, step, stepState(state, step))]).filter(([, text]) => text);
+      const flow = state.flow;
+      if (state.kind === 'component') return [[flow.card, flow.result || 'In progress']];
+      return [['Primary', flow.primaryResult || 'In progress'], ...flow.order.filter((seat) => flow.results[seat]).map((seat) => [`${SEATS[seat].name} · secondary`, flow.results[seat]])];
+    }
+    function summaryOf(state) {
+      if (state.kind !== 'strategic') return stagesOf(state).map(([, text]) => text).join(' · ');
+      const flow = state.flow;
+      return [flow.primaryResult || 'Primary in progress', ...flow.order.filter((seat) => flow.results[seat]).map((seat) => `${SEATS[seat].name} ${flow.results[seat].split(' · ')[0].toLowerCase()}`)].join(' · ');
+    }
+    function renderDrawer(state) {
+      const seat = drawer.startsWith('player:') ? drawer.slice(7) : null, player = SEATS[seat];
+      const sym = seatSym;
+      const section = (title, rows) => `<h3 class="eyebrow">${title}</h3><ul>${rows.map((row) => `<li>${row}</li>`).join('')}</ul>`;
+      const bodies = {
+        objectives: () => section('Public objectives · stage I', [`Corner the Market · 4 planets with the same trait · scored by ${sym('hacan')} ${sym('xxcha')}`, `Develop Weaponry · 2 unit upgrades · scored by ${sym('sol')}`, `Sway the Council · spend 8 influence · scored by ${sym('hacan')} ${sym('xxcha')}`, 'Erect a Monument · spend 8 resources · not scored']) + section('Your secret objectives', ['Destroy Their Greatest Ship · scored', 'Occupy the Seat of the Empire · not scored']) + section('Points', Object.keys(SEATS).map((id) => `${sym(id)} ${SEATS[id].name} · ${SEATS[id].vp} of 10 · ${SEATS[id].so[0]} from secrets`)),
+        technology: () => SEAT_IDS.map((id) => section(`${SEATS[id].name} · ${SEATS[id].faction}`, SEATS[id].tech)).join(''),
+        cards: () => section('Your action cards', state.hands.sol.map((card) => `${card} · ${{ 'Direct Hit': 'after a ship sustains damage, destroy it', 'Morale Boost': '+1 to combat rolls this round', Sabotage: 'cancel an action card', 'Ghost Ship': 'place 1 destroyer in a wormhole system' }[card] || ''}`)) + section('Strategy cards', cardOwners(state).map((card, index) => `${index + 1} ${CARDS[index]} · ${card.owner ? `${sym(card.owner)} ${SEATS[card.owner].name}${card.used ? ' · used' : ''}` : `unclaimed · ${card.tg} TG`}`)) + section('Promissory notes', ['Trade Agreement (Hacan) · held by you', 'Ceasefire (Sol) · held by Blair']),
+        log: () => [3, 2].map((round) => {
+          const open = logOpen['r' + round];
+          const rows = HISTORY.filter((entry) => entry.round === round).map((entry) => {
+            const past = pastState(entry), stages = stagesOf(past);
+            return `<div class="log-row"><div class="log-main"><span>${sym(entry.seat)} <strong>${SEATS[entry.seat].name}</strong> · ${entry.type}${isTactical(past) ? '' : ' · ' + past.flow.card}</span><span class="muted">${summaryOf(past)}</span></div><div class="log-actions"><button class="button button--quiet button--small" data-action="log-toggle" data-id="${entry.id}" aria-expanded="${!!logOpen[entry.id]}">Steps</button><button class="button button--small" data-action="inspect-action" data-id="${entry.id}">Inspect</button></div>${logOpen[entry.id] ? `<ol>${stages.map(([name, text]) => `<li><strong>${name}</strong> · ${text}</li>`).join('')}</ol>` : ''}</div>`;
+          }).join('');
+          const current = round === 3 && workspaces.live.kind !== 'picker' ? `<div class="log-row current"><div class="log-main"><span>${sym(actor(workspaces.live))} <strong>${SEATS[actor(workspaces.live)].name}</strong> · ${isTactical(workspaces.live) ? 'Tactical' : workspaces.live.kind === 'strategic' ? 'Strategic' : 'Component'} · in progress</span><span class="muted">${summaryOf(workspaces.live) || 'Not started'}</span></div><div class="log-actions"><span class="muted">Shown in Live</span></div></div>` : '';
+          return `<button class="log-round" data-action="log-toggle" data-id="r${round}" aria-expanded="${!!open}">${open ? '▾' : '▸'} Round ${round}${round === 3 ? ' · Action phase' : ' · complete'}</button>${open ? current + rows : ''}`;
+        }).join(''),
+      };
+      const title = seat ? `${player.name} · ${player.faction}` : { objectives: 'Objectives', technology: 'Technology', cards: 'Cards', log: 'Log' }[drawer];
+      const body = seat ? section('Faction abilities', player.abilities) + section('Technologies', player.tech) + section('Leaders', [player.leaders]) + section('Economy', [`Resources ${player.res.join(' / ')} · Influence ${player.inf.join(' / ')}`, `Trade goods ${player.tg} · Commodities ${player.comm.join(' / ')}`, `Command tokens ${player.tokens.join(' · ')} (tactic · fleet · strategy)`, `${player.ac} action cards · ${player.so[1]} secret objectives, ${player.so[0]} scored`]) : bodies[drawer]();
+      return `<aside class="drawer" aria-label="${title}"><div class="drawer-head"><h2>${title}</h2><button class="button button--quiet button--icon" data-action="drawer" data-drawer="${drawer}" aria-label="Close ${title}">✕</button></div><div class="drawer-body">${body}</div></aside>`;
+    }
+
+    // ---- Actions that are not tactical: the same frame with other steps --------------------------
+    const flowEditing = (state) => { const flow = state.flow; return flow.owner === 'sol' ? flow.stage === 'primary' : flow.order.includes('sol') && !flow.mine.ready && !flow.mine.resolved && flow.stage !== 'done' && state.selected === 1; };
+    const flowFree = (state) => state.flow.owner === 'sol' ? 3 : 0;
+    const flowPaid = (state) => PAY.reduce((sum, source) => sum + (state.flow.mine.pay[source.id] ? source.inf ?? source.res : 0), 0);
+    function flowProblem(state) {
+      const mine = state.flow.mine, total = flowFree(state) + mine.buy, placed = mine.pools.t + mine.pools.f + mine.pools.s;
+      if (flowPaid(state) < mine.buy * 3) return `Stage ${mine.buy * 3 - flowPaid(state)} more influence to buy ${plural(mine.buy, 'token')}.`;
+      if (placed !== total) return `Place ${plural(total, 'token')} in your pools. ${placed} placed.`;
+      return '';
+    }
+    function resolveMine(state) {
+      const flow = state.flow;
+      flow.results.sol = flow.mine.buy ? `Followed · bought ${plural(flow.mine.buy, 'token')} for ${flow.mine.buy * 3} influence` : 'Passed';
+      flow.mine.resolved = true;
+      flow.turn++;
+    }
+    // A drafted secondary resolves by itself when its seat is reached.
+    function settle(state) {
+      const flow = state.flow;
+      if (flow.stage === 'secondary' && flow.order[flow.turn] === 'sol' && flow.mine.ready) { resolveMine(state); toast('Your drafted secondary resolved.'); }
+      if (flow.stage === 'secondary' && flow.turn >= flow.order.length) flow.stage = 'done';
+      if (flow.stage !== 'primary') state.selected = 1;
+    }
+    function flowAdvance(state) {
+      const flow = state.flow;
+      if (flow.stage === 'primary') Object.assign(flow, { stage: 'secondary', primaryResult: `${SEATS[flow.owner].name} gained 3 command tokens and bought 1 for 3 influence.` });
+      else if (flow.stage === 'secondary') { flow.results[flow.order[flow.turn]] = SIM[flow.order[flow.turn]]; flow.turn++; }
+      settle(state);
+    }
+    function leadershipEditor(state) {
+      const mine = state.flow.mine, free = flowFree(state), total = free + mine.buy, placed = mine.pools.t + mine.pools.f + mine.pools.s, paid = flowPaid(state);
+      const count = (path, value, max, label) => `<div class="counter"><button data-action="flow-count" data-path="${path}" data-delta="-1" aria-label="Remove ${label}" ${value <= 0 ? 'disabled' : ''}>−</button><output class="mono" aria-label="${label} quantity">${value}</output><button data-action="flow-count" data-path="${path}" data-delta="1" data-max="${max}" aria-label="Add ${label}" ${value >= max ? 'disabled' : ''}>+</button></div>`;
+      const pools = [['t', 'Tactic pool', 0], ['f', 'Fleet pool', 1], ['s', 'Strategy pool', 2]].map(([key, name, index]) => unitRow('token', name, `${SEATS.sol.tokens[index]} now${mine.pools[key] ? ` → ${SEATS.sol.tokens[index] + mine.pools[key]}` : ''}`, count(`pools.${key}`, mine.pools[key], mine.pools[key] + Math.max(0, total - placed), name.toLowerCase() + ' token'))).join('');
+      const payment = mine.buy ? `<div class="card"><div class="card-heading"><h3>Payment</h3><span class="mono ${paid < mine.buy * 3 ? 'bad' : ''}">Cost ${mine.buy * 3} influence · Paying ${paid}${paid > mine.buy * 3 ? ` · ${paid - mine.buy * 3} wasted` : ''}</span></div>${PAY.map((source) => `<label class="payment-choice" ${source.system ? `data-link="pl:${source.id} sys:${source.system}"` : ''}><input type="checkbox" data-action="flow-pay" data-id="${source.id}" ${mine.pay[source.id] ? 'checked' : ''}/><strong>${source.label}${source.system ? ` <span class="where">#${source.system}</span>` : ''}</strong><span>${plural(source.inf ?? source.res, 'influence', 'influence')}${source.system ? ` · gives up ${plural(source.res, 'resource')}` : ''}</span></label>`).join('')}</div>` : '';
+      return `<div class="card"><div class="card-heading"><h3>Command tokens</h3><span class="mono ${placed === total ? '' : 'bad'}">${free ? '3 free · ' : ''}${mine.buy} bought · ${placed} / ${total} placed</span></div>${unitRow('token', 'Buy tokens', '3 influence each · up to 3', count('buy', mine.buy, 3, 'bought token'))}${pools}</div>${payment}`;
+    }
+    function flowParts(state) {
+      const flow = state.flow, wait = flowNeed(state), step = state.selected;
+      const button = (action, label, kind = 'quiet', off = false) => `<button class="button button--${kind}" data-action="${action}" ${off ? 'disabled' : ''} aria-describedby="footer-note">${label}</button>`;
+      const sim = wait && !wait.mine ? button('flow-sim', `Simulate ${SEATS[wait.seat].name} (demo)`, 'demo') : '';
+      if (state.kind === 'picker') {
+        const pick = (type, name, text, action, data = '', off = '') => unitRow(type, name, text, `<button class="button ${off ? 'button--quiet' : ''}" data-action="${action}" ${data} ${off ? 'disabled' : ''}>${off || 'Choose'}</button>`, false, data.includes('system') ? `sys:${data.match(/"(\d+)"/)[1]}` : '');
+        return { title: ['Your turn', 'Choose one action'], head: '<h2>Choose an action</h2><span class="badge badge--live">Your decision</span>', body: `<div class="card"><div class="card-heading"><h3>Tactical action</h3><span>${SEATS.sol.tokens[0]} tactic tokens</span></div>${pick('planet', 'Activate a system', 'Then move ships, fight, invade, and produce there. You choose the system on the board.', 'pick-tactical', '', '').replace('>Choose<', '>Choose system<')}</div>
+            <div class="card"><div class="card-heading"><h3>Strategic action</h3><span>Your strategy card</span></div>${pick('card', '1 Leadership', 'Gain 3 command tokens. Buy more for 3 influence each.', 'pick-strategic')}</div>
+            <div class="card"><div class="card-heading"><h3>Component action</h3><span>Action cards, technologies, leaders</span></div>${pick('card', 'Mining Initiative', 'Action card · gain trade goods equal to the resources of 1 planet you control.', 'pick-component')}</div>
+            <div class="card"><div class="card-heading"><h3>Pass</h3><span>Ends your actions for this round</span></div>${pick('minus', 'Pass', 'You must use your strategy card before you can pass.', '', '', 'Not allowed yet')}</div>
+            <div class="inline-note quiet">Not your turn? This panel shows the acting player's action, and you can draft your next tactical action in Draft.</div>`, note: 'Your turn. Choose one action.', actions: '' };
+      }
+      if (state.kind === 'component') {
+        const done = flow.stage === 'done', own = flow.owner === 'sol';
+        const rows = PAY.filter((source) => source.system).map((source) => unitRow('planet', `${source.label.replace('Exhaust ', '')} · #${source.system}`, `${plural(source.res, 'resource')} → +${plural(source.res, 'trade good')}`, `<button class="button ${flow.target === source.id ? 'button--primary' : 'button--quiet'}" data-action="flow-target" data-id="${source.id}" aria-pressed="${flow.target === source.id}">${flow.target === source.id ? 'Selected' : 'Select'}</button>`, false, `pl:${source.id} sys:${source.system}`)).join('');
+        return { title: ['Component action', `${flow.card} · ${SEATS[flow.owner].name} (${SEATS[flow.owner].faction})`], badge: done, head: `<h2>${flow.card}</h2><span class="badge badge--${done ? 'done' : 'live'}">${done ? 'Resolved' : 'Your decision · Choose a planet'}</span>${trail([['Target', done ? 'complete' : 'active'], ['Result', done ? 'complete' : 'todo']])}`,
+          body: `<div class="summary-grid"><div class="summary-stat"><span class="eyebrow">Action card</span><strong>${flow.card}</strong><p>Gain trade goods equal to the resource value of 1 planet you control.</p></div></div>${done ? `<div class="inline-note success"><strong>Resolved.</strong> ${flow.result}</div>` : `<div class="card"><div class="card-heading"><h3>Planet</h3><span>Pick here or on the board</span></div>${rows}</div>`}`,
+          note: done ? 'Component action complete.' : own && flow.target ? 'This commits to the live game.' : 'Choose 1 planet you control.', actions: done ? '' : button('flow-play', `Play ${flow.card} ${icon('arrow')}`, 'primary', !flow.target) };
+      }
+      const primaryMine = flow.owner === 'sol', inOrder = flow.order.includes('sol'), myTurn = flow.stage === 'secondary' && flow.order[flow.turn] === 'sol';
+      const title = ['Strategic action', `${flow.card} · ${SEATS[flow.owner].name} (${SEATS[flow.owner].faction})`];
+      const text = `<div class="summary-grid"><div class="summary-stat"><span class="eyebrow">${flow.card} · ${step ? 'Secondary' : 'Primary'}</span><strong>${step ? 'Buy command tokens' : 'Gain 3 command tokens'}</strong><p>${step ? 'Each other player may buy tokens for 3 influence each. No strategy token is spent.' : 'Then buy any number of tokens for 3 influence each.'}</p></div></div>`;
+      if (step === 0) {
+        if (primaryMine && flow.stage === 'primary') {
+          const error = flowProblem(state);
+          return { title, head: `<h2>Primary</h2><span class="badge badge--live">Your decision</span>${trail([['Gain tokens', 'active'], ['Buy', 'active'], ['Pay', 'active'], ['Place', 'active']])}`, body: text + leadershipEditor(state), note: error || 'This commits to the live game.', error: !!error, actions: button('flow-resolve', `Resolve primary ${icon('arrow')}`, 'primary', !!error) };
+        }
+        const open = flow.stage === 'primary';
+        return { title, head: `<h2>Primary</h2><span class="badge badge--${open ? 'quiet' : 'done'}">${open ? `Waiting for ${SEATS[flow.owner].name}` : 'Resolved'}</span>`, body: `${text}<div class="inline-note ${open ? 'quiet' : 'success'}">${open ? `<strong>${SEATS[flow.owner].name} is resolving the primary.</strong> You can draft your secondary now. It stays private.` : `<strong>Resolved.</strong> ${flow.primaryResult}`}</div>`, note: open ? `Waiting for ${SEATS[flow.owner].name} · ${flow.card} primary.` : 'Viewing the primary.', actions: open ? `${sim}${button('flow-step', 'Draft my secondary', 'primary').replace('data-action', 'data-step="1" data-action')}` : button('flow-step', `Go to secondaries ${icon('arrow')}`).replace('data-action', 'data-step="1" data-action') };
+      }
+      const order = flow.order.map((seat, index) => {
+        const result = flow.results[seat], current = flow.stage === 'secondary' && flow.turn === index, before = index ? SEATS[flow.order[index - 1]].name : SEATS[flow.owner].name;
+        const status = result ? ['done', result] : current ? ['live', seat === 'sol' ? 'Your decision' : 'Deciding'] : seat === 'sol' && flow.mine.ready ? ['draft', `Draft ready · resolves after ${before}`] : seat === 'sol' ? ['draft', `Draft open · your seat is after ${before}`] : ['quiet', `Waits for ${before}`];
+        return `<div class="unit-row order-row"><div class="unit-label"><span class="order-no mono">${index + 1}</span><div><strong>${seatSym(seat)} ${SEATS[seat].name}${seat === 'sol' ? ' (you)' : ''}</strong><small>${SEATS[seat].faction}</small></div></div><div class="unit-controls"><span class="badge badge--${status[0]}">${status[1]}</span></div></div>`;
+      }).join('');
+      const list = `<div class="card"><div class="card-heading"><h3>Secondaries</h3><span>Resolved in seat order · ${flow.stage === 'primary' ? `after ${SEATS[flow.owner].name}’s primary` : flow.stage === 'done' ? 'all resolved' : `${flow.turn} of ${flow.order.length} resolved`}</span></div>${order}</div>`;
+      const head = `<h2>Secondaries</h2><span class="badge badge--${flow.stage === 'done' ? 'done' : myTurn ? 'live' : inOrder && !flow.mine.resolved ? 'draft' : 'quiet'}">${flow.stage === 'done' ? 'Resolved' : myTurn ? 'Your decision' : inOrder && !flow.mine.resolved ? (flow.mine.ready ? 'Draft ready' : 'Private draft') : `Waiting for ${SEATS[wait.seat].name}`}</span>`;
+      if (!inOrder || flow.mine.resolved || flow.stage === 'done') return { title, head, body: `${text}${list}${flow.mine.resolved && inOrder ? `<div class="inline-note success"><strong>Your secondary resolved.</strong> ${flow.results.sol}.</div>` : ''}`, note: flow.stage === 'done' ? 'Strategic action complete.' : `Waiting for ${SEATS[wait.seat].name} · ${flow.card} secondary.`, actions: sim };
+      const mine = flow.mine, error = flowProblem(state);
+      const summary = mine.buy ? `Follow: buy ${plural(mine.buy, 'token')} for ${mine.buy * 3} influence (${PAY.filter((source) => mine.pay[source.id]).map((source) => source.label.replace(/^Exhaust |^Spend /, '')).join(', ')}).` : 'Pass: buy no tokens.';
+      const draft = mine.ready ? `<div class="draft-card"><div class="card-heading"><h3>Your secondary</h3><span class="badge badge--draft">Draft ready · not sent</span></div><div class="card-body small">${summary}<br/><span class="muted">It resolves by itself when your seat is reached. Other players cannot see it.</span></div></div>`
+        : `<div class="draft-card ${myTurn ? 'live' : ''}"><div class="card-heading"><h3>Your secondary</h3><span class="badge badge--${myTurn ? 'live' : 'draft'}">${myTurn ? 'Your decision · live' : 'Private draft · not sent'}</span></div>${leadershipEditor(state)}</div>`;
+      return { title, head, body: `${text}${draft}${list}`, note: mine.ready ? 'Your draft waits for your seat. You can still change it.' : error || (myTurn ? 'This commits to the live game.' : 'Private until your seat is reached.'), error: !mine.ready && !!error,
+        actions: `${myTurn ? '' : sim}${mine.ready ? button('flow-change', 'Change draft') : myTurn ? button('flow-resolve', `Resolve secondary ${icon('arrow')}`, 'primary', !!error) : button('flow-ready', mine.buy ? 'Mark draft ready' : 'Mark draft ready · pass', 'primary', !!error)}` };
+    }
+    function flowStepper(state) {
+      const flow = state.flow, wait = flowNeed(state), draftable = flow.order.includes('sol') && !flow.mine.resolved;
+      const tabs = [
+        ['Primary', flow.stage === 'primary' ? 'decision' : 'done', flow.stage === 'primary' ? (flow.owner === 'sol' ? 'Your decision' : `Waiting for ${SEATS[flow.owner].name}`) : 'Resolved'],
+        ['Secondaries', flow.stage === 'done' ? 'done' : flow.stage === 'secondary' ? 'decision' : flow.owner === 'sol' ? 'future' : 'draft', flow.stage === 'done' ? `${Object.values(flow.results).filter((text) => text.startsWith('Followed')).length} followed` : flow.stage === 'primary' ? (flow.owner === 'sol' ? '' : flow.mine.ready ? 'Draft ready' : 'Draft open') : wait.mine ? 'Your decision' : `Waiting for ${SEATS[wait.seat].name}${draftable && flow.mine.ready ? ' · draft ready' : ''}`],
+      ];
+      const current = flow.stage === 'primary' ? 0 : flow.stage === 'secondary' ? 1 : null;
+      return `<div class="stepper"><nav class="step-tabs" role="tablist" aria-label="Strategic action steps">${tabs.map(([name, status, caption], step) => `<button type="button" id="step-tab-${step}" class="step-tab" role="tab" data-action="flow-step" data-step="${step}" data-state="${status}" aria-controls="step-panel" aria-selected="${state.selected === step}" ${current === step ? 'aria-current="step"' : ''} ${status === 'future' ? 'disabled' : ''} title="${name}${caption ? ' · ' + caption : ''}"><span class="step-chip">${status === 'done' ? icon('check') : status === 'future' ? icon('lock') : step + 1}</span><span class="step-name">${name}</span><span class="step-caption">${caption}</span></button>`).join('')}</nav></div>`;
+    }
+    const autoWide = (state) => isTactical(state) && (state.selected === 2 || state.selected === 3 && !state.edit || state.selected === 1 && !state.edit && !!(state.cannon || state.boundary === 'cannon'));
+    function renderPanel(state) {
+      const wide = panelWide ?? autoWide(state);
+      const toggle = `<button class="button button--quiet button--icon" data-action="panel-wide" aria-pressed="${wide}" aria-label="${wide ? 'Make the panel narrow' : 'Make the panel wide'}" title="${wide ? 'Narrow panel' : 'Wide panel'}">${wide ? '⇥' : '⇤'}</button>`;
+      const banner = mode === 'history' ? `<div class="history-bar"><span><strong>History</strong> · ${state.past.label} · read-only</span><button class="button button--small" data-action="close-history">Back to Live ${icon('arrow')}</button></div>` : '';
+      if (isTactical(state)) {
+        const draft = state.mode === 'draft', done = state.frontier === null;
+        return `<aside class="panel ${wide ? 'wide' : ''}">${banner}<div class="panel-title"><strong>Tactical action</strong><span class="muted">${(state.edit?.step === 0 ? state.edit.value.system : activeId(state)) ? sysLabel(state.edit?.step === 0 ? state.edit.value.system : activeId(state)) : 'No system chosen'} · ${P.sol.name} (${P.sol.faction})</span><span class="badge badge--${draft ? 'draft' : done ? 'done' : 'live'}">${draft ? 'Private draft' : done ? 'Complete' : 'In progress'}</span>${toggle}</div>${tacticalStepper(state)}${renderTask(state)}</aside>`;
+      }
+      const parts = flowParts(state), done = !flowNeed(state);
+      return `<aside class="panel ${wide ? 'wide' : ''}">${banner}<div class="panel-title"><strong>${parts.title[0]}</strong><span class="muted">${parts.title[1]}</span>${state.kind === 'picker' ? '' : `<span class="badge badge--${done ? 'done' : 'live'}">${done ? 'Complete' : 'In progress'}</span>`}${toggle}</div>${state.kind === 'strategic' ? flowStepper(state) : ''}
+          <section class="task-panel" id="step-panel" role="tabpanel" tabindex="-1"><div class="task-head">${parts.head}</div><div class="task-content">${parts.body}</div><footer class="task-footer"><span class="footer-note ${parts.error ? 'error' : ''}" id="footer-note" ${parts.error ? 'role="status"' : ''}>${parts.note}</span><div class="footer-actions">${parts.actions}</div></footer></section></aside>`;
     }
 
     // ---- Shared pieces --------------------------------------------------------------------------
@@ -2727,7 +3761,17 @@
     // ---- Step content ---------------------------------------------------------------------------
     function activationContent(state) {
       const editing = state.edit?.step === 0, draft = state.mode === 'draft';
-      if (editing) return `<div class="card"><div class="card-heading"><h3>Activation target</h3><span>Costs 1 tactic token · Pick here or on the map</span></div>${[['27', `Sol space dock · Hacan on New Albion${garrison(state) ? ' · Hacan fleet in space' : ''}`, 'Next to Jord and Tar’Mann'], ['19', 'Uncontrolled planet · 1 resource / 2 influence · α wormhole to Quann', 'From Jord through the gravity rift']].map(([id, facts, range]) => unitRow('planet', sysLabel(id), `${facts} · ${range}`, `<button class="button ${state.edit.value.system === id ? 'button--primary' : 'button--quiet'}" data-action="choose-system" data-system="${id}" aria-pressed="${state.edit.value.system === id}">${state.edit.value.system === id ? 'Selected' : 'Select'}</button>`, false, `sys:${id}`)).join('')}</div>${state.done[1] ? '<div class="inline-note">Changing the destination rechecks movement and every later step.</div>' : ''}`;
+      if (editing) {
+        const id = state.edit.value.system, system = id && MAP[id];
+        const find = `<label class="find"><span>Find system</span><input type="search" list="system-list" data-action="find-system" placeholder="Name or number" autocomplete="off"/></label><datalist id="system-list">${Object.keys(MAP).map((other) => `<option value="${sysLabel(other)}"></option>`).join('')}</datalist>`;
+        let rows = '<div class="card-body small muted">No system chosen. Click a system on the board. Each system without your command token can be activated.</div>';
+        if (system) {
+          const fleets = others(state, id), range = system.token ? null : reach(state, id);
+          const facts = [system.home && `${SEATS[system.home].faction} home system`, system.anomaly && ANOMALY[system.anomaly].label, system.wormhole && `${system.wormhole} wormhole`, ...planetsOf(state, id).map((planet) => `${planet.name} ${planet.res}/${planet.inf} · ${planet.owner ? SEATS[planet.owner].faction : 'uncontrolled'}`), ...Object.keys(fleets).map((seat) => `${SEATS[seat].faction} fleet: ${list(force(fleets[seat]))}`)].filter(Boolean).join(' · ') || 'No planets, no ships';
+          rows = `${unitRow('planet', sysLabel(id), facts, '<span class="badge badge--draft">Selected</span>', false, `sys:${id}`)}${unitRow(system.token ? 'token' : 'carrier', system.token ? 'Your command token is here' : `${plural(range.ships, 'ship')} in range`, system.token ? 'You cannot activate this system again in this round.' : range.ships ? `From ${plural(range.systems, 'system')}. You choose the ships in Movement.` : 'None of your ships can move here. You can still activate the system.', '', !!system.token)}`;
+        }
+        return `<div class="card"><div class="card-heading"><h3>Activation target</h3><span>Costs 1 tactic token · Click a system on the board</span></div>${find}${rows}</div>${state.done[1] ? '<div class="inline-note">Changing the destination rechecks movement and every later step.</div>' : ''}`;
+      }
       return `<div class="summary-grid"><div class="summary-stat"><span class="eyebrow">Active system</span><strong>#${state.data.activation.system} ${systemName(state)}</strong><p>None of your command tokens were here.</p></div><div class="summary-stat"><span class="eyebrow">Cost</span><strong>1 tactic token</strong><p>${draft ? 'Planned · Not spent until you apply' : 'Spent · Tactic pool 3 → 2'}</p></div></div>`;
     }
     const routeText = (path) => path.map((id, index) => `${index && !adjacent(path[index - 1]).includes(id) ? MAP[id].wormhole + ' → ' : ''}#${id}`).join(' → ');
@@ -2913,7 +3957,7 @@
       if (state.edit?.step === step) {
         const error = validation(state), current = step === state.frontier;
         const verb = (draft ? ['Preview activation', 'Preview movement', '', 'Preview landings', 'Preview production'] : ['Activate system', 'Move fleet', '', 'Commit ground forces', 'Produce units'])[step];
-        return foot(error || (draft ? 'Private to you until you apply.' : 'This commits to the live game.'), `${state.edit.dirty || !current ? button('cancel-edit', current ? 'Reset selection' : 'Cancel edits') : ''}${button('commit-edit', `${verb} ${icon('arrow')}`, 'primary', !!error)}`, !!error);
+        return foot(error || (draft ? 'Private to you until you apply.' : 'This commits to the live game.'), `${state.picked && step === 0 && !state.done[0] ? button('back-picker', 'Back to actions') : state.edit.dirty || !current ? button('cancel-edit', current ? 'Reset selection' : 'Cancel edits') : ''}${button('commit-edit', `${verb} ${icon('arrow')}`, 'primary', !!error)}`, !!error);
       }
       if (state.frontier !== null && step !== state.frontier) return foot(`Viewing ${STEPS[step].toLowerCase()}. The action is at ${STEPS[state.frontier].toLowerCase()}.`, button('return-current', `${draft ? 'Go to' : 'Continue to'} ${STEPS[state.frontier].toLowerCase()} ${icon('arrow')}`, draft ? 'quiet' : 'primary'));
       if (state.frontier === null) return foot(draft ? 'Every step is drafted. Review, edit, or apply.' : 'Action complete. Every step keeps its result.', draft ? apply : '');
@@ -2939,17 +3983,24 @@
       const state = currentState();
       normalize(state);
       const focused = signature(document.activeElement), inside = document.getElementById('app').contains(document.activeElement);
-      const scroll = { step: document.getElementById('step-panel')?.dataset.step, task: document.querySelector('.task-content')?.scrollTop, context: document.querySelector('.context-pane')?.scrollTop, tabs: document.querySelector('.step-tabs')?.scrollLeft };
+      const scroll = { step: document.getElementById('step-panel')?.dataset.step, task: document.querySelector('.task-content')?.scrollTop, drawer: document.querySelector('.drawer-body')?.scrollTop, tabs: document.querySelector('.step-tabs')?.scrollLeft };
       document.documentElement.style.setProperty('--accent', state.mode === 'draft' ? 'var(--gold)' : state.frontier === null ? 'var(--green)' : 'var(--cyan)');
       document.getElementById('example').value = state.example;
       document.getElementById('viewer').value = viewer;
       document.getElementById('tip').textContent = state.tip;
-      document.getElementById('app').innerHTML = `${renderHeader(state)}<div class="action-body ${mapStep(state) === null ? '' : 'map-wide'}">${renderMap(state)}${renderTask(state)}</div>`;
-      document.getElementById('step-panel').dataset.step = state.selected;
-      document.querySelector('.context-pane').scrollTop = scroll.context || 0;
-      document.querySelector('.step-tabs').scrollLeft = scroll.tabs || 0;
-      if (scroll.step === String(state.selected)) document.querySelector('.task-content').scrollTop = scroll.task || 0;
-      document.getElementById(`step-tab-${state.selected}`).scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      document.getElementById('app').innerHTML = `${renderToolbar(state)}<div class="shell-body ${panelWide ?? autoWide(state) ? 'wide' : ''}">${renderBoard(state)}<div class="side">${renderTable(state)}${renderPanel(state)}</div></div>`;
+      if (pendingFit) {
+        const box = document.getElementById('galaxy').getBoundingClientRect();
+        fit(Math.min(box.width / BOX.w, box.height / BOX.h) < 1 ? taskIds(state) : null);
+        document.querySelector('#galaxy svg').setAttribute('viewBox', viewBox());
+        pendingFit = false;
+      }
+      updateLod();
+      document.getElementById('step-panel').dataset.step = `${state.kind}:${state.selected}`;
+      if (document.querySelector('.drawer-body')) document.querySelector('.drawer-body').scrollTop = scroll.drawer || 0;
+      if (document.querySelector('.step-tabs')) document.querySelector('.step-tabs').scrollLeft = scroll.tabs || 0;
+      if (scroll.step === `${state.kind}:${state.selected}`) document.querySelector('.task-content').scrollTop = scroll.task || 0;
+      document.getElementById(`step-tab-${state.selected}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       if (state.reveal) document.querySelector(`.task-content [data-link~="${state.reveal}"]`)?.scrollIntoView({ block: 'nearest' });
       state.reveal = null;
       if (!inside) return;
@@ -3057,12 +4108,13 @@
       mode = state.mode;
       workspaces[mode] = state;
       if (mode === 'draft') viewer = 'sol';
+      pendingFit = true;
     }
     document.addEventListener('click', (event) => {
       const menu = document.querySelector('.menu[open]');
       if (menu && !menu.contains(event.target)) menu.open = false;
       const control = event.target.closest('[data-action]');
-      if (!control || control.disabled || control.type === 'checkbox' || control.tagName === 'SELECT') return;
+      if (!control || control.disabled || control.tagName === 'INPUT' || control.tagName === 'SELECT') return;
       const state = currentState();
       const action = control.dataset.action;
       if (action === 'select-step') return selectStep(Number(control.dataset.step));
@@ -3103,7 +4155,7 @@
         announce(validation(state) || 'Selection updated.');
       } else if (action === 'choose-system' || action === 'inspect-system') {
         state.inspect = control.dataset.system;
-        if (state.edit?.step === 0 && TARGETS.includes(state.inspect)) Object.assign(state.edit, { value: { system: state.inspect }, dirty: true });
+        if (state.edit?.step === 0 && state.selected === 0) Object.assign(state.edit, { value: { system: state.inspect }, dirty: true });
         if (state.edit?.step === 1 && ORIGIN_IDS.includes(state.inspect)) { state.open[state.inspect] = true; state.reveal = `sys:${state.inspect}`; }
       } else if (action === 'toggle-origin') {
         state.open[control.dataset.system] = true;
@@ -3115,12 +4167,77 @@
         state.reveal = `pl:${control.dataset.id}`;
         announce(validation(state) || 'Payment staged.');
       } else if (action === 'record-tab') state.view[control.dataset.id] = control.dataset.key;
-      else if (action === 'zoom' || action === 'center-map') state.zoom = action === 'center-map' ? 1 : Math.max(.7, Math.min(1.3, state.zoom + Number(control.dataset.delta)));
+      else if (action === 'zoom') camera.k = Math.max(.6, Math.min(5, camera.k * (Number(control.dataset.delta) > 0 ? 1.25 : .8)));
+      else if (action === 'center-map') fit();
+      else if (action === 'fit-task') fit(taskIds(state));
+      else if (action === 'close-inspector') state.inspect = null;
+      else if (action === 'map-view') mapView = control.dataset.view;
+      else if (action === 'table-toggle') tableOpen = !tableOpen;
+      else if (action === 'panel-wide') panelWide = !(panelWide ?? autoWide(state));
+      else if (action === 'drawer') drawer = drawer === control.dataset.drawer ? null : control.dataset.drawer;
+      else if (action === 'log-toggle') logOpen[control.dataset.id] = !logOpen[control.dataset.id];
+      else if (action === 'inspect-action') {
+        workspaces.history = pastState(HISTORY.find((entry) => entry.id === control.dataset.id));
+        Object.assign(camera, { x: 0, y: 0 });
+        mode = 'history';
+        drawer = null;
+        panelWide = null;
+      } else if (action === 'close-history') {
+        delete workspaces.history;
+        mode = 'live';
+      } else if (action === 'pick-tactical') {
+        const system = control.dataset.system || null;
+        Object.assign(state, { kind: 'tactical', picked: true, tip: 'A tactical action is staged. Nothing is spent until you activate. Click a different system to change it.' });
+        beginEdit(state, 0);
+        Object.assign(state.edit, { value: { system }, dirty: !!system });
+        if (system) state.inspect = system;
+      } else if (action === 'back-picker') {
+        Object.assign(state, { kind: 'picker', edit: null, selected: 0 });
+      } else if (action === 'pick-strategic' || action === 'pick-component') {
+        workspaces.live = makeState(action === 'pick-strategic' ? 'live-strategic' : 'live-component');
+      } else if (action === 'flow-step') state.selected = Number(control.dataset.step);
+      else if (action === 'flow-count') {
+        const mine = state.flow.mine, path = control.dataset.path;
+        put(mine, path, Math.max(0, Math.min(Number(control.dataset.delta) > 0 ? Number(control.dataset.max) : Infinity, dig(mine, path) + Number(control.dataset.delta))));
+        announce(flowProblem(state) || 'Selection updated.');
+      } else if (action === 'flow-pay') {
+        state.flow.mine.pay[control.dataset.id] = !state.flow.mine.pay[control.dataset.id];
+        state.reveal = `pl:${control.dataset.id}`;
+      } else if (action === 'flow-target') {
+        state.flow.target = control.dataset.id;
+        state.reveal = `pl:${control.dataset.id}`;
+      } else if (action === 'flow-play') {
+        const source = PAY.find((item) => item.id === state.flow.target);
+        Object.assign(state.flow, { stage: 'done', result: `Jamie gained ${plural(source.res, 'trade good')} for ${source.label.replace('Exhaust ', '')}. Trade goods ${SEATS.sol.tg} → ${SEATS.sol.tg + source.res}.` });
+        toast('Mining Initiative resolved.');
+      } else if (action === 'flow-ready') {
+        state.flow.mine.ready = true;
+        toast('Draft ready. It resolves when your seat is reached.');
+        settle(state);
+      } else if (action === 'flow-change') state.flow.mine.ready = false;
+      else if (action === 'flow-resolve') {
+        if (flowProblem(state)) return;
+        const flow = state.flow;
+        if (flow.stage === 'primary') Object.assign(flow, { stage: 'secondary', primaryResult: `Jamie gained 3 command tokens${flow.mine.buy ? ` and bought ${flow.mine.buy} for ${flow.mine.buy * 3} influence` : ''}.` });
+        else resolveMine(state);
+        settle(state);
+        toast(`${flow.card} ${flow.stage === 'secondary' ? 'primary resolved. Secondaries follow in seat order.' : 'secondary resolved.'}`);
+      } else if (action === 'flow-sim') flowAdvance(state);
       render();
     });
     document.addEventListener('change', (event) => {
       const state = currentState();
       const action = event.target.dataset.action;
+      if (action === 'flow-pay') { state.flow.mine.pay[event.target.dataset.id] = event.target.checked; render(); return announce(flowProblem(state) || 'Payment staged.'); }
+      if (action === 'find-system') {
+        const text = event.target.value.trim().toLowerCase(), id = text.match(/#?(\d+)$/)?.[1];
+        const found = MAP[id] ? id : Object.keys(MAP).find((other) => text && MAP[other].name.toLowerCase().startsWith(text)) || Object.keys(MAP).find((other) => text && MAP[other].name.toLowerCase().includes(text));
+        if (!found || state.edit?.step !== 0) return announce('No system has this name or number.');
+        Object.assign(state.edit, { value: { system: found }, dirty: true });
+        state.inspect = found;
+        render();
+        return announce(`${sysLabel(found)} selected. ${validation(state)}`);
+      }
       if (action === 'route' && state.edit?.step === 1) state.edit.value['@' + event.target.dataset.line] = Number(event.target.value);
       else if (action === 'payment' && state.edit?.step === 4) put(state.edit.value, event.target.dataset.path, event.target.checked);
       else return;
@@ -3130,16 +4247,50 @@
     });
     document.addEventListener('keydown', (event) => {
       const tab = event.target.closest('[role="tab"]');
-      if (tab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      if (tab && currentState().kind === 'tactical' && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
         event.preventDefault();
         const state = currentState();
         const reached = STEPS.map((_, step) => step).filter((step) => isReached(state, step));
         const index = reached.indexOf(state.selected);
         selectStep(event.key === 'Home' ? reached[0] : event.key === 'End' ? reached.at(-1) : reached[(index + (event.key === 'ArrowRight' ? 1 : -1) + reached.length) % reached.length]);
       }
-      const mapSystem = event.target.closest('.galaxy [role="button"]');
+      const mapSystem = event.target.closest('[role="button"][data-action]');
       if (mapSystem && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); mapSystem.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
     });
+    // The board moves by drag, and zooms with Ctrl + wheel. A drag never selects.
+    let drag = null, dragged = false;
+    // Small text is hidden when the board is far away. It comes back when the player goes nearer.
+    function updateLod() {
+      const svg = document.querySelector('#galaxy svg');
+      if (svg?.clientWidth) document.getElementById('galaxy').classList.toggle('far', 1 / boardScale(svg) < 1.05);
+    }
+    window.addEventListener('resize', updateLod);
+    const boardScale = (svg) => { const [, , w, h] = svg.getAttribute('viewBox').split(' ').map(Number); return Math.max(w / svg.clientWidth, h / svg.clientHeight); };
+    document.addEventListener('pointerdown', (event) => {
+      const svg = event.target.closest?.('#galaxy svg');
+      dragged = false;
+      if (svg && event.button === 0) drag = { x: event.clientX, y: event.clientY, cx: camera.x, cy: camera.y, scale: boardScale(svg) };
+    });
+    document.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      if (!dragged && Math.hypot(dx, dy) < 5) return;
+      dragged = true;
+      Object.assign(camera, { x: drag.cx - dx * drag.scale, y: drag.cy - dy * drag.scale });
+      const svg = document.querySelector('#galaxy svg');
+      svg.setAttribute('viewBox', viewBox());
+      svg.classList.add('dragging');
+    });
+    document.addEventListener('pointerup', () => { drag = null; document.querySelector('#galaxy svg')?.classList.remove('dragging'); });
+    document.addEventListener('click', (event) => { if (dragged && event.target.closest?.('#galaxy')) { event.stopPropagation(); event.preventDefault(); } dragged = false; }, true);
+    document.addEventListener('wheel', (event) => {
+      const svg = event.target.closest?.('#galaxy svg');
+      if (!svg || !event.ctrlKey) return;
+      event.preventDefault();
+      camera.k = Math.max(.6, Math.min(5, camera.k * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      svg.setAttribute('viewBox', viewBox());
+      updateLod();
+    }, { passive: false });
     // A list row and its system, planet, or route on the map light up together.
     function link(event, on) {
       const source = event.target.closest?.('[data-link]');
@@ -3154,6 +4305,7 @@
     });
     document.getElementById('viewer').addEventListener('change', (event) => {
       viewer = event.target.value;
+      delete workspaces.history;
       // A seat change restarts the live example, so nobody inherits a half-made decision.
       workspaces.live = makeState(examples[workspaces.live.example] ? workspaces.live.example : 'live-combat');
       if (viewer !== 'sol') mode = 'live';
