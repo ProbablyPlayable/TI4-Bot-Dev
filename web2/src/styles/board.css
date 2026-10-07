@@ -1,0 +1,208 @@
+/* Galaxy board. These rules depend on SVG structure and state classes, so they stay as selectors. */
+.galaxy svg {
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.galaxy svg.dragging {
+  cursor: grabbing;
+}
+
+.galaxy [role="button"] {
+  cursor: pointer;
+  outline: none;
+}
+
+.galaxy .hex {
+  fill: #131c28;
+  stroke: #2a384a;
+  stroke-width: 1;
+}
+
+.galaxy .system.home .hex {
+  fill: #161f2c;
+  stroke: color-mix(in srgb, var(--seat) 53%, transparent);
+}
+
+.galaxy .system.inspected .hex {
+  stroke: #4b6f86;
+}
+
+.galaxy .system.active .hex {
+  fill: #212228;
+  stroke: #b18e60;
+  stroke-width: 1.8;
+}
+
+.galaxy .system.blocked .hex {
+  stroke-dasharray: 2 3;
+}
+
+.galaxy .system:hover > .hex,
+.galaxy .system:focus-visible > .hex {
+  stroke: var(--color-cyan);
+  stroke-width: 2;
+}
+
+.galaxy .system.linked .hex {
+  stroke: var(--color-accent);
+  stroke-width: 2.4;
+}
+
+.galaxy text {
+  text-anchor: middle;
+}
+
+.galaxy .t-id {
+  fill: #6f8198;
+  font-size: 8px;
+}
+
+.galaxy .t-name {
+  fill: #c2d0de;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.galaxy .system.active .t-name {
+  fill: var(--color-gold);
+}
+
+.galaxy .system.active .t-name.t-active {
+  fill: #c3a06e;
+}
+
+.galaxy .t-mark {
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.galaxy .t-pick {
+  fill: var(--color-gold);
+  font-size: 9px;
+  font-weight: 700;
+  text-anchor: start;
+}
+
+/* Far away, small text is hidden. Marks and task values stay. */
+.galaxy.far .t-id,
+.galaxy.far .t-name:not(.keep) {
+  display: none;
+}
+
+.galaxy.far .system:hover .t-name,
+.galaxy.far .system.linked .t-name,
+.galaxy.far .system:focus-visible .t-name {
+  display: inline;
+}
+
+.galaxy.far .t-name {
+  font-size: 11px;
+}
+
+.galaxy.far .t-mark {
+  font-size: 12.5px;
+}
+
+.galaxy .planet circle {
+  fill: var(--seat, var(--color-faint));
+  fill-opacity: 0.2;
+  stroke: var(--seat, var(--color-faint));
+  stroke-opacity: 0.75;
+}
+
+.galaxy .planet.free circle {
+  fill-opacity: 0.12;
+}
+
+.galaxy .planet text {
+  fill: var(--color-text);
+  font-weight: 600;
+}
+
+.galaxy .planet.linked circle,
+.galaxy .planet:focus-visible circle {
+  stroke: var(--color-text);
+  stroke-opacity: 1;
+  stroke-width: 2.4;
+}
+
+.galaxy .planet.exhausted circle {
+  fill-opacity: 0.35;
+  stroke-dasharray: 2 2;
+}
+
+.galaxy .planet.chosen circle {
+  fill: var(--color-gold);
+  fill-opacity: 0.32;
+  stroke: var(--color-gold);
+  stroke-opacity: 1;
+  stroke-width: 2.4;
+}
+
+.galaxy .planet.chosen.picked circle {
+  fill: var(--color-green);
+  stroke: var(--color-green);
+}
+
+.galaxy .planet .chosen-badge circle {
+  fill: var(--color-gold);
+  fill-opacity: 1;
+  stroke: var(--color-canvas);
+  stroke-width: 1;
+  stroke-dasharray: none;
+}
+
+.galaxy .planet.picked .chosen-badge circle {
+  fill: var(--color-green);
+}
+
+.galaxy .chosen-badge path {
+  fill: none;
+  stroke: var(--color-canvas);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.galaxy .wormhole circle {
+  fill: var(--color-canvas);
+  stroke: #e6c15c;
+  stroke-dasharray: 2 2;
+}
+
+.galaxy .wormhole text {
+  fill: #e6c15c;
+  font-size: 9px;
+}
+
+.galaxy .route,
+.galaxy .wormhole-arc {
+  fill: none;
+  pointer-events: none;
+}
+
+.galaxy .route {
+  stroke: var(--color-cyan);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
+  opacity: 0.75;
+}
+
+.galaxy .route.idle {
+  opacity: 0;
+}
+
+.galaxy .route.linked {
+  opacity: 1;
+  stroke-width: 3;
+}
+
+.galaxy .wormhole-arc {
+  stroke: #e6c15c;
+  stroke-width: 1;
+  stroke-dasharray: 1 5;
+  opacity: 0.55;
+}
