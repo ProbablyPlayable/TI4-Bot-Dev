@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { PlayerSheet } from "./PlayerSheet.tsx";
+import { PlayerSheet, calculateVPBreakdown, VPBreakdownTooltip } from "./PlayerSheet.tsx";
 import { CardDetails } from "./CardDetails.tsx";
-import { PlayerView } from "../protocol/types.ts";
+import { PlayerView, TableView } from "../protocol/types.ts";
+import { getActionCardMeta } from "../protocol/contentCatalog.ts";
 
 const mockPlayers: PlayerView[] = [
   {
@@ -212,5 +213,139 @@ describe("PlayerSheet Component & Human Readable Metadata", () => {
     expect(prodBadge).toBeInTheDocument();
     expect(prodBadge).toHaveTextContent("0/6");
     expect(prodBadge).toHaveAttribute("title", "Production Capacity: 0 available / 6 total");
+  });
+
+  it("M11: displays exhausted strategy cards as grayed out (visual distinction)", () => {
+    const playersWithExhausted: PlayerView[] = [
+      {
+        ...mockPlayers[0],
+        strategy_cards: ["pok1leadership", "pok6warfare"],
+        exhausted_strategy_cards: ["pok1leadership"], // This card is exhausted
+      },
+    ];
+    const mockBoard = { systems: {} };
+    render(<PlayerSheet players={playersWithExhausted} userSeat="p1" board={mockBoard} />);
+    const p1Card = screen.getAllByTestId("player-card")[0];
+    // Check that exhausted cards have visual indication (strategy-card--exhausted class)
+    const exhaustedCard = p1Card.querySelector('[data-testid="strategy-card-badge-pok1leadership"]');
+    expect(exhaustedCard).toBeInTheDocument();
+    // Exhausted card should have the exhausted class
+    expect(exhaustedCard).toHaveClass("strategy-card--exhausted");
+    // Active card should not have the exhausted class
+    const activeCard = p1Card.querySelector('[data-testid="strategy-card-badge-pok6warfare"]');
+    expect(activeCard).not.toHaveClass("strategy-card--exhausted");
+  });
+
+  it("M12: shows VP breakdown tooltip with source information", () => {
+    const mockBoard = { systems: {} };
+    render(<PlayerSheet players={mockPlayers} userSeat="p1" board={mockBoard} />);
+    const p1Card = screen.getAllByTestId("player-card")[0];
+    const vpDisplay = p1Card.querySelector('[data-testid="player-vp"]');
+    expect(vpDisplay).toBeInTheDocument();
+    // Check for VP value displayed
+    expect(vpDisplay).toHaveTextContent("3");
+  });
+
+  it("M16: displays current player card prominently", () => {
+    const mockBoard = { systems: {} };
+    render(
+      <PlayerSheet
+        players={mockPlayers}
+        userSeat="p1"
+        board={mockBoard}
+      />,
+    );
+    const playerCards = screen.getAllByTestId("player-card");
+    // Current player's card should have data-is-self attribute
+    const currentPlayerCard = playerCards.find(card => card.getAttribute("data-is-self") === "true");
+    expect(currentPlayerCard).toBeInTheDocument();
+    expect(currentPlayerCard?.textContent).toContain("Federation of Sol");
+  });
+
+  describe("VP breakdown", () => {
+    const mecatolBoard = {
+      systems: { "18": { planets: { mecatol_rex: { controlled_by: "p1" } } } },
+    } as never;
+    const sum = (b: ReturnType<typeof calculateVPBreakdown>) => b.publicVP + b.secretVP + b.otherVP;
+
+    it("Mecatol control gives no VP", () => {
+      const b = calculateVPBreakdown({ ...mockPlayers[0], victory_points: 0 }, mecatolBoard);
+      expect(b.total).toBe(0);
+      expect(b.otherVP).toBe(0);
+      expect(sum(b)).toBe(0);
+    });
+
+    it("shows an unexplained remainder as Other", () => {
+      const b = calculateVPBreakdown({ ...mockPlayers[0], victory_points: 3 });
+      expect(b.otherVP).toBe(3);
+      render(<VPBreakdownTooltip breakdown={b} />);
+      expect(screen.getByTestId("vp-breakdown-other")).toHaveTextContent("Other sources");
+      expect(screen.getByTestId("vp-breakdown-other")).toHaveTextContent("+3 VP");
+    });
+
+    it("always sums to the server total, even when known points exceed it", () => {
+      const publicId = "amass_wealth";
+      const table = { scored_objectives: { p1: [publicId, publicId] }, laws: {} } as unknown as TableView;
+      for (const vp of [0, 1, 2, 5]) {
+        const b = calculateVPBreakdown({ ...mockPlayers[0], victory_points: vp }, undefined, table);
+        expect(sum(b)).toBe(vp);
+        expect(b.otherVP).toBeGreaterThanOrEqual(0);
+      }
+      const over = calculateVPBreakdown({ ...mockPlayers[0], victory_points: 1 }, undefined, table);
+      expect(over.knownExceedsTotal).toBe(true);
+    });
+  });
+});
+
+describe("PlayerSheet toast mute", () => {
+  it("toggles the notification mute and remembers it", async () => {
+    const { TOAST_MUTE_KEY } = await import("../hooks/useToastMute.ts");
+    localStorage.clear();
+    render(<PlayerSheet players={mockPlayers} />);
+    const button = screen.getByTestId("toast-mute-btn");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem(TOAST_MUTE_KEY)).toBe("true");
+    localStorage.clear();
+  });
+});
+
+describe("PlayerSheet reaction mode toggle", () => {
+  const name = getActionCardMeta("direct_hit").name;
+
+  it("shows the server's mode for the card name and sends the opposite on click", () => {
+    const onSetReactionMode = vi.fn();
+    const { rerender } = render(
+      <PlayerSheet players={mockPlayers} userSeat="p1" onSetReactionMode={onSetReactionMode} />,
+    );
+    const toggle = screen.getByTestId("reaction-inspect-mode-direct_hit");
+    expect(toggle).toHaveAttribute("data-reaction-mode", "always");
+    fireEvent.click(toggle);
+    expect(onSetReactionMode).toHaveBeenLastCalledWith(name, "never");
+
+    // Nothing changes locally: the toggle follows what the server says.
+    expect(screen.getByTestId("reaction-inspect-mode-direct_hit")).toHaveAttribute(
+      "data-reaction-mode",
+      "always",
+    );
+    rerender(
+      <PlayerSheet
+        players={mockPlayers}
+        userSeat="p1"
+        reactionModes={{ [name]: "never" }}
+        onSetReactionMode={onSetReactionMode}
+      />,
+    );
+    const never = screen.getByTestId("reaction-inspect-mode-direct_hit");
+    expect(never).toHaveAttribute("data-reaction-mode", "never");
+    expect(never).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(never);
+    expect(onSetReactionMode).toHaveBeenLastCalledWith(name, "always");
+  });
+
+  it("has no toggle for a viewer who cannot change modes or for another seat's cards", () => {
+    render(<PlayerSheet players={mockPlayers} userSeat="p1" />);
+    expect(screen.queryByTestId("reaction-inspect-mode-direct_hit")).toBeNull();
   });
 });

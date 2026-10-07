@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { PendingChoiceDto } from "../protocol/types.ts";
 import { usePipelineRunner, SemanticIntent } from "../hooks/usePipelineRunner.ts";
 import { Dialog } from "../primitives/index.ts";
@@ -16,7 +16,10 @@ export interface AgendaBallotModalProps {
   isOpen: boolean;
   onClose: () => void;
   lastError?: string | null;
+  /** An option picked on the map (a highlighted planet), toggled into the vote basket. */
   selectedOptionId?: string;
+  /** Called with "" once a map pick is consumed, so clicking the same planet again toggles it. */
+  onSelectOption?: (optionId: string) => void;
 }
 
 export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
@@ -29,6 +32,7 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
   onClose,
   lastError,
   selectedOptionId,
+  onSelectOption,
 }) => {
   const display = usePlayerIdentity();
   const subtype =
@@ -59,16 +63,24 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
     setBatchError(null);
   }, [choice?.nonce]);
 
+  // Map clicks on highlighted planets toggle them in the basket. The ref guards against handling
+  // the same pick twice (e.g. a re-run effect) before the host clears it.
+  const handledMapPick = useRef<string | null>(null);
   useEffect(() => {
-    if (
-      isExhaustPlanet &&
-      selectedOptionId &&
-      choice?.options.some((option) => option.id === selectedOptionId)
-    ) {
-      setStagedPlanets((ids) =>
-        ids.includes(selectedOptionId) ? ids : [...ids, selectedOptionId],
-      );
+    if (!selectedOptionId) {
+      handledMapPick.current = null;
+      return;
     }
+    if (!isExhaustPlanet || handledMapPick.current === selectedOptionId) return;
+    const option = choice?.options.find((o) => o.id === selectedOptionId);
+    if (!option || option.id === "decline" || option.kind === "decline") return;
+    handledMapPick.current = selectedOptionId;
+    setStagedPlanets((ids) =>
+      ids.includes(selectedOptionId)
+        ? ids.filter((id) => id !== selectedOptionId)
+        : [...ids, selectedOptionId],
+    );
+    onSelectOption?.("");
   }, [selectedOptionId, choice?.nonce, isExhaustPlanet]);
 
   // Extract vote tallies if in cast_vote
@@ -131,6 +143,8 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
               : []),
           ],
         });
+        // A reaction may have paused the vote half-way; what was staged is spent either way.
+        setStagedPlanets([]);
       } catch (error) {
         setBatchError(error instanceof Error ? error.message : String(error));
       } finally {
@@ -153,6 +167,11 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
 
   if (!isOpen || !choice) return null;
 
+  // Extract agenda card information from context details
+  const agendaCard = choice.context?.details?.agenda_card as
+    | { name?: string; yes_outcome?: string; no_outcome?: string }
+    | undefined;
+
   return (
     <Dialog.Root
       open={isOpen}
@@ -170,6 +189,7 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
           </Dialog.Title>
           <DecisionHeader
             actor={choice.actor}
+            choice={choice}
             title={
               isCastVote
                 ? "Choose a voting outcome"
@@ -184,6 +204,37 @@ export const AgendaBallotModal: React.FC<AgendaBallotModalProps> = ({
             titleTestId="agenda-ballot-title"
             minimizeTestId="close-agenda-modal"
           />
+
+          {/* Agenda Card Display */}
+          {agendaCard && (
+            <div className="agenda-card-display" data-testid="agenda-card-display">
+              {agendaCard.name && (
+                <h3 className="agenda-card-display__title" data-testid="agenda-card-name">
+                  {agendaCard.name}
+                </h3>
+              )}
+              {(agendaCard.yes_outcome || agendaCard.no_outcome) && (
+                <div className="agenda-card-display__outcomes">
+                  {agendaCard.yes_outcome && (
+                    <div className="agenda-outcome agenda-outcome--yes">
+                      <strong>YES:</strong>
+                      <p className="agenda-outcome__description" data-testid="agenda-yes-outcome">
+                        {agendaCard.yes_outcome}
+                      </p>
+                    </div>
+                  )}
+                  {agendaCard.no_outcome && (
+                    <div className="agenda-outcome agenda-outcome--no">
+                      <strong>NO:</strong>
+                      <p className="agenda-outcome__description" data-testid="agenda-no-outcome">
+                        {agendaCard.no_outcome}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <WorkflowShell
             choice={choice}

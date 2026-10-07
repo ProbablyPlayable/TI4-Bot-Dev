@@ -56,7 +56,7 @@ fn can_pay(
         "influence" => {
             crate::production::available(state, content, sources, player, Spend::Influence) >= 5
         }
-        "trade_goods" => seat.trade_goods >= 3,
+        "trade_goods" => crate::supply::potential_goods(state, player) >= 3,
         "action_cards" => seat.action_cards.len() >= 2,
         "secret" => !seat.secret_objectives.is_empty(),
         "tech_planet" => !specialty_planets(state, content, sources, player).is_empty(),
@@ -148,9 +148,9 @@ fn pay(
             5,
             Spend::Influence,
         ),
+        // Xander Alexin Victori III (Keleres): the agent may let commodities pay the 3 trade goods.
         "trade_goods" => {
-            state.player_mut(player).expect("player exists").trade_goods -= 3;
-            Ok(true)
+            crate::supply::pay_goods_seeing(state, content, sources, galaxy, table, player, 3)
         }
         "action_cards" => {
             for _ in 0..2 {
@@ -189,8 +189,10 @@ fn pay(
                     state.phase,
                     state.round,
                 ));
-                let chosen = if choice.options.len() == 1 {
-                    choice.options[0].clone()
+                let chosen = if let Some(only) =
+                    table.auto_resolve(&choice, "it was the only action card you held")
+                {
+                    only
                 } else {
                     ask_seeing(state, content, sources, galaxy, table, &choice)?
                 };
@@ -233,8 +235,10 @@ fn pay(
                 state.phase,
                 state.round,
             ));
-            let chosen = if choice.options.len() == 1 {
-                choice.options[0].clone()
+            let chosen = if let Some(only) =
+                table.auto_resolve(&choice, "it was the only secret objective you held")
+            {
+                only
             } else {
                 ask_seeing(state, content, sources, galaxy, table, &choice)?
             };
@@ -272,7 +276,11 @@ pub(crate) fn breakthrough_for(
     content
         .records(ContentType::Breakthroughs)
         .iter()
-        .find(|record| record.text("faction") == Some(faction))
+        .find(|record| {
+            record
+                .text("faction")
+                .is_some_and(|tag| crate::factions::keleres::tag_belongs_to(tag, faction, false))
+        })
         .and_then(|record| record.text("alias"))
         .map(BreakthroughId::new)
 }
@@ -514,6 +522,10 @@ fn complete_expedition(
         state
             .system_mut(&system)
             .set_control(planet.clone(), placer.clone());
+        // Staged for the coordinator's flush (`hooks_ground::announce_staged_events`).
+        crate::factions::hooks_ground::stage_planet_control_gained(
+            state, &system, &planet, &placer, None,
+        );
         // Jupiter Brain's first clause. Usually a no-op here -- the placer holds a slice, and the
         // first slice already granted them their breakthrough -- but the clause is on the card,
         // and the placer need not be the seat that finished the expedition.
@@ -653,6 +665,13 @@ mod tests {
             Some(&a),
             "the player who placed the infantry controls Thunder's Edge"
         );
+        // BF-F1 package B: the control gain is staged for the coordinator's flush.
+        let events = crate::factions::hooks_ground::test_support::flush_recorded(&mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "PLANET_CONTROL_GAINED");
+        assert_eq!(events[0].1["player"], "a");
+        assert_eq!(events[0].1["planet"], "thundersedge");
+        assert_eq!(events[0].1.get("previous_owner"), None);
     }
 
     #[test]

@@ -191,7 +191,7 @@ pub fn project_board_view(state: &GameState) -> BoardView {
 /// Projects the board systems, planets, and units.
 #[must_use]
 pub fn project_board_view_with_map(state: &GameState, map_tiles: &[BoardTileView]) -> BoardView {
-    project_board_view_full(state, map_tiles, None, &[])
+    project_board_view_full(state, map_tiles, None, &[], None)
 }
 
 /// Projects the full board view with combat and dice information.
@@ -201,6 +201,7 @@ pub fn project_board_view_full(
     map_tiles: &[BoardTileView],
     pending_choice: Option<&Choice>,
     dice_rolls: &[crate::protocol::view::CombatDieRoll],
+    viewer: Option<&ViewerRole>,
 ) -> BoardView {
     let mut systems = BTreeMap::new();
 
@@ -261,7 +262,7 @@ pub fn project_board_view_full(
         );
     }
 
-    let invasion = state.active_invasion.as_ref().map(|active| {
+    let invasion = state.active_invasion.as_ref().and_then(|active| {
         let content = ti4_content::ContentStore::embedded();
         let types = ti4_content::units::catalogue(content, ti4_model::content_types::POK);
         let space = state.system_state(&active.system);
@@ -370,7 +371,16 @@ pub fn project_board_view_full(
                 );
             }
         }
-        crate::protocol::view::InvasionView {
+
+        // H2: Filter out boring invasions (no defenders) from spectator views
+        let has_defenders = odds_context.values().any(|ctx| ctx.opponent.is_some());
+        if !has_defenders && viewer.is_some() && !viewer.as_ref().unwrap().is_actor(&active.invader)
+        {
+            // Hide this invasion for non-invading players when no defenders are present
+            return None;
+        }
+
+        Some(crate::protocol::view::InvasionView {
             system_id: active.system.clone(),
             invasion_seq: active.seq,
             invader: active.invader.clone(),
@@ -404,7 +414,7 @@ pub fn project_board_view_full(
                     harrow_hits: step.harrow_hits,
                 }
             }),
-        }
+        })
     });
     BoardView {
         systems,
@@ -540,7 +550,13 @@ pub fn project_game_view_full(
         active_player: redacted.active.clone(),
         finished: redacted.finished,
         players,
-        board: project_board_view_full(&redacted, map_tiles, pending_choice, dice_rolls),
+        board: project_board_view_full(
+            &redacted,
+            map_tiles,
+            pending_choice,
+            dice_rolls,
+            Some(viewer),
+        ),
         table: project_table_view_with_map(&redacted, map_tiles),
     }
 }
@@ -570,11 +586,7 @@ pub fn project_game_view(state: &GameState, viewer: &ViewerRole) -> GameView {
 #[must_use]
 pub fn project_turn_status(state: &GameState, pending_choice: Option<&Choice>) -> PublicTurnStatus {
     if state.finished {
-        let winner = state
-            .players
-            .iter()
-            .max_by_key(|p| p.victory_points)
-            .map(|p| p.id.clone());
+        let winner = ti4_engine::objectives::leader(state);
         return PublicTurnStatus::GameOver { winner };
     }
 
@@ -652,6 +664,7 @@ pub fn project_initial_snapshot_with_map(
             .collect(),
         history: crate::protocol::server::HistoryStatus::default(),
         current_path: None,
+        reaction_modes: BTreeMap::new(),
     }
 }
 
@@ -710,6 +723,8 @@ pub fn project_state_update_with_map(
         galaxy_layout: galaxy_layout.clone(),
         pending_choice: project_pending_choice(viewer, pending_choice),
         turn_status: project_turn_status(state, pending_choice.map(|(c, _)| c)),
+        auto_resolved: Vec::new(),
+        reaction_modes: BTreeMap::new(),
     }
 }
 
@@ -743,6 +758,84 @@ mod tests {
     use super::*;
     use ti4_model::id::{FactionId, ObjectiveId, PlayerId};
     use ti4_model::state::GameState;
+
+    fn reaction_offer() -> (Choice, String) {
+        use ti4_engine::choice::ChoiceOption;
+        use ti4_engine::decision_context::{
+            DecisionContext, DecisionSource, DecisionTrigger,
+        };
+        let mut payload = BTreeMap::new();
+        payload.insert("player".to_owned(), "player_1".into());
+        payload.insert("card".to_owned(), "fs1".into());
+        let event = ti4_engine::event::Event::new(4, "ACTION_CARD_PLAYED", payload);
+        let choice = Choice::new(
+            PlayerId::new("player_2"),
+            "when ACTION_CARD_PLAYED",
+            vec![
+                ChoiceOption::labelled("reaction:x:ACTION_CARD_PLAYED:when", "ability", "Play Sabotage"),
+                ChoiceOption::decline(),
+            ],
+        )
+        .contextualized(
+            DecisionContext::new(
+                PlayerId::new("player_2"),
+                DecisionSource::Reaction("ACTION_CARD_PLAYED".to_owned()),
+                "reaction_when_ACTION_CARD_PLAYED",
+                ti4_model::state::Phase::Action,
+                1,
+            )
+            .optional(true)
+            .with_trigger(DecisionTrigger::from_event(&event, "when", &[])),
+        );
+        (choice, "7".to_owned())
+    }
+
+    #[test]
+    fn the_reaction_trigger_reaches_the_asked_seat_and_only_that_seat() {
+        let (choice, nonce) = reaction_offer();
+        let owner = ViewerRole::Player(PlayerId::new("player_2"));
+        let sent = project_pending_choice(&owner, Some((&choice, &nonce))).expect("the owner is asked");
+        let json = serde_json::to_value(&sent).unwrap();
+        let trigger = &json["choice"]["context"]["trigger"];
+        assert_eq!(trigger["kind"], "action_card_played");
+        assert_eq!(trigger["actor"], "player_1");
+        assert_eq!(trigger["card"], "fs1");
+        assert_eq!(trigger["relation"], "when");
+        assert_eq!(trigger["event_id"], 4);
+        assert!(trigger.get("chain").is_none(), "an empty chain stays off the wire");
+        let other = ViewerRole::Player(PlayerId::new("player_1"));
+        assert!(project_pending_choice(&other, Some((&choice, &nonce))).is_none());
+        assert!(project_pending_choice(&ViewerRole::Spectator, Some((&choice, &nonce))).is_none());
+        // And a message written before triggers existed still decodes, with none.
+        let mut old = json.clone();
+        old["choice"]["context"].as_object_mut().unwrap().remove("trigger");
+        let back: PendingChoiceEnvelope = serde_json::from_value(old).unwrap();
+        assert!(back.choice.context.unwrap().trigger.is_none());
+    }
+
+    #[test]
+    fn a_tied_game_goes_to_the_first_seat_in_initiative_order() {
+        let ids: Vec<PlayerId> = ["player_1", "player_2", "player_3"]
+            .iter()
+            .map(|id| PlayerId::new(*id))
+            .collect();
+        let mut state = GameState::new(&ids, &[], BTreeMap::new(), None, 1);
+        state.players = ids
+            .iter()
+            .map(|id| {
+                let mut player = Player::new(id.clone());
+                player.victory_points = 3;
+                player
+            })
+            .collect();
+        state.finished = true;
+        // 98.8, 61.15a: a three-way tie is broken by initiative order. With nobody holding a
+        // strategy card that is seating order, so the first seat wins, not the last.
+        match project_turn_status(&state, None) {
+            PublicTurnStatus::GameOver { winner } => assert_eq!(winner, Some(ids[0].clone())),
+            other => panic!("expected game over, got {other:?}"),
+        }
+    }
 
     #[test]
     fn project_table_view_calculates_objective_progress() {

@@ -8,8 +8,14 @@ import {
   StateUpdateMsg,
   ViewerRole,
   HistoryStatus,
+  ReactionModeSetting,
 } from "./types.ts";
-import { decodeInitialSnapshot, decodeServerMessage, isStaleServerMessage } from "./decode.ts";
+import {
+  decodeDecisionTrigger,
+  decodeInitialSnapshot,
+  decodeServerMessage,
+  isStaleServerMessage,
+} from "./decode.ts";
 import {
   initialPlanningState,
   applyPlanningEnvelope,
@@ -22,7 +28,8 @@ import {
 } from "./planning.ts";
 import type { AttemptIdentity } from "./types.ts";
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+export type ConnectionStatus =
+  "connecting" | "connected" | "disconnected" | "error";
 export type SnapshotState = InitialSnapshotMsg | StateUpdateMsg;
 export type GameLogEntry = import("./types.ts").GameEvent;
 export type HistoryChange =
@@ -48,18 +55,92 @@ export type MovementStep =
   | { kind: "done_loading" }
   | { kind: "done_moving" };
 export type BasketPlan =
-  | { kind: "payment"; steps: ({ kind: "exhaust"; planet: string } | { kind: "trade_good" })[] }
+  | {
+      kind: "payment";
+      steps: ({ kind: "exhaust"; planet: string } | { kind: "trade_good" })[];
+    }
   | {
       kind: "agenda_vote_planets";
-      steps: ({ kind: "vote_planet"; planet: string } | { kind: "done_voting" })[];
+      steps: (
+        { kind: "vote_planet"; planet: string } | { kind: "done_voting" }
+      )[];
     }
   | {
       kind: "production";
       destination: string;
-      steps: ({ kind: "produce"; unit: string; count: number } | { kind: "done_producing" })[];
+      steps: (
+        | { kind: "produce"; unit: string; count: number }
+        | { kind: "done_producing" }
+      )[];
+    }
+  | {
+      kind: "casualties";
+      steps: import("../presentation/hitAssignment.ts").CasualtyStep[];
+    }
+  | {
+      kind: "tokens";
+      steps: import("../presentation/commandTokens.ts").TokenStep[];
     };
 
+export type BatchPlan =
+  | BasketPlan
+  | { kind: "tactical_movement"; destination: string; steps: MovementStep[] };
+
+/**
+ * A plan the server stopped part-way because a reaction window opened between its steps. The
+ * applied steps are committed and the window waits for its holder; `plan` is what was left. It is
+ * sent again only when the player asks, and the server re-checks it against the offers then.
+ */
+export interface BatchResume {
+  plan: BatchPlan;
+  /** Planned steps the server applied before it stopped. */
+  applied: number;
+  /** What the engine is waiting on now. */
+  waiting: { subtype: string | null; ownSeat: boolean };
+}
+
+/** Decision subtypes each plan kind is answered through. */
+const PLAN_SUBTYPES: Record<BatchPlan["kind"], string[]> = {
+  tactical_movement: ["movement_step"],
+  payment: ["pay_resources", "pay_influence"],
+  agenda_vote_planets: ["vote_exhaust_planet"],
+  production: ["produce_unit"],
+  casualties: ["sustain_damage", "assign_casualty", "assign_ground_casualty"],
+  tokens: ["gain_command_token", "buy_token_with_influence", "pay_influence"],
+};
+
+/**
+ * Keeps a paused plan only while it can still be continued: the engine is asking for a reaction,
+ * or is back at a decision the plan answers. Anything else means the game moved on.
+ */
+export function settleBatchResume(state: GameSessionState): GameSessionState {
+  const resume = state.batchResume;
+  if (!resume) return state;
+  const subtype = state.pendingChoice?.context?.subtype;
+  if (!state.pendingChoice || !subtype) return state;
+  if (subtype.startsWith("reaction_") || subtype.startsWith("play_reaction_")) return state;
+  if (PLAN_SUBTYPES[resume.plan.kind].includes(subtype)) return state;
+  return { ...state, batchResume: null };
+}
+
+/** Whether the paused plan can be sent again now: its own seat is back at a decision it answers. */
+export function canContinueBatch(
+  resume: BatchResume,
+  pending: { actor: string; context?: { subtype: string } } | null,
+  seat: string | null | undefined,
+): boolean {
+  return Boolean(
+    pending &&
+      seat &&
+      pending.actor === seat &&
+      pending.context &&
+      PLAN_SUBTYPES[resume.plan.kind].includes(pending.context.subtype),
+  );
+}
+
 const HISTORY_RETRY_ATTEMPTS = 20;
+/** A submit the server never acknowledges is abandoned after this long, so a click can re-send. */
+const SUBMISSION_TIMEOUT_MS = 10_000;
 
 export interface GameSessionState {
   planning: PlanningState;
@@ -71,6 +152,8 @@ export interface GameSessionState {
   lastError: string | null;
   events: GameLogEntry[];
   history: HistoryStatus;
+  /** A plan the server paused at a reaction window; see {@link BatchResume}. */
+  batchResume?: BatchResume | null;
 }
 
 export interface GameSessionClientOptions {
@@ -94,7 +177,9 @@ const initialState: GameSessionState = {
 };
 
 /** Keep the complete authoritative history, including early rounds and batches. */
-export function serverEventLog(entries: readonly GameLogEntry[] | undefined): GameLogEntry[] {
+export function serverEventLog(
+  entries: readonly GameLogEntry[] | undefined,
+): GameLogEntry[] {
   return [...(entries ?? [])];
 }
 
@@ -108,7 +193,9 @@ function idsFor(entries: GameLogEntry[]): Set<string> {
   return ids;
 }
 
-function rejectionMessage(message: Extract<ServerMessage, { type: "action_rejected" }>): string {
+function rejectionMessage(
+  message: Extract<ServerMessage, { type: "action_rejected" }>,
+): string {
   switch (message.reason.reason) {
     case "stale_version":
       return `Rejected: Stale version (expected ${message.reason.expected}, server at ${message.reason.current})`;
@@ -125,14 +212,22 @@ function rejectionMessage(message: Extract<ServerMessage, { type: "action_reject
   }
 }
 
-function pendingChoice(envelope: import("./types.ts").PendingChoiceEnvelope): PendingChoiceDto {
+function pendingChoice(
+  envelope: import("./types.ts").PendingChoiceEnvelope,
+): PendingChoiceDto {
   if (!envelope.choice) return envelope as unknown as PendingChoiceDto;
+  const context = envelope.choice.context;
   return {
     nonce: envelope.nonce,
     actor: envelope.choice.player,
     prompt: envelope.choice.prompt,
     options: envelope.choice.options,
-    context: envelope.choice.context,
+    // The trigger is display data: keep a well-formed one, drop a damaged one.
+    context:
+      context && "trigger" in context
+        ? { ...context, trigger: decodeDecisionTrigger(context.trigger) }
+        : context,
+    ...(envelope.choice.details ? { details: envelope.choice.details } : {}),
   };
 }
 
@@ -157,8 +252,13 @@ export function reduceServerMessage(
         snapshot: message,
         gameVersion: message.game_version,
         turnStatus: message.turn_status,
-        pendingChoice: message.pending_choice ? pendingChoice(message.pending_choice) : null,
-        events: message.type === "initial_snapshot" ? serverEventLog(message.events) : state.events,
+        pendingChoice: message.pending_choice
+          ? pendingChoice(message.pending_choice)
+          : null,
+        events:
+          message.type === "initial_snapshot"
+            ? serverEventLog(message.events)
+            : state.events,
         history: message.history ?? state.history,
       };
     case "event":
@@ -173,7 +273,10 @@ export function reduceServerMessage(
             ? state.history
             : {
                 ...state.history,
-                cursor: Math.max(state.history.cursor, message.entry.decision_count),
+                cursor: Math.max(
+                  state.history.cursor,
+                  message.entry.decision_count,
+                ),
                 redo_count: 0,
               },
       };
@@ -181,7 +284,10 @@ export function reduceServerMessage(
       return {
         ...state,
         gameVersion: message.game_version,
-        pendingChoice: pendingChoice({ nonce: message.nonce, choice: message.choice }),
+        pendingChoice: pendingChoice({
+          nonce: message.nonce,
+          choice: message.choice,
+        }),
       };
     case "turn_status":
       return {
@@ -388,7 +494,10 @@ export class GameSessionClient {
       throw new Error(message);
     }
     if (this.submission) {
-      if (this.submission.nonce === pendingChoice.nonce && this.submission.optionId === optionId)
+      if (
+        this.submission.nonce === pendingChoice.nonce &&
+        this.submission.optionId === optionId
+      )
         return this.submission.promise;
       if (this.submission.nonce === pendingChoice.nonce)
         throw new Error("Another choice submission is still pending");
@@ -406,9 +515,16 @@ export class GameSessionClient {
     };
     let resolve!: () => void;
     let reject!: (error: Error) => void;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const promise = new Promise<void>((done, fail) => {
-      resolve = done;
-      reject = fail;
+      resolve = () => {
+        clearTimeout(timeout);
+        done();
+      };
+      reject = (error) => {
+        clearTimeout(timeout);
+        fail(error);
+      };
     });
     this.submission = {
       nonce: pendingChoice.nonce,
@@ -424,60 +540,157 @@ export class GameSessionClient {
     } catch (error) {
       this.rejectSubmission(`Could not send choice: ${String(error)}`);
     }
+    // Without this, a submit that never gets an answer keeps returning the same dead promise to
+    // every later click for the same option, and the decision looks frozen.
+    timeout = setTimeout(() => {
+      if (this.submission?.promise === promise && !this.submission.accepted)
+        this.rejectSubmission("No response from the server; try again");
+    }, SUBMISSION_TIMEOUT_MS);
     return promise;
   }
 
-  async submitMovementBatch(destination: string, steps: MovementStep[]): Promise<void> {
+  /**
+   * Asks the server to stop (or resume) offering one action card to this seat for the rest of
+   * the game. The answer is the seat's next state update, which carries the modes; nothing is
+   * assumed locally. Rejected when not connected or when watching.
+   */
+  setReactionMode(card: string, mode: ReactionModeSetting): void {
+    if (this.options.viewer.role !== "player") {
+      this.setState({ ...this.state, lastError: "Only a seated player can change reaction modes" });
+      return;
+    }
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.setState({
+        ...this.state,
+        lastError: "Cannot change the setting: not connected to server",
+      });
+      return;
+    }
+    const message: ClientMessage = {
+      type: "set_reaction_mode",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: this.options.gameId,
+      card,
+      mode,
+    };
+    try {
+      this.socket.send(JSON.stringify(message));
+    } catch (error) {
+      this.setState({ ...this.state, lastError: `Could not send the setting: ${String(error)}` });
+    }
+  }
+
+  async submitMovementBatch(
+    destination: string,
+    steps: MovementStep[],
+  ): Promise<void> {
     return this.submitBatch({ kind: "tactical_movement", destination, steps });
   }
 
-  async submitBatch(
-    plan: BasketPlan | { kind: "tactical_movement"; destination: string; steps: MovementStep[] },
-  ): Promise<void> {
-    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+  /** Sends what is left of a plan the server paused at a reaction window. */
+  async resumeBatch(): Promise<void> {
+    const resume = this.state.batchResume;
+    if (!resume) throw new Error("There is no paused plan to continue");
+    const seat =
+      this.options.viewer.role === "player" ? this.options.viewer.seat : null;
+    if (!canContinueBatch(resume, this.state.pendingChoice, seat))
+      throw new Error("Workflow is no longer pending");
+    try {
+      await this.submitBatch(resume.plan);
+    } catch (error) {
+      // The server checked the remainder against the current offers and refused it: stage again.
+      if (this.state.batchResume === resume)
+        this.setState({
+          ...this.state,
+          batchResume: null,
+          lastError: error instanceof Error ? error.message : String(error),
+        });
+      throw error;
+    }
+  }
+
+  dismissBatchResume(): void {
+    if (this.state.batchResume) this.setState({ ...this.state, batchResume: null });
+  }
+
+  async submitBatch(plan: BatchPlan): Promise<void> {
+    if (
+      this.options.viewer.role !== "player" ||
+      !this.options.viewer.playerSession
+    )
       throw new Error("A player session is required");
     const pending = this.state.pendingChoice;
-    if (!pending || pending.actor !== this.options.viewer.seat || !pending.context)
+    if (
+      !pending ||
+      pending.actor !== this.options.viewer.seat ||
+      !pending.context
+    )
       throw new Error("Decision is no longer pending");
-    const expected = {
-      tactical_movement: ["movement_step"],
-      payment: ["pay_resources", "pay_influence"],
-      agenda_vote_planets: ["vote_exhaust_planet"],
-      production: ["produce_unit"],
-    }[plan.kind];
+    const expected = PLAN_SUBTYPES[plan.kind];
     if (!expected.includes(pending.context.subtype))
       throw new Error("Workflow is no longer pending");
     const serialized = JSON.stringify(plan);
-    if (this.pendingBatch?.nonce !== pending.nonce || this.pendingBatch.plan !== serialized)
+    if (
+      this.pendingBatch?.nonce !== pending.nonce ||
+      this.pendingBatch.plan !== serialized
+    )
       this.pendingBatch = {
         nonce: pending.nonce,
         plan: serialized,
         requestId: crypto.randomUUID(),
       };
-    const response = await fetch(this.snapshotUrl().replace(/\/snapshot$/, "/batches"), {
-      method: "POST",
-      headers: { ...this.snapshotHeaders(), "content-type": "application/json" },
-      body: JSON.stringify({
-        request_id: this.pendingBatch.requestId,
-        expected_version: this.state.gameVersion,
-        nonce: pending.nonce,
-        plan,
-      }),
-    });
+    const response = await fetch(
+      this.snapshotUrl().replace(/\/snapshot$/, "/batches"),
+      {
+        method: "POST",
+        headers: {
+          ...this.snapshotHeaders(),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          request_id: this.pendingBatch.requestId,
+          expected_version: this.state.gameVersion,
+          nonce: pending.nonce,
+          plan,
+        }),
+      },
+    );
     if (!response.ok) {
-      if (response.status !== 500 && response.status !== 502 && response.status !== 503)
+      if (
+        response.status !== 500 &&
+        response.status !== 502 &&
+        response.status !== 503
+      )
         this.pendingBatch = null;
-      const failure = (await response.json()) as {
+      const body = await response.text();
+      let failure: {
         failed_step?: number;
         reason?: string;
         expected?: string;
+        message?: string;
       };
+      try {
+        failure = JSON.parse(body);
+      } catch {
+        failure = { message: body || `HTTP ${response.status}` };
+      }
+      // The server explains the rejection in `message`; older servers only send the reason.
       throw new Error(
-        `Batch step ${(failure.failed_step ?? 0) + 1}: ${failure.reason ?? "batch rejected"}${failure.expected ? ` (${failure.expected})` : ""}`,
+        failure.message
+          ? `Batch rejected: ${failure.message}`
+          : `Batch step ${(failure.failed_step ?? 0) + 1}: ${failure.reason ?? "batch rejected"}${failure.expected ? ` (${failure.expected})` : ""}`,
       );
     }
     this.pendingBatch = null;
-    const result = (await response.json()) as { snapshot: unknown; active?: boolean };
+    const result = (await response.json()) as {
+      snapshot: unknown;
+      active?: boolean;
+      interrupted?: {
+        applied_steps: number;
+        remaining_steps: unknown[];
+        offered?: { subtype?: string | null; own_seat?: boolean };
+      };
+    };
     if (result.active === false)
       throw new Error(
         "This confirmation was already committed but is now undone. Refresh the decision before confirming again.",
@@ -486,21 +699,61 @@ export class GameSessionClient {
       { type: "initial_snapshot", ...(result.snapshot as object) },
       this.options.gameId,
     );
+    // A reaction window opened between planned steps: what was applied is kept, the window waits
+    // for its holder, and the rest of the plan is offered again once it resolves.
+    const stopped = result.interrupted?.remaining_steps.length
+      ? result.interrupted
+      : undefined;
     this.rejectSubmission("Game history changed");
     this.detachSocket();
     this.clearTimers();
     this.setState(
       reduceServerMessage(
-        { ...this.state, pendingChoice: null, lastError: null },
+        {
+          ...this.state,
+          pendingChoice: null,
+          lastError: null,
+          batchResume: stopped
+            ? {
+                plan: { ...plan, steps: stopped.remaining_steps } as BatchPlan,
+                applied: stopped.applied_steps,
+                waiting: {
+                  subtype: stopped.offered?.subtype ?? null,
+                  ownSeat: stopped.offered?.own_seat ?? false,
+                },
+              }
+            : null,
+        },
         { ...snapshot, type: "initial_snapshot" },
       ),
     );
     this.openSocket();
   }
 
+  /** Any seated player: the live game history (seed, seats, decisions, events) as pretty JSON. */
+  async fetchReplay(): Promise<{ text: string; filename: string }> {
+    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+      throw new Error("A player session is required");
+    const response = await fetch(this.snapshotUrl().replace(/\/snapshot$/, "/replay"), {
+      headers: this.snapshotHeaders(),
+    });
+    if (!response.ok) {
+      const reason = (await response.text().catch(() => "")).trim();
+      throw new Error(reason || `The server refused the replay (${response.status})`);
+    }
+    const replay: unknown = await response.json();
+    return {
+      text: JSON.stringify(replay, null, 2),
+      filename: `ti4-replay-${this.options.gameId}.json`,
+    };
+  }
+
   /** The host changes the authoritative Rust timeline; all clients reconnect to it. */
   async changeHistory(action: HistoryChange): Promise<void> {
-    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+    if (
+      this.options.viewer.role !== "player" ||
+      !this.options.viewer.playerSession
+    )
       throw new Error("A player session is required");
     const url = this.snapshotUrl().replace(/\/snapshot$/, "/history");
     const body =
@@ -517,7 +770,10 @@ export class GameSessionClient {
       conflictReason = undefined;
       response = await fetch(url, {
         method: "POST",
-        headers: { ...this.snapshotHeaders(), "content-type": "application/json" },
+        headers: {
+          ...this.snapshotHeaders(),
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ ...body, expected_version: version }),
       });
       if (response.ok || response.status !== 409) break;
@@ -530,9 +786,14 @@ export class GameSessionClient {
       // The worker may still be advancing automatically toward its next human choice.
       // Refresh the version, but never rewind a different decision if someone acted meanwhile.
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const latest = await fetch(this.snapshotUrl(), { headers: this.snapshotHeaders() });
+      const latest = await fetch(this.snapshotUrl(), {
+        headers: this.snapshotHeaders(),
+      });
       if (!latest.ok) break;
-      const snapshot = decodeInitialSnapshot(await latest.json(), this.options.gameId);
+      const snapshot = decodeInitialSnapshot(
+        await latest.json(),
+        this.options.gameId,
+      );
       if (snapshot.history?.cursor !== cursor) break;
       version = snapshot.game_version;
     }
@@ -542,12 +803,16 @@ export class GameSessionClient {
       this.setState({ ...this.state, lastError: error });
       throw new Error(error);
     }
-    const snapshot = decodeInitialSnapshot(await response.json(), this.options.gameId);
+    const snapshot = decodeInitialSnapshot(
+      await response.json(),
+      this.options.gameId,
+    );
     const expected = this.options.viewer;
     if (
       snapshot.viewer.role !== expected.role ||
       (expected.role === "player" &&
-        (snapshot.viewer.role !== "player" || snapshot.viewer.seat !== expected.seat))
+        (snapshot.viewer.role !== "player" ||
+          snapshot.viewer.seat !== expected.seat))
     ) {
       throw new Error("Server viewer identity does not match this session");
     }
@@ -556,7 +821,7 @@ export class GameSessionClient {
     this.clearTimers();
     this.setState(
       reduceServerMessage(
-        { ...this.state, pendingChoice: null, lastError: null },
+        { ...this.state, pendingChoice: null, lastError: null, batchResume: null },
         { ...snapshot, type: "initial_snapshot" },
       ),
     );
@@ -565,12 +830,20 @@ export class GameSessionClient {
 
   private async loadSnapshot(): Promise<void> {
     try {
-      const response = await fetch(this.snapshotUrl(), { headers: this.snapshotHeaders() });
-      if (!response.ok) throw new Error(`Snapshot request failed (${response.status})`);
+      const response = await fetch(this.snapshotUrl(), {
+        headers: this.snapshotHeaders(),
+      });
+      if (!response.ok)
+        throw new Error(
+          `Snapshot request failed (${response.status}): ${await response.text().catch(() => "")}`,
+        );
       this.ingestHttpSnapshot(await response.json());
     } catch (error) {
       if (!this.stopped)
-        this.setState({ ...this.state, lastError: `Snapshot request failed: ${String(error)}` });
+        this.setState({
+          ...this.state,
+          lastError: `Snapshot request failed: ${String(error)}`,
+        });
     }
   }
 
@@ -585,7 +858,9 @@ export class GameSessionClient {
     socket.onopen = () => {
       if (this.stopped || this.socket !== socket) return;
       const playerSession =
-        this.options.viewer.role === "player" ? this.options.viewer.playerSession : undefined;
+        this.options.viewer.role === "player"
+          ? this.options.viewer.playerSession
+          : undefined;
       const message: ClientMessage = {
         type: "subscribe",
         protocol_version: PROTOCOL_VERSION,
@@ -806,7 +1081,8 @@ export class GameSessionClient {
       if (
         message.viewer.role !== expected.role ||
         (expected.role === "player" &&
-          (message.viewer.role !== "player" || message.viewer.seat !== expected.seat))
+          (message.viewer.role !== "player" ||
+            message.viewer.seat !== expected.seat))
       ) {
         this.setState({
           ...initialState,
@@ -822,7 +1098,8 @@ export class GameSessionClient {
     if (message.type === "action_accepted") {
       const index = this.priorSubmissions.findIndex(
         (pending) =>
-          pending.optionId === message.option_id && message.game_version >= pending.version,
+          pending.optionId === message.option_id &&
+          message.game_version >= pending.version,
       );
       if (index !== -1) {
         this.priorSubmissions.splice(index, 1)[0].resolve();
@@ -875,7 +1152,8 @@ export class GameSessionClient {
     const submission = this.submission;
     this.submission = null;
     submission?.reject(new Error(reason));
-    for (const prior of this.priorSubmissions.splice(0)) prior.reject(new Error(reason));
+    for (const prior of this.priorSubmissions.splice(0))
+      prior.reject(new Error(reason));
   }
 
   private detachSocket(): void {
@@ -886,7 +1164,10 @@ export class GameSessionClient {
     socket.onmessage = null;
     socket.onerror = null;
     socket.onclose = null;
-    if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
+    if (
+      socket.readyState === WebSocket.CONNECTING ||
+      socket.readyState === WebSocket.OPEN
+    )
       socket.close();
   }
 
@@ -898,7 +1179,7 @@ export class GameSessionClient {
   }
 
   private setState(next: GameSessionState): void {
-    this.state = next;
+    this.state = settleBatchResume(next);
     this.listeners.forEach((listener) => listener());
   }
 
@@ -919,7 +1200,8 @@ export class GameSessionClient {
   }
 
   private snapshotHeaders(): HeadersInit {
-    return this.options.viewer.role === "player" && this.options.viewer.playerSession
+    return this.options.viewer.role === "player" &&
+      this.options.viewer.playerSession
       ? { "x-ti4-player-session": this.options.viewer.playerSession }
       : {};
   }

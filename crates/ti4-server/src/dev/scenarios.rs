@@ -1150,6 +1150,9 @@ fn setup_base_3p_game(seed: u64, game_prefix: &str) -> Result<Base3pGameSetup, S
         slots,
         players: existing_players,
         seed,
+        map_template: None,
+        start_preset: None,
+        map_revision: 0,
         lobby_version: 1,
     };
 

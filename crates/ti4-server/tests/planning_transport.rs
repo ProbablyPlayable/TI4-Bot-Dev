@@ -114,6 +114,9 @@ impl Fixture {
             players,
             seed: 42,
             lobby_version: 1,
+            map_template: None,
+            start_preset: None,
+            map_revision: 0,
         };
         let registry =
             Arc::new(GameRegistry::new().with_presence_grace(Duration::from_millis(200)));

@@ -1,14 +1,106 @@
-import React from "react";
-import { BoardView, PlayerView } from "../protocol/types.ts";
+import React, { useState } from "react";
+import { BoardView, PlayerView, ReactionModes, ReactionModeSetting, TableView } from "../protocol/types.ts";
 import {
   getStrategyCardMeta,
   getSecretObjectiveMeta,
   getActionCardMeta,
+  PUBLIC_OBJECTIVES,
+  SECRET_OBJECTIVES,
 } from "../protocol/contentCatalog.ts";
 import { CardSubject } from "./CardDetails.tsx";
 import { SeatBadge, usePlayerIdentity } from "../presentation/PlayerIdentity.tsx";
 import { computePlayerStats } from "../presentation/playerStats.ts";
 import { Tooltip } from "../primitives/index.ts";
+import { useTurnSound } from "../hooks/useTurnSound.ts";
+import { useToastMute } from "../hooks/useToastMute.ts";
+
+
+export interface VPBreakdown {
+  publicObjectives: number;
+  publicVP: number;
+  secretObjectives: number;
+  secretVP: number;
+  /** Points the client cannot attribute (custodians, Imperial, relics, laws, abilities). */
+  otherVP: number;
+  /** Server-authoritative total (player.victory_points). */
+  total: number;
+  /** True when the known objective points exceed the server total. */
+  knownExceedsTotal: boolean;
+}
+
+export const calculateVPBreakdown = (
+  player: PlayerView,
+  _board?: BoardView,
+  table?: TableView
+): VPBreakdown => {
+  let publicObjectives = 0;
+  let publicVP = 0;
+  let secretObjectives = 0;
+  let secretVP = 0;
+
+  for (const objId of table?.scored_objectives?.[player.id] ?? []) {
+    const objMeta = PUBLIC_OBJECTIVES[objId as keyof typeof PUBLIC_OBJECTIVES];
+    if (objMeta) {
+      publicObjectives++;
+      publicVP += objMeta.points;
+    }
+  }
+
+  for (const objId of player.scored_secret_objectives ?? []) {
+    const objMeta = SECRET_OBJECTIVES[objId as keyof typeof SECRET_OBJECTIVES];
+    if (objMeta) {
+      secretObjectives++;
+      secretVP += objMeta.points;
+    }
+  }
+
+  const total = Math.max(0, player.victory_points);
+  const known = publicVP + secretVP;
+  const knownExceedsTotal = known > total;
+  if (knownExceedsTotal) {
+    // Never show more than the server total: clamp the known lines to it.
+    const cappedPublic = Math.min(publicVP, total);
+    secretVP = Math.min(secretVP, total - cappedPublic);
+    publicVP = cappedPublic;
+  }
+  return {
+    publicObjectives,
+    publicVP,
+    secretObjectives,
+    secretVP,
+    otherVP: Math.max(0, total - publicVP - secretVP),
+    total,
+    knownExceedsTotal,
+  };
+};
+
+export const VPBreakdownTooltip: React.FC<{ breakdown: VPBreakdown }> = ({ breakdown }) => (
+  <div className="vp-breakdown-tooltip">
+    <div className="vp-breakdown-row">
+      <span className="vp-breakdown-label">Public Objectives:</span>
+      <span className="vp-breakdown-count">{breakdown.publicObjectives}</span>
+      <span className="vp-breakdown-vp">+{breakdown.publicVP} VP</span>
+    </div>
+    <div className="vp-breakdown-row">
+      <span className="vp-breakdown-label">Secret Objectives:</span>
+      <span className="vp-breakdown-count">{breakdown.secretObjectives}</span>
+      <span className="vp-breakdown-vp">+{breakdown.secretVP} VP</span>
+    </div>
+    <div className="vp-breakdown-row" data-testid="vp-breakdown-other">
+      <span className="vp-breakdown-label">Other sources (custodians, Imperial, relics, laws, abilities):</span>
+      <span className="vp-breakdown-vp">+{breakdown.otherVP} VP</span>
+    </div>
+    <div className="vp-breakdown-row" data-testid="vp-breakdown-total">
+      <span className="vp-breakdown-label">Total:</span>
+      <span className="vp-breakdown-vp">{breakdown.total} VP</span>
+    </div>
+    {breakdown.knownExceedsTotal && (
+      <div className="vp-breakdown-note">
+        Scored objectives exceed the reported total; showing the server total.
+      </div>
+    )}
+  </div>
+);
 
 const ResourceIcon: React.FC<{ style?: React.CSSProperties }> = ({ style }) => (
   <svg
@@ -81,19 +173,61 @@ const ProductionIcon: React.FC<{ style?: React.CSSProperties }> = ({ style }) =>
 export interface PlayerSheetProps {
   players: PlayerView[];
   userSeat?: string;
+  seatingOrder?: string[];
   revealedObjectives?: string[];
   board?: BoardView;
+  table?: TableView;
   onInspectCard?: (subject: CardSubject) => void;
+  /** The viewing seat's "never offer" cards by printed name, as the server holds them. */
+  reactionModes?: ReactionModes;
+  /** Changes one card's mode on the server; without it (a spectator) the toggle is not shown. */
+  onSetReactionMode?: (card: string, mode: ReactionModeSetting) => void;
 }
 
 export const PlayerSheet: React.FC<PlayerSheetProps> = ({
   players,
   userSeat,
+  seatingOrder = [],
   revealedObjectives: _revealedObjectives = [],
   board,
+  table,
   onInspectCard,
+  reactionModes,
+  onSetReactionMode,
 }) => {
   const display = usePlayerIdentity();
+  const { isMuted, toggleMute } = useTurnSound();
+  const [isMutedState, setIsMutedState] = useState(isMuted);
+  const { muted: toastsMuted, toggleMute: toggleToastMute } = useToastMute();
+
+  // Sort players: current player first, then by turn order
+  const sortedPlayers = React.useMemo(() => {
+    if (players.length === 0) return [];
+
+    // Find current player
+    const currentPlayer = players.find(p => p.id === userSeat);
+
+    // Create a map for quick turn order lookup
+    const turnOrderMap = new Map(seatingOrder.map((id, index) => [id, index]));
+
+    // Separate current player and others
+    const otherPlayers = players.filter(p => p.id !== userSeat);
+
+    // Sort others by turn order
+    const sortedOthers = otherPlayers.sort((a, b) => {
+      const orderA = turnOrderMap.get(a.id) ?? Infinity;
+      const orderB = turnOrderMap.get(b.id) ?? Infinity;
+      return orderA - orderB;
+    });
+
+    // Return current player first, then sorted others
+    return currentPlayer ? [currentPlayer, ...sortedOthers] : sortedOthers;
+  }, [players, userSeat, seatingOrder]);
+
+  // Per printed card name and per game, held by the server: every copy of a card shares it.
+  const getReactionMode = (cardName: string): ReactionModeSetting =>
+    reactionModes?.[cardName] === "never" ? "never" : "always";
+
   return (
     <aside
       data-testid="player-sheet-panel"
@@ -103,15 +237,82 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
         height: "100%",
         borderLeft: "1px solid var(--color-border)",
         overflowY: "auto",
-        padding: 16,
+        padding: 12,
         display: "flex",
         flexDirection: "column",
-        gap: 16,
+        gap: 12,
       }}
     >
-      <h2 style={{ fontSize: 16, fontWeight: "bold", margin: 0, color: "#94a3b8" }}>Players</h2>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          paddingBottom: 6,
+          borderBottom: "1px solid #334155",
+        }}
+      >
+        <h2 style={{ fontSize: 16, fontWeight: "bold", margin: 0, color: "#94a3b8" }}>Players</h2>
 
-      {players.map((player) => {
+        <div style={{ display: "flex", gap: 6 }}>
+        {/* Sound Settings Toggle */}
+        <button
+          type="button"
+          title={isMutedState ? "Turn sound on" : "Mute turn sound"}
+          onClick={() => {
+            const newMutedState = toggleMute();
+            setIsMutedState(newMutedState);
+          }}
+          style={{
+            background: "transparent",
+            border: "1px solid #94a3b8",
+            color: "#94a3b8",
+            borderRadius: 4,
+            padding: "4px 8px",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: "500",
+            transition: "all 0.2s ease",
+            backgroundColor: isMutedState ? "rgba(148, 163, 184, 0.1)" : "transparent",
+          }}
+          onMouseEnter={(e) => {
+            (e.target as HTMLButtonElement).style.backgroundColor = "rgba(148, 163, 184, 0.2)";
+          }}
+          onMouseLeave={(e) => {
+            (e.target as HTMLButtonElement).style.backgroundColor = isMutedState
+              ? "rgba(148, 163, 184, 0.1)"
+              : "transparent";
+          }}
+        >
+          {isMutedState ? "🔇 Muted" : "🔊 Sound"}
+        </button>
+        <button
+          type="button"
+          data-testid="toast-mute-btn"
+          aria-pressed={toastsMuted}
+          title={
+            toastsMuted
+              ? "Show notifications about other players' actions"
+              : "Hide notifications about other players' actions"
+          }
+          onClick={toggleToastMute}
+          style={{
+            background: toastsMuted ? "rgba(148, 163, 184, 0.1)" : "transparent",
+            border: "1px solid #94a3b8",
+            color: "#94a3b8",
+            borderRadius: 4,
+            padding: "4px 8px",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: "500",
+          }}
+        >
+          {toastsMuted ? "🔕 Toasts off" : "🔔 Toasts"}
+        </button>
+        </div>
+      </div>
+
+      {sortedPlayers.map((player) => {
         const isSelf = userSeat === player.id;
         const identity = display(player.id);
         const stats = computePlayerStats(player, board);
@@ -123,11 +324,11 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
             data-is-self={isSelf ? "true" : "false"}
             className={`card${isSelf ? " card--selected" : ""}`}
             style={{
-              padding: 14,
+              padding: 12,
               borderLeft: `4px solid ${identity.color}`,
               display: "flex",
               flexDirection: "column",
-              gap: 10,
+              gap: 8,
             }}
           >
             {/* Header: current name + physical position + faction + VP */}
@@ -139,19 +340,26 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                 </strong>
                 <div style={{ fontSize: 12, color: "#94a3b8" }}>{player.faction}</div>
               </div>
-              <div
-                data-testid="player-vp"
-                style={{
-                  background: "#fbbf24",
-                  color: "#0f172a",
-                  fontWeight: "bold",
-                  fontSize: 14,
-                  padding: "2px 8px",
-                  borderRadius: 12,
-                }}
+              <Tooltip
+                content={<VPBreakdownTooltip breakdown={calculateVPBreakdown(player, board, table)} />}
+                position="left"
               >
-                {player.victory_points} VP
-              </div>
+                <div
+                  data-testid="player-vp"
+                  style={{
+                    background: "#fbbf24",
+                    color: "#0f172a",
+                    fontWeight: "bold",
+                    fontSize: 14,
+                    padding: "2px 8px",
+                    borderRadius: 12,
+                    cursor: "help",
+                  }}
+                  tabIndex={0}
+                >
+                  {player.victory_points} VP
+                </div>
+              </Tooltip>
             </div>
 
             {/* Economy & Tokens */}
@@ -159,7 +367,7 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
-                gap: 6,
+                gap: 4,
                 fontSize: 12,
                 color: "#cbd5e1",
               }}
@@ -183,9 +391,9 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
               style={{
                 display: "flex",
                 flexWrap: "wrap",
-                gap: "4px 8px",
+                gap: "3px 6px",
                 alignItems: "center",
-                padding: "4px 8px",
+                padding: "3px 6px",
                 backgroundColor: "rgba(15, 23, 42, 0.6)",
                 border: "1px solid rgba(255, 255, 255, 0.08)",
                 borderRadius: 6,
@@ -314,12 +522,13 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
             {/* Public strategy cards */}
             {player.strategy_cards.length > 0 && (
               <div style={{ fontSize: 12 }}>
-                <div style={{ color: "#94a3b8", marginBottom: 4, fontWeight: 500 }}>
+                <div style={{ color: "#94a3b8", marginBottom: 3, fontWeight: 500 }}>
                   Strategy Cards:
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                   {player.strategy_cards.map((scId) => {
                     const meta = getStrategyCardMeta(scId);
+                    const isExhausted = player.exhausted_strategy_cards.includes(scId);
                     const tooltipText = `${meta.name} (Initiative ${meta.initiative})\n\nPrimary:\n${meta.primaryText}\n\nSecondary:\n${meta.secondaryText}`;
                     return (
                       <button
@@ -328,6 +537,7 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                         onClick={() => onInspectCard?.({ kind: "strategy", id: scId })}
                         data-testid={`strategy-card-badge-${scId}`}
                         data-card-id={scId}
+                        className={isExhausted ? "strategy-card--exhausted" : ""}
                         title={tooltipText}
                         style={{
                           background: "#090d16",
@@ -382,12 +592,12 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
               <div
                 data-testid="private-hand-section"
                 style={{
-                  marginTop: 6,
+                  marginTop: 4,
                   borderTop: "1px dashed #475569",
-                  paddingTop: 10,
+                  paddingTop: 8,
                   display: "flex",
                   flexDirection: "column",
-                  gap: 10,
+                  gap: 8,
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: "bold", color: "#38bdf8" }}>
@@ -407,12 +617,19 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                         listStyle: "none",
                         display: "flex",
                         flexDirection: "column",
-                        gap: 6,
+                        gap: 4,
                       }}
                     >
                       {player.held_action_cards.map((cardId) => {
                         const meta = getActionCardMeta(cardId);
                         const tooltipText = `${meta.name} (${meta.phase ?? "Action"})\n\n${meta.description}`;
+                        const mode = getReactionMode(meta.name);
+                        const modeLabel = mode === "always" ? "✓" : "✕";
+                        const modeColor = mode === "always" ? "#4ade80" : "#ef4444";
+                        const modeTitle =
+                          mode === "always"
+                            ? `${meta.name} is offered when it fits a window (click to never offer it this game)`
+                            : `${meta.name} is never offered this game (click to offer it again)`;
 
                         return (
                           <li
@@ -423,19 +640,23 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                             }
                             data-action-card-id={cardId}
                             data-testid={`action-card-item-${cardId}`}
-                            title={tooltipText}
                             className="card"
                             style={{
                               border: "1px solid #475569",
-                              padding: "6px 10px",
+                              padding: "5px 8px",
                               cursor: "pointer",
                               position: "relative",
+                              display: "flex",
+                              gap: 6,
+                              alignItems: "flex-start",
                             }}
                           >
                             <button
                               type="button"
                               className="detail-trigger"
                               onClick={() => onInspectCard?.({ kind: "action", id: cardId })}
+                              title={tooltipText}
+                              style={{ flex: 1, textAlign: "left" }}
                             >
                               <div style={{ width: "100%" }}>
                                 <div
@@ -474,6 +695,37 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                                 </div>
                               </div>
                             </button>
+                            {isSelf && onSetReactionMode && (
+                              <button
+                                type="button"
+                                title={modeTitle}
+                                aria-label={modeTitle}
+                                aria-pressed={mode === "never"}
+                                data-testid={`reaction-inspect-mode-${cardId}`}
+                                data-reaction-mode={mode}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSetReactionMode(
+                                    meta.name,
+                                    mode === "always" ? "never" : "always",
+                                  );
+                                }}
+                                style={{
+                                  background: "transparent",
+                                  border: `1px solid ${modeColor}`,
+                                  color: modeColor,
+                                  fontSize: 14,
+                                  fontWeight: "bold",
+                                  padding: "2px 8px",
+                                  borderRadius: 4,
+                                  cursor: "pointer",
+                                  minWidth: "32px",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {modeLabel}
+                              </button>
+                            )}
                           </li>
                         );
                       })}
@@ -496,7 +748,7 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                         listStyle: "none",
                         display: "flex",
                         flexDirection: "column",
-                        gap: 6,
+                        gap: 4,
                       }}
                     >
                       {player.held_secret_objectives.map((objId) => {
@@ -516,7 +768,7 @@ export const PlayerSheet: React.FC<PlayerSheetProps> = ({
                             className="card"
                             style={{
                               border: "1px solid #fbbf24",
-                              padding: "6px 10px",
+                              padding: "5px 8px",
                               cursor: "pointer",
                               position: "relative",
                             }}

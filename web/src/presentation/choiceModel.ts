@@ -4,6 +4,7 @@ import {
   OutstandingConstraintDto,
   DecisionTargetDto,
 } from "../protocol/types.ts";
+import { isReactionStepSubtype } from "./reactionModel.ts";
 
 export type SelectionMode =
   | { mode: "single" }
@@ -19,6 +20,7 @@ export type SelectionMode =
 
 export type ChoiceWorkflowKind =
   | "system_activation"
+  | "planet_selection"
   | "tactical_movement"
   | "tactical_cargo"
   | "tactical_invasion"
@@ -122,6 +124,88 @@ export function getAgendaPlanetVotes(opt: ChoiceOptionDto): number | null {
     if (!Number.isNaN(parsed)) return parsed;
   }
   return null;
+}
+
+/** The planet an option is about, from the structured `payload.planet` only (never the option id). */
+export function optionPlanetId(opt: ChoiceOptionDto): string | null {
+  const planet = opt.payload?.planet;
+  return typeof planet === "string" && planet.length > 0 ? planet : null;
+}
+
+export function isDeclineOption(opt: ChoiceOptionDto): boolean {
+  return opt.id === "decline" || opt.kind === "decline";
+}
+
+/**
+ * Subtypes that carry planet payloads but already have a dedicated workflow (payment, voting
+ * baskets, production, invasion and ground combat). They must never become a planet selection.
+ */
+const PLANET_SELECTION_EXCLUDED_SUBTYPES = new Set([
+  "pay_resources",
+  "pay_influence",
+  "leadership_spend_influence",
+  "vote_exhaust_planet",
+  "vote_tiebreak",
+  "activate_system",
+  "movement_step",
+  "load_cargo",
+  "commit_ground_forces",
+  "produce_unit",
+  "place_unit",
+  "bombardment",
+  "bombardment_target",
+  "assign_ground_casualty",
+  "fight_ground_combat_round",
+  "start_next_ground_combat",
+]);
+
+/** Option kinds that belong to another workflow and therefore can't be an "extra" option. */
+const NON_EXTRA_OPTION_KINDS = new Set([
+  "activate",
+  "move",
+  "load",
+  "land",
+  "produce",
+  "pay",
+  "casualty",
+  "sustain",
+  "retreat",
+  "offer",
+  "research",
+  "vote_planet",
+  "score",
+]);
+
+/**
+ * A non-planet option offered alongside planet picks (Bio-Stims technologies, The Acropolis
+ * relics/leaders). It must not point somewhere on the board itself.
+ */
+export function isExtraPlanetSelectionOption(opt: ChoiceOptionDto): boolean {
+  if (isDeclineOption(opt) || optionPlanetId(opt)) return false;
+  if (opt.kind && NON_EXTRA_OPTION_KINDS.has(opt.kind)) return false;
+  const p = opt.payload ?? {};
+  return (
+    p.system === undefined && p.to === undefined && p.origin === undefined && p.unit === undefined
+  );
+}
+
+/**
+ * A single-pick decision answered by choosing a planet on the map: at least one option carries
+ * `payload.planet`, and every other non-decline option is either a planet pick too or a
+ * board-less extra (technology, relic, …).
+ */
+export function isPlanetSelectionChoice(choice: PendingChoiceDto | null): boolean {
+  if (!choice) return false;
+  const subtype = choice.context?.subtype ?? "";
+  if (PLANET_SELECTION_EXCLUDED_SUBTYPES.has(subtype)) return false;
+  if (choice.context?.invasion_seq !== undefined && choice.context.invasion_seq !== null)
+    return false;
+  const offered = choice.options.filter((o) => !isDeclineOption(o));
+  if (!offered.some((o) => optionPlanetId(o))) return false;
+  // Movement payloads (a destination or an origin) mean the system is part of the answer.
+  if (offered.some((o) => o.payload?.to !== undefined || o.payload?.origin !== undefined))
+    return false;
+  return offered.every((o) => optionPlanetId(o) !== null || isExtraPlanetSelectionOption(o));
 }
 
 export function deriveChoiceRendererModel(
@@ -348,7 +432,10 @@ export function deriveChoiceRendererModel(
   // Technology Research
   if (
     subtype === "research_technology" ||
-    (choice.options.length > 0 && choice.options.some((o) => o.kind === "research"))
+    // An engine-built offer card (Deepwrought's "reduce by 1") is not a technology pick.
+    (choice.details?.kind !== "offer" &&
+      choice.options.length > 0 &&
+      choice.options.some((o) => o.kind === "research"))
   ) {
     const isPrimary =
       choice.context?.source &&
@@ -457,7 +544,25 @@ export function deriveChoiceRendererModel(
     };
   }
 
-  // 6. Agenda Voting
+  // 6. Planet selection on the map (action cards, abilities, relics, Elect Planet votes, …)
+  if (isPlanetSelectionChoice(choice)) {
+    return {
+      workflow: "planet_selection",
+      selectionMode: { mode: "single" },
+      prompt: choice.prompt,
+      actor: choice.actor,
+      nonce: choice.nonce,
+      isOptional: Boolean(declineOption) || Boolean(choice.context?.optional),
+      contextTarget: choice.context?.target ?? null,
+      options: choice.options,
+      outstanding: choice.context?.outstanding ?? [],
+      declineOption,
+      optionsByKind,
+      optionsByTarget,
+    };
+  }
+
+  // 7. Agenda Voting
   if (subtype === "cast_vote" || subtype === "vote_exhaust_planet" || subtype === "vote_tiebreak") {
     return {
       workflow: subtype === "vote_exhaust_planet" ? "agenda_vote_planets" : "agenda_vote_outcome",
@@ -478,13 +583,10 @@ export function deriveChoiceRendererModel(
     };
   }
 
-  // 7. Reaction Windows
+  // 8. Reaction Windows
   if (
-    subtype.startsWith("play_reaction_") ||
-    (isOptional &&
-      choice.options.length <= 4 &&
-      choice.context?.source &&
-      "Reaction" in choice.context.source)
+    isReactionStepSubtype(subtype) ||
+    (isOptional && choice.context?.source && "Reaction" in choice.context.source)
   ) {
     return {
       workflow: "action_card_reaction",
@@ -502,7 +604,7 @@ export function deriveChoiceRendererModel(
     };
   }
 
-  // 8. Bounded Multi-Selection Fallback
+  // 9. Bounded Multi-Selection Fallback
   const min = constraints?.min_selection ?? 1;
   const max =
     constraints?.max_selection ?? (constraints?.min_selection ? constraints.min_selection : 1);

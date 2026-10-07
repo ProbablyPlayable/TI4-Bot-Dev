@@ -178,7 +178,20 @@ pub struct PlayerLobbyRecord {
     pub slots: Vec<PlayerLobbySlot>,
     pub players: BTreeMap<PlayerId, PlayerLobbyMember>,
     pub seed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_template: Option<String>,
+    /// Opening-state preset (see [`crate::preset`]); the result is saved in the init record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_preset: Option<String>,
+    /// Bumped whenever the map the table will get changes (a new choice, a re-roll, a new seat
+    /// order) so clients know to refetch the preview.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub map_revision: u64,
     pub lobby_version: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl PlayerLobbyRecord {
@@ -241,6 +254,8 @@ pub struct PlayerGameInitRecord {
     pub map_tiles: Vec<BoardTileView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seats: Option<BTreeMap<PlayerId, SeatController>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_template: Option<String>,
 }
 
 /// Authoritative running-session credential mapping, atomically replaced on rotation.
@@ -314,6 +329,20 @@ pub struct BatchRecord {
     pub actor: PlayerId,
     pub start_cursor: usize,
     pub end_cursor: usize,
+    /// Set when the batch stopped at a reaction window; answers a repeated request the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<crate::session::batch::BatchInterruption>,
+}
+
+/// Per-seat "never offer" choices, saved beside the decision log in `reaction_modes.json`.
+///
+/// Session settings, not game inputs: replay answers from the decision log (a declined window is
+/// an ordinary journaled decision), so this file only has to restore what each seat last asked
+/// for. A game without it simply has no preferences, which is how every older save loads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReactionModesRecord {
+    #[serde(default)]
+    pub never: BTreeMap<PlayerId, std::collections::BTreeSet<String>>,
 }
 
 /// Initial configuration record saved atomically to `init.json`.
@@ -328,6 +357,8 @@ pub struct GameInitRecord {
     pub seat_tokens: BTreeMap<PlayerId, String>,
     #[serde(default)]
     pub map_tiles: Vec<BoardTileView>,
+    #[serde(default)]
+    pub map_template: Option<String>,
 }
 
 impl std::fmt::Debug for GameInitRecord {
@@ -655,6 +686,33 @@ impl FileGameStore {
         Ok(())
     }
 
+    /// Atomically stores every seat's reaction modes.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the file cannot be written.
+    pub fn save_reaction_modes(
+        &self,
+        game_id: &str,
+        record: &ReactionModesRecord,
+    ) -> Result<(), StorageError> {
+        let dir = self.game_dir(game_id)?;
+        fs::create_dir_all(&dir)?;
+        atomic_write_json(&dir.join("reaction_modes.json"), record)?;
+        Ok(())
+    }
+
+    /// Loads the saved reaction modes; a game that never set one has none.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if the file exists but cannot be read.
+    pub fn load_reaction_modes(&self, game_id: &str) -> Result<ReactionModesRecord, StorageError> {
+        let path = self.game_dir(game_id)?.join("reaction_modes.json");
+        if !path.exists() {
+            return Ok(ReactionModesRecord::default());
+        }
+        read_json_file(&path, MAX_SNAPSHOT_BYTES)
+    }
+
     /// Atomically stores a bounded replay-validation snapshot.
     pub fn save_snapshot(
         &self,
@@ -808,6 +866,7 @@ impl FileGameStore {
                 .map(|(id, session)| (id, session.as_str().to_owned()))
                 .collect(),
             map_tiles: init.map_tiles,
+            map_template: init.map_template,
         };
         self.recover_from_init(game_id, record)
     }
@@ -835,8 +894,13 @@ impl FileGameStore {
 
         let content = ContentStore::embedded();
         let galaxy = if let Some(seed) = init_record.seed {
-            let (_, g) = crate::map::create_game_with_map(content, &init_record.player_ids, seed)
-                .map_err(|e| StorageError::Map(e.to_string()))?;
+            let (_, g) = crate::map::create_game_with_template(
+                content,
+                &init_record.player_ids,
+                seed,
+                init_record.map_template.as_deref(),
+            )
+            .map_err(StorageError::Map)?;
             Some(g)
         } else {
             None
@@ -922,6 +986,7 @@ impl FileGameStore {
         let mut config =
             SessionConfig::new(&init_record.game_id, init_record.initial_state.clone())
                 .with_store(self.clone())
+                .with_reaction_modes(self.load_reaction_modes(game_id)?.never)
                 .with_prior_history(decisions.clone(), events.clone());
         if let Some(history) = history {
             config.initial_version = history.revision;
@@ -1328,6 +1393,7 @@ mod player_record_tests {
             seats: BTreeMap::new(),
             seat_tokens: BTreeMap::new(),
             map_tiles: Vec::new(),
+            map_template: None,
         };
         store.save_init(&old_init).unwrap();
         let mut debug_init = old_init.clone();
@@ -1396,6 +1462,7 @@ mod player_record_tests {
             initial_state: crate::fixtures::create_sample_game(),
             map_tiles: Vec::new(),
             seats: None,
+            map_template: None,
         };
         store.save_player_init(&init).unwrap();
         let mut sessions = PlayerSessionsRecord {
@@ -1472,5 +1539,21 @@ mod player_record_tests {
                 Err(StorageError::InvalidPlayerRecord("nickname"))
             ));
         }
+    }
+
+    #[test]
+    fn a_lobby_record_without_a_start_preset_still_loads_and_a_preset_round_trips() {
+        let (mut record, _, _) =
+            PlayerLobbyRecord::create("g_preset".to_owned(), 3, 5, "Host").unwrap();
+        // Records written before presets existed carry no `start_preset` key at all.
+        let old = serde_json::to_string(&record).unwrap();
+        assert!(!old.contains("start_preset"), "{old}");
+        let loaded: PlayerLobbyRecord = serde_json::from_str(&old).unwrap();
+        assert_eq!(loaded.start_preset, None);
+
+        record.start_preset = Some("combat".to_owned());
+        let json = serde_json::to_string(&record).unwrap();
+        let back: PlayerLobbyRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.start_preset.as_deref(), Some("combat"));
     }
 }

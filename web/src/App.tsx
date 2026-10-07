@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { ViewerRole } from "./protocol/types.ts";
 import { useGameSession } from "./hooks/useGameSession.ts";
 import { useLobbySession } from "./hooks/useLobbySession.ts";
+import { useTurnSound } from "./hooks/useTurnSound.ts";
 import { Board } from "./components/Board.tsx";
 import { TurnStatusBar } from "./components/TurnStatusBar.tsx";
 import { PlayerSheet } from "./components/PlayerSheet.tsx";
@@ -9,6 +10,7 @@ import { CreateLobby, LobbyStatus } from "./components/Lobby.tsx";
 import { GameShell } from "./components/GameShell.tsx";
 import { usePresence } from "./hooks/usePresence.ts";
 import { PlayerIdentityProvider } from "./presentation/PlayerIdentity.tsx";
+import { DecisionTableProvider } from "./components/PoliticsDecisionParts.tsx";
 import { participantText } from "./presentation/participantText.ts";
 import { CardDetails, CardSubject } from "./components/CardDetails.tsx";
 import { TechnologyModal } from "./components/TechnologyModal.tsx";
@@ -18,6 +20,16 @@ import { attemptKey, planningChoice, sameAttempt } from "./protocol/planning.ts"
 import { ApplyDraftDialog } from "./components/ApplyDraftDialog.tsx";
 import type { UseGameSessionReturn } from "./hooks/useGameSession.ts";
 import type { AttemptIdentity, PendingChoiceDto, RecordedDecisionDto } from "./protocol/types.ts";
+import { resolveMapTargetSelection } from "./presentation/planetSelection.ts";
+import { isPlanetSelectionChoice } from "./presentation/choiceModel.ts";
+import {
+  derivePaymentOffer,
+  isPaymentChoice,
+  paymentOptionForPlanet,
+  paymentPlanetKey,
+} from "./presentation/paymentDraft.ts";
+import { CornerToastLayer } from "./components/CornerToastLayer.tsx";
+import { PaymentDraftProvider, usePaymentDraftState } from "./presentation/PaymentDraftContext.tsx";
 
 const DevDecisionGallery = import.meta.env.DEV
   ? React.lazy(() =>
@@ -31,6 +43,21 @@ const DevScenarioLauncher = import.meta.env.DEV
   ? React.lazy(() =>
       import("./dev/ScenarioLauncher.tsx").then(({ ScenarioLauncher }) => ({
         default: ScenarioLauncher,
+      })),
+    )
+  : null;
+
+const DevMapPickerGallery = import.meta.env.DEV
+  ? React.lazy(() =>
+      import("./dev/MapPickerGallery.tsx").then(({ MapPickerGallery }) => ({
+        default: MapPickerGallery,
+      })),
+    )
+  : null;
+const DevToastGallery = import.meta.env.DEV
+  ? React.lazy(() =>
+      import("./dev/ToastGallery.tsx").then(({ ToastGallery }) => ({
+        default: ToastGallery,
       })),
     )
   : null;
@@ -68,6 +95,18 @@ export const App: React.FC = () => {
     return (
       <React.Suspense fallback={<main>Loading decision gallery…</main>}>
         <DevDecisionGallery />
+      </React.Suspense>
+    );
+  if (DevMapPickerGallery && window.location.pathname === "/dev/map-picker")
+    return (
+      <React.Suspense fallback={<main>Loading map picker…</main>}>
+        <DevMapPickerGallery />
+      </React.Suspense>
+    );
+  if (DevToastGallery && window.location.pathname === "/dev/toasts")
+    return (
+      <React.Suspense fallback={<main>Loading toasts…</main>}>
+        <DevToastGallery />
       </React.Suspense>
     );
   if (DevScenarioLauncher && window.location.pathname === "/dev/scenarios")
@@ -128,6 +167,7 @@ const GameRoute: React.FC<{
     setReady,
     start,
     reorder,
+    chooseMap,
     join,
     leave,
     addBot,
@@ -188,6 +228,7 @@ const GameRoute: React.FC<{
           onJoin={(name) => void enter(name)}
           onTakeover={(id, name) => void enter(name, id)}
           onReorder={(ids) => void reorder(ids)}
+          onChooseMap={chooseMap}
           onWatch={() => setWatching(true)}
           onAddBot={(password, name) => addBot(password, name)}
           onRemoveBot={(targetId) => removeBot(targetId)}
@@ -595,10 +636,16 @@ const GameWorkspace: React.FC<{
     events,
     history: gameHistory,
     submitChoice,
+    setReactionMode,
     changeHistory,
+    fetchReplay,
     submitMovementBatch,
     submitBatch,
+    batchResume,
+    resumeBatch,
+    dismissBatchResume,
   } = session;
+  const { playTurnNotification } = useTurnSound();
   const logHistoryKey = useRef<unknown>(null);
   if (
     snapshot?.type === "initial_snapshot" &&
@@ -621,6 +668,7 @@ const GameWorkspace: React.FC<{
     void changeHistory(action)
       .then(() => {
         setSelectedOptionId(undefined);
+        setSelectedPlanetId(null);
         setSelectedSystemId(null);
         setCardSubject(null);
       })
@@ -630,7 +678,9 @@ const GameWorkspace: React.FC<{
       .finally(() => setHistoryBusy(false));
   };
   const userSeat = viewer.role === "player" ? viewer.seat : undefined;
+  const paymentDraft = usePaymentDraftState(pendingChoice?.nonce);
   const [selectedOptionId, setSelectedOptionId] = useState<string>();
+  const [selectedPlanetId, setSelectedPlanetId] = useState<string | null>(null);
   const [selectedSystemId, setSelectedSystemId] = useState<string | null>(null);
   const [cardSubject, setCardSubject] = useState<CardSubject | null>(null);
   const [isTechModalOpen, setIsTechModalOpen] = useState(false);
@@ -652,8 +702,26 @@ const GameWorkspace: React.FC<{
       previous.subtype === pendingChoice?.context?.subtype
     )
       return;
-    if (!draft || !refreshed) setSelectedOptionId(undefined);
+    if (!draft || !refreshed) {
+      setSelectedOptionId(undefined);
+      setSelectedPlanetId(null);
+    }
   }, [pendingChoice?.nonce, draft, workspace.refreshKey, workspace.actionable]);
+
+  // Play sound notification when it becomes the player's turn
+  const previousPendingChoiceRef = useRef<string | null>(null);
+  useEffect(() => {
+    // The draft workspace answers its own offers; only the live game pings.
+    if (draft) return;
+    const isPendingChoiceForViewer =
+      pendingChoice && userSeat && pendingChoice.actor === userSeat;
+
+    if (isPendingChoiceForViewer && previousPendingChoiceRef.current !== pendingChoice.nonce) {
+      playTurnNotification();
+    }
+
+    previousPendingChoiceRef.current = pendingChoice?.nonce ?? null;
+  }, [pendingChoice?.nonce, userSeat, pendingChoice?.actor, playTurnNotification, draft]);
   const cardIsVisible =
     cardSubject &&
     snapshot &&
@@ -673,26 +741,45 @@ const GameWorkspace: React.FC<{
             ));
   const handleSelectTarget = (systemId: string, planetId?: string) => {
     if (!pendingChoice || pendingChoice.actor !== userSeat) return;
-    const match = pendingChoice.options.find((option) =>
-      planetId
-        ? option.payload?.planet === planetId ||
-          option.id === `exhaust|${planetId}` ||
-          option.id === planetId ||
-          option.id.startsWith(`exhaust|${planetId}|`)
-        : String(option.payload?.system ?? option.payload?.to ?? option.id) === systemId,
-    );
-    if (!match) {
-      setSelectedOptionId(undefined);
+    // Paying: a click on a payable planet stages or unstages it (shared with the payment list).
+    if (isPaymentChoice(pendingChoice)) {
+      if (!planetId) return;
+      const option = paymentOptionForPlanet(derivePaymentOffer(pendingChoice), planetId);
+      if (!option) return;
+      const staged = paymentDraft.draft.planetIds.find((id) => paymentPlanetKey(id) === planetId);
+      paymentDraft.togglePlanet(staged ?? option.id);
       return;
     }
-    setSelectedOptionId(match.id);
+    const selection = resolveMapTargetSelection(
+      pendingChoice,
+      systemId,
+      planetId,
+      snapshot?.view.board,
+    );
+    if (selection.kind === "ignore") return;
+    setSelectedOptionId(selection.optionId);
+    setSelectedPlanetId(selection.planetId);
   };
   return (
     <PlayerIdentityProvider lobby={lobby} seatingOrder={snapshot?.view.seating_order ?? []}>
+    <DecisionTableProvider table={snapshot?.view ?? null}>
+      {/* The provider wraps the rest unindented to keep this diff small. */}
+      <PaymentDraftProvider value={paymentDraft}>
       {historyError && (
         <div className="session-error" role="alert">
           {historyError}
         </div>
+      )}
+      {/* The draft snapshot is derived from the live one; only the live workspace toasts. */}
+      {!draft && (
+        <CornerToastLayer
+          events={events}
+          players={snapshot?.view.players}
+          viewerSeat={userSeat}
+          pendingChoice={pendingChoice}
+          autoResolved={snapshot?.type === "state_update" ? snapshot.auto_resolved : undefined}
+          ready={Boolean(snapshot)}
+        />
       )}
       <GameShell
         header={
@@ -738,7 +825,13 @@ const GameWorkspace: React.FC<{
               onSelectSystem={(id) => {
                 setSelectedSystemId(id);
                 setCardSubject(null);
-                if (id && pendingChoice && pendingChoice.actor === userSeat) {
+                // In a planet selection a hex click only inspects; it never drops the pick.
+                if (
+                  id &&
+                  pendingChoice &&
+                  pendingChoice.actor === userSeat &&
+                  !isPlanetSelectionChoice(pendingChoice)
+                ) {
                   const match = pendingChoice.options.find(
                     (option) =>
                       String(option.payload?.system ?? option.payload?.to ?? option.id) === id,
@@ -768,8 +861,12 @@ const GameWorkspace: React.FC<{
             <PlayerSheet
               players={snapshot.view.players}
               userSeat={userSeat}
+              seatingOrder={snapshot.view.seating_order}
               revealedObjectives={snapshot.view.table.revealed_objectives}
               board={snapshot.view.board}
+              table={snapshot.view.table}
+              reactionModes={snapshot.reaction_modes}
+              onSetReactionMode={!draft && userSeat ? setReactionMode : undefined}
               onInspectCard={(subject) => {
                 setSelectedSystemId(null);
                 setCardSubject(subject);
@@ -789,19 +886,36 @@ const GameWorkspace: React.FC<{
         history={gameHistory}
         historyBusy={historyBusy}
         onChangeHistory={!draft && userSeat === lobby.host_player_id ? onChangeHistory : undefined}
+        onFetchReplay={!draft && userSeat ? fetchReplay : undefined}
         choice={pendingChoice}
         viewerSeat={userSeat}
         players={snapshot?.view.players}
+        turn={
+          snapshot
+            ? {
+                phase: snapshot.view.phase,
+                activePlayer: snapshot.view.active_player ?? null,
+              }
+            : undefined
+        }
         revealedObjectives={snapshot?.view.table.revealed_objectives}
         scoredObjectives={snapshot?.view.table.scored_objectives}
         objectiveProgress={snapshot?.view.table.objective_progress}
         onSubmitChoice={submitChoice}
+        reactionModes={snapshot?.reaction_modes}
+        onSetReactionMode={!draft && userSeat ? setReactionMode : undefined}
         onSubmitMovementBatch={draft ? undefined : submitMovementBatch}
         onSubmitBasketBatch={draft ? undefined : submitBatch}
+        batchResume={draft ? null : batchResume}
+        onResumeBatch={draft ? undefined : resumeBatch}
+        onDismissBatchResume={draft ? undefined : dismissBatchResume}
         lastError={lastError}
         selectedOptionId={selectedOptionId}
         selectedSystemId={selectedSystemId}
         onSelectOption={setSelectedOptionId}
+        selectedPlanetId={selectedPlanetId}
+        onSelectPlanet={setSelectedPlanetId}
+        onShowSystem={setSelectedSystemId}
       />
       <TechnologyModal
         isOpen={isTechModalOpen}
@@ -825,6 +939,8 @@ const GameWorkspace: React.FC<{
           setCardSubject(subject);
         }}
       />
+      </PaymentDraftProvider>
+    </DecisionTableProvider>
     </PlayerIdentityProvider>
   );
 };

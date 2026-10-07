@@ -593,7 +593,7 @@ fn capital_ship_systems_count(position: &Position<'_>) -> usize {
 /// Have your flagship or war sun in another player's home system, or Mecatol Rex's.
 fn capital_ships_in_rival_home_or_mecatol_count(position: &Position<'_>) -> usize {
     let mut theirs = rival_home_systems(position);
-    theirs.insert(crate::seating::MECATOL.to_owned());
+    theirs.insert(crate::seating::mecatol_on(position.state).to_owned());
     flagship_or_war_sun(position)
         .iter()
         .filter(|system| theirs.contains(*system))
@@ -679,7 +679,8 @@ fn on_the_rim_count(position: &Position<'_>) -> Option<usize> {
 /// Have ships in two systems adjacent to Mecatol Rex's.
 fn ships_adjacent_to_mecatol_count(position: &Position<'_>) -> Option<usize> {
     let galaxy = position.galaxy?;
-    let beside: std::collections::BTreeSet<&str> = galaxy.adjacent(crate::seating::MECATOL);
+    let beside: std::collections::BTreeSet<&str> =
+        galaxy.adjacent(crate::seating::mecatol_in_galaxy(galaxy));
     Some(
         position
             .systems_with_ships()
@@ -933,7 +934,7 @@ fn in_notable_systems_count(position: &Position<'_>) -> usize {
         .systems_holding_units()
         .into_iter()
         .filter(|id| {
-            if id.as_str() == crate::seating::MECATOL {
+            if crate::seating::is_mecatol(id.as_str()) {
                 return true;
             }
             let Some(system) = systems.get(id.as_str()) else {
@@ -1030,7 +1031,7 @@ pub fn implicated_systems(
         // to the Mecatol Rex system" -- the ring around Mecatol, exactly as
         // `ships_adjacent_to_mecatol_count` checks it, whoever currently sits there.
         "intimidate" => galaxy
-            .adjacent(crate::seating::MECATOL)
+            .adjacent(crate::seating::mecatol_in_galaxy(galaxy))
             .into_iter()
             .map(ToOwned::to_owned)
             .collect(),
@@ -1362,6 +1363,9 @@ pub fn controls_home_system(position: &Position<'_>) -> bool {
     let Some(player) = position.state.player(position.player) else {
         return false;
     };
+    if crate::factions::hooks_strategy::scores_without_home(position.state, position.player) {
+        return true; // Saar Nomadic
+    }
     // No faction record, or a faction with no listed homeworlds (the neutral placeholder),
     // means there is no home system to lose.
     let Some(faction) = ti4_content::factions::get(position.content, player.faction.as_str())
@@ -1874,20 +1878,71 @@ pub fn award(
     }
 
     state.record_score(player, alias.clone());
-    {
-        let seat = state
-            .player_mut(player)
-            .ok_or_else(|| ScoreError::PlayerMissing(player.clone()))?;
-        // 98.4a: a player cannot hold more than the target.
-        seat.victory_points = (seat.victory_points + points).min(VICTORY_TARGET);
+    if state.player(player).is_none() {
+        return Err(ScoreError::PlayerMissing(player.clone()));
     }
-    state.note_vp(player, points, "objective");
+    // 98.4a: a player cannot hold more than the target.
+    adjust_victory_points(state, player, points, "objective");
     // 51.7: leaders unlock the moment their condition is met, not at end of phase. A hero
     // unlocked by a third objective must not wait for a status phase the game may never reach.
     // No galaxy here: only Naalu's commander asks about the map, and awarding an objective is
     // not where that condition changes. The status phase checks again with one.
     crate::leaders::check_unlocks(state, content, sources, None, player);
+    let public = state.revealed_objectives.contains(alias)
+        || content
+            .get(ContentType::PublicObjectives, alias.as_str())
+            .is_some();
+    if public
+        && state.player(player).is_some_and(|seat| {
+            seat.faction.as_str() == "yin"
+                && seat
+                    .breakthrough
+                    .as_ref()
+                    .is_some_and(|card| card.as_str() == "yinbt")
+        })
+    {
+        crate::supply::stage_event(
+            state,
+            "PUBLIC_OBJECTIVE_SCORED",
+            &std::collections::BTreeMap::from([
+                ("player".to_owned(), player.to_string().into()),
+                ("objective".to_owned(), alias.to_string().into()),
+            ]),
+        );
+    }
     Ok(points)
+}
+
+/// Move a seat's victory points and record the move in [`GameState::vp_ledger`].
+///
+/// A gain stops at the target (98.4a) and a loss at zero, exactly as each source wrote it by
+/// hand. The ledger row is the change that actually happened, not the nominal one, so a seat's
+/// points always equal the sum of its rows. Returns that change; 0 for a seat that does not exist.
+pub fn adjust_victory_points(
+    state: &mut GameState,
+    player: &PlayerId,
+    delta: i32,
+    reason: &str,
+) -> i32 {
+    let Some(seat) = state.player_mut(player) else {
+        return 0;
+    };
+    let before = seat.victory_points;
+    seat.victory_points = if delta >= 0 {
+        (before + delta).min(VICTORY_TARGET)
+    } else {
+        (before + delta).max(0)
+    };
+    let applied = seat.victory_points - before;
+    state.note_vp(player, applied, reason);
+    applied
+}
+
+/// Ledger the change in a seat's points since `before`, for a source that moves them itself.
+pub fn note_vp_since(state: &mut GameState, player: &PlayerId, before: i32, reason: &str) {
+    if let Some(after) = state.player(player).map(|seat| seat.victory_points) {
+        state.note_vp(player, after - before, reason);
+    }
 }
 
 /// 98.8, 61.15a: most victory points, ties broken by initiative order.

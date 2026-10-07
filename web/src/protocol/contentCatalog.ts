@@ -20,6 +20,8 @@ export interface CardMeta {
   id: string;
   name: string;
   phase?: string;
+  /** The printed timing of a reaction card ("When another player plays an action card ..."). */
+  window?: string;
   description: string;
 }
 
@@ -90,6 +92,21 @@ export function getPublicObjectiveMeta(id: string): ObjectiveMeta {
 
 export function findActionCardMeta(id: string): CardMeta | undefined {
   return exactLookup(ACTION_CARDS, id);
+}
+
+let actionCardsByName: Map<string, CardMeta> | undefined;
+
+/** Looks an action card up by its printed name, for decisions that only carry the label. */
+export function findActionCardByName(name: string): CardMeta | undefined {
+  if (!actionCardsByName) {
+    actionCardsByName = new Map(
+      Object.values(ACTION_CARDS as Record<string, CardMeta>).map((card) => [
+        card.name.toLowerCase(),
+        card,
+      ]),
+    );
+  }
+  return actionCardsByName.get(name.trim().toLowerCase());
 }
 
 export function getActionCardMeta(id: string): CardMeta {
@@ -168,6 +185,9 @@ export interface PlanetStaticMeta {
   resources: number;
   influence: number;
   techSpecialties?: readonly string[];
+  /** Legendary planets: the ability card's name and printed text. */
+  legendaryAbilityName?: string;
+  legendaryAbilityText?: string;
 }
 
 export interface AttachmentStaticMeta {
@@ -183,4 +203,9 @@ export function findPlanetMeta(id: string): PlanetStaticMeta | undefined {
 
 export function findAttachmentMeta(id: string): AttachmentStaticMeta | undefined {
   return exactLookup(ATTACHMENTS, id);
+}
+
+export function getActionCardDescription(cardName: string): string {
+  const meta = getActionCardMeta(cardName);
+  return meta.description || `Action Card: ${meta.name}`;
 }

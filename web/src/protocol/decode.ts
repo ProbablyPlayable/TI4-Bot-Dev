@@ -1,12 +1,17 @@
 import {
   JoinResponse,
   CreateGameResponse,
+  AutoResolvedNote,
+  DecisionTriggerDto,
   InitialSnapshotMsg,
   LobbyDto,
   PROTOCOL_VERSION,
   ServerMessage,
+  TriggerKindDto,
+  TriggerUnitsDto,
 } from "./types.ts";
 import { validNickname } from "./nickname.ts";
+import { decodeMapChoice } from "./mapDecode.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -114,6 +119,12 @@ export function decodeLobby(value: unknown, expectedGameId: string): LobbyDto {
       can_take_over: entry.can_take_over,
     })),
     bot_service_enabled: Boolean(value.bot_service_enabled),
+    ...(value.map === undefined
+      ? {}
+      : {
+          map: decodeMapChoice(value.map),
+          map_revision: isNonNegativeInteger(value.map_revision) ? value.map_revision : 0,
+        }),
   } as LobbyDto;
 }
 
@@ -155,6 +166,81 @@ export function decodeJoinResponse(value: unknown, expectedGameId: string): Join
     player: { id: player.id as string },
     lobby,
   };
+}
+
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value : undefined;
+
+/**
+ * The reaction trigger of a decision context, or null when absent or malformed. Tolerant on
+ * purpose: it is display data, so an unknown or damaged shape degrades the dialog's wording and
+ * never fails the message. An unknown `kind` reads as "other".
+ */
+export function decodeDecisionTrigger(raw: unknown): DecisionTriggerDto | null {
+  if (!isRecord(raw) || typeof raw.event_type !== "string" || raw.event_type.length === 0)
+    return null;
+  const units: TriggerUnitsDto[] = [];
+  if (Array.isArray(raw.units)) {
+    for (const entry of raw.units) {
+      if (
+        isRecord(entry) &&
+        typeof entry.owner === "string" &&
+        typeof entry.unit_type === "string" &&
+        isNonNegativeInteger(entry.count)
+      )
+        units.push({ owner: entry.owner, unit_type: entry.unit_type, count: entry.count });
+    }
+  }
+  const chain = Array.isArray(raw.chain) ? raw.chain.filter(isNonNegativeInteger) : [];
+  return {
+    kind: (typeof raw.kind === "string" ? raw.kind : "other") as TriggerKindDto,
+    event_type: raw.event_type,
+    event_id: isNonNegativeInteger(raw.event_id) ? raw.event_id : 0,
+    relation: raw.relation === "when" ? "when" : "after",
+    ...(optionalString(raw.actor) ? { actor: optionalString(raw.actor) } : {}),
+    ...(optionalString(raw.subject) ? { subject: optionalString(raw.subject) } : {}),
+    ...(optionalString(raw.card) ? { card: optionalString(raw.card) } : {}),
+    ...(optionalString(raw.agenda) ? { agenda: optionalString(raw.agenda) } : {}),
+    ...(optionalString(raw.system) ? { system: optionalString(raw.system) } : {}),
+    ...(optionalString(raw.planet) ? { planet: optionalString(raw.planet) } : {}),
+    ...(units.length ? { units } : {}),
+    ...(isNonNegativeInteger(raw.hits) ? { hits: raw.hits } : {}),
+    ...(chain.length ? { chain } : {}),
+  };
+}
+
+/** The well-formed auto-resolved notes in a state update; anything else is ignored. */
+export function decodeAutoResolved(raw: unknown): AutoResolvedNote[] {
+  if (!Array.isArray(raw)) return [];
+  const notes: AutoResolvedNote[] = [];
+  for (const item of raw) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "string" ||
+      typeof item.prompt !== "string" ||
+      typeof item.selected !== "string"
+    )
+      continue;
+    const count = typeof item.count === "number" && Number.isInteger(item.count) && item.count > 1 ? item.count : undefined;
+    notes.push({
+      id: item.id,
+      prompt: item.prompt,
+      selected: item.selected,
+      reason: typeof item.reason === "string" ? item.reason : "",
+      ...(count ? { count } : {}),
+    });
+  }
+  return notes;
+}
+
+/** The seat's reaction modes; anything that is not a known mode is dropped (settings, not state). */
+export function decodeReactionModes(value: unknown): Record<string, "always" | "never"> {
+  const modes: Record<string, "always" | "never"> = {};
+  if (!isRecord(value)) return modes;
+  for (const [card, mode] of Object.entries(value)) {
+    if (mode === "always" || mode === "never") modes[card] = mode;
+  }
+  return modes;
 }
 
 /** Validates the protocol envelope before React consumes any network payload. */
@@ -292,6 +378,17 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
             !isNonNegativeInteger(value.history.generation)))
       )
         fail("invalid history status");
+      if (value.reaction_modes !== undefined) {
+        const modes = decodeReactionModes(value.reaction_modes);
+        if (Object.keys(modes).length > 0) value.reaction_modes = modes;
+        else delete value.reaction_modes;
+      }
+      if (value.auto_resolved !== undefined) {
+        // Feedback only, so a malformed or unknown shape is dropped rather than failing the update.
+        const notes = decodeAutoResolved(value.auto_resolved);
+        if (notes.length > 0) value.auto_resolved = notes;
+        else delete value.auto_resolved;
+      }
       return value as unknown as ServerMessage;
     case "pending_choice":
       if (

@@ -28,6 +28,47 @@ export interface LobbyDto {
   host_player_id: string;
   slots: LobbySlot[];
   bot_service_enabled?: boolean;
+  /** What the table plays on; absent from servers that predate the map choice. Never a seed. */
+  map?: MapChoiceDto;
+  /** Changes whenever the previewed board changes (new choice, re-roll, new seat order). */
+  map_revision?: number;
+}
+
+/** The host's choice: a predefined layout or the seeded random board. */
+export type MapChoice = { kind: "template"; alias: string } | { kind: "random" };
+
+export interface MapChoiceDto {
+  kind: "template" | "random";
+  alias?: string;
+  author?: string;
+  systems: number;
+  hyperlanes: boolean;
+  recommended: boolean;
+}
+
+export interface MapTemplateSummary {
+  alias: string;
+  author: string;
+  player_count: number;
+  buildable: boolean;
+  systems: number;
+  hyperlanes: boolean;
+  recommended: boolean;
+}
+
+export interface MapSeatPreview {
+  /** 1-based, the lobby position. */
+  seat: number;
+  faction: string;
+  faction_name: string;
+  home_system_id: string;
+}
+
+export interface MapPreviewDto {
+  choice: MapChoice;
+  player_count: number;
+  tiles: BoardTileView[];
+  seats: MapSeatPreview[];
 }
 
 export interface CreateGameResponse {
@@ -69,6 +110,64 @@ export interface ChoiceOptionDto {
   label: string;
   description?: string;
   payload?: Record<string, unknown>;
+  auto_resolved?: boolean;
+}
+
+/** What happened to open a reaction window: public facts only (engine `DecisionTrigger`). */
+export type TriggerKindDto =
+  | "action_card_played"
+  | "action_card_discarded"
+  | "system_activated"
+  | "ship_moved"
+  | "strategic_action_began"
+  | "strategy_card_chosen"
+  | "strategy_phase_began"
+  | "turn_began"
+  | "turn_passed"
+  | "player_passed"
+  | "action_completed"
+  | "strategy_cards_would_return"
+  | "agenda_phase_began"
+  | "agenda_revealed"
+  | "votes_cast"
+  | "agenda_resolved"
+  | "transaction"
+  | "planet_control_gained"
+  | "invasion_began"
+  | "units_committed"
+  | "ground_rolls"
+  | "combat_started"
+  | "anti_fighter_barrage"
+  | "space_cannon_hits"
+  | "hits_to_assign"
+  | "sustain_damage"
+  | "ship_destroyed"
+  | "retreat"
+  | "space_combat_won"
+  | "production_used"
+  | "unit_ability_rolled"
+  | "other";
+
+export interface TriggerUnitsDto {
+  owner: string;
+  unit_type: string;
+  count: number;
+}
+
+export interface DecisionTriggerDto {
+  kind: TriggerKindDto;
+  event_type: string;
+  event_id: number;
+  relation: "when" | "after";
+  actor?: string;
+  subject?: string;
+  card?: string;
+  agenda?: string;
+  system?: string;
+  planet?: string;
+  units?: TriggerUnitsDto[];
+  hits?: number;
+  chain?: number[];
 }
 
 export interface DecisionContextDto {
@@ -85,6 +184,8 @@ export interface DecisionContextDto {
   outstanding?: OutstandingConstraintDto[];
   kind?: string;
   details?: Record<string, unknown>;
+  /** Present on reaction decisions from servers that send it; absent in older saves and fixtures. */
+  trigger?: DecisionTriggerDto | null;
 }
 
 export interface OutstandingConstraintDto {
@@ -101,6 +202,8 @@ export interface PendingChoiceDto {
   nonce: string;
   options: ChoiceOptionDto[];
   context?: DecisionContextDto;
+  /** Display-only facts the server adds for some decisions (pools, who played a card, ...). */
+  details?: Record<string, unknown>;
 }
 
 /** Serde shape of `ti4_engine::choice::Choice` on the wire. */
@@ -109,6 +212,7 @@ export interface EngineChoice {
   prompt: string;
   options: ChoiceOptionDto[];
   context?: DecisionContextDto;
+  details?: Record<string, unknown>;
 }
 
 /** Opaque submission capability kept outside the engine choice contract. */
@@ -369,7 +473,14 @@ export interface InitialSnapshotMsg {
   events?: GameEvent[];
   history?: HistoryStatus;
   current_path?: CurrentLogPath;
+  reaction_modes?: ReactionModes;
 }
+
+/** How a seat wants an action card handled in reaction windows. Absent means always offered. */
+export type ReactionModeSetting = "always" | "never";
+
+/** The viewing seat's own choices by printed card name; the server only lists "never". */
+export type ReactionModes = Record<string, ReactionModeSetting>;
 
 export interface StateUpdateMsg {
   type?: "state_update";
@@ -384,6 +495,22 @@ export interface StateUpdateMsg {
   turn_status: PublicTurnStatus;
   history?: HistoryStatus;
   current_path?: CurrentLogPath;
+  /** Decisions the engine made for this seat since the last update because only one option was legal. */
+  auto_resolved?: AutoResolvedNote[];
+  reaction_modes?: ReactionModes;
+}
+
+/** One decision settled on the viewer's behalf (single legal option). Feedback only. */
+export interface AutoResolvedNote {
+  id: string;
+  /** The question that was not asked. */
+  prompt: string;
+  /** What was chosen, as labelled. */
+  selected: string;
+  /** Why there was no real choice. */
+  reason: string;
+  /** Identical notes this one stands for; absent means one. */
+  count?: number;
 }
 
 export interface PendingChoiceMsg {
@@ -596,6 +723,14 @@ export type ClientMessage =
       nonce: string;
       expected_version: number;
       option_id: string;
+    }
+  | {
+      type: "set_reaction_mode";
+      protocol_version: number;
+      game_id: string;
+      /** The printed card name; every copy of it is covered. */
+      card: string;
+      mode: ReactionModeSetting;
     }
   | {
       type: "ping";

@@ -9,10 +9,12 @@ import {
   ObjectiveProgressView,
 } from "../protocol/types.ts";
 import { EventLog } from "./EventLog.tsx";
+import { PausedPlanBanner } from "./PausedPlanBanner.tsx";
 import { PendingChoiceModal } from "./PendingChoiceModal.tsx";
 import { TechnologyModal } from "./TechnologyModal.tsx";
 import { ObjectivesModal } from "./ObjectivesModal.tsx";
 import { PaymentDrawer } from "./PaymentDrawer.tsx";
+import { PaymentBar } from "./PaymentBar.tsx";
 import {
   TacticalMovementOverlay,
   emptyMovementPlan,
@@ -28,7 +30,18 @@ import { InvasionLandingTray } from "./InvasionLandingTray.tsx";
 import type { Landing } from "./InvasionLandingTray.tsx";
 import { InvasionOverlay } from "./InvasionOverlay.tsx";
 import { SystemActivationBar } from "./SystemActivationBar.tsx";
-import { deriveChoiceRendererModel, ChoiceRendererModel } from "../presentation/choiceModel.ts";
+import { PlanetSelectionBar } from "./PlanetSelectionBar.tsx";
+import { TurnActionBar } from "./TurnActionBar.tsx";
+import {
+  deriveReadOnlyTurnBar,
+  deriveTurnBar,
+  isTurnMenuChoice,
+} from "../presentation/turnBar.ts";
+import {
+  deriveChoiceRendererModel,
+  ChoiceRendererModel,
+  isPlanetSelectionChoice,
+} from "../presentation/choiceModel.ts";
 import { Dialog, overlayStack } from "../primitives/index.ts";
 import { useParticipantText } from "../presentation/PlayerIdentity.tsx";
 import { PipelineRunnerContext, useOwnedPipelineRunner } from "../hooks/usePipelineRunner.ts";
@@ -43,19 +56,40 @@ export interface GameShellProps {
   history?: HistoryStatus;
   currentPath?: CurrentLogPath;
   logHistoryKey?: unknown;
-  onChangeHistory?: (action: import("../protocol/client.ts").HistoryChange, steps?: number) => void;
+  onChangeHistory?: (
+    action: import("../protocol/client.ts").HistoryChange,
+    steps?: number,
+  ) => void;
   historyBusy?: boolean;
+  /** Loads the replay JSON for the event log's "Copy replay" button (seated players). */
+  onFetchReplay?: () => Promise<{ text: string; filename: string }>;
   choice: PendingChoiceDto | null;
   onSubmitChoice: (optionId: string) => Promise<void>;
+  /** The viewing seat's "never offer" cards (server state) and how to change them. */
+  reactionModes?: import("../protocol/types.ts").ReactionModes;
+  onSetReactionMode?: (
+    card: string,
+    mode: import("../protocol/types.ts").ReactionModeSetting,
+  ) => void;
   onSubmitMovementBatch?: (
     destination: string,
     steps: import("../protocol/client.ts").MovementStep[],
   ) => Promise<void>;
-  onSubmitBasketBatch?: (plan: import("../protocol/client.ts").BasketPlan) => Promise<void>;
+  onSubmitBasketBatch?: (
+    plan: import("../protocol/client.ts").BasketPlan,
+  ) => Promise<void>;
+  /** A plan the server paused at a reaction window, with how to continue or drop it. */
+  batchResume?: import("../protocol/client.ts").BatchResume | null;
+  onResumeBatch?: () => Promise<void>;
+  onDismissBatchResume?: () => void;
   lastError?: string | null;
   selectedOptionId?: string;
   selectedSystemId?: string | null;
   onSelectOption?: (optionId: string) => void;
+  selectedPlanetId?: string | null;
+  onSelectPlanet?: (planetId: string | null) => void;
+  /** Highlights a system on the map (reaction dialogs link the system involved). */
+  onShowSystem?: (systemId: string) => void;
   viewerSeat?: string | null;
   players?: Record<string, PlayerView> | PlayerView[];
   boardView?: BoardView;
@@ -66,6 +100,13 @@ export interface GameShellProps {
   productionQueue?: readonly string[];
   productionError?: string | null;
   onQueueProduction?: (units: string[]) => void;
+  /** The phase and whose turn it is, for the read-only action bar when it is not your turn. */
+  turn?: TurnInfo;
+}
+
+export interface TurnInfo {
+  phase: string;
+  activePlayer: string | null;
 }
 
 export interface ChoiceRendererDispatcherProps {
@@ -73,12 +114,17 @@ export interface ChoiceRendererDispatcherProps {
   model?: ChoiceRendererModel | null;
   viewerSeat?: string | null;
   onSubmit: (optionId: string) => Promise<void>;
+  reactionModes?: GameShellProps["reactionModes"];
+  onSetReactionMode?: GameShellProps["onSetReactionMode"];
   onSubmitMovementBatch?: GameShellProps["onSubmitMovementBatch"];
   onSubmitBasketBatch?: GameShellProps["onSubmitBasketBatch"];
   lastError?: string | null;
   selectedOptionId?: string;
   selectedSystemId?: string | null;
   onSelectOption?: (optionId: string) => void;
+  selectedPlanetId?: string | null;
+  onSelectPlanet?: (planetId: string | null) => void;
+  onShowSystem?: (systemId: string) => void;
   isMinimized: boolean;
   onMinimizedChange: (minimized: boolean) => void;
   players?: Record<string, PlayerView>;
@@ -95,6 +141,9 @@ export interface ChoiceRendererDispatcherProps {
   onTacticalStep?: () => void;
   landingDraft?: Landing[];
   onLandingDraftChange?: (draft: Landing[]) => void;
+  turn?: TurnInfo;
+  /** The public log, for reaction dialogs that carry no trigger of their own. */
+  events?: GameLogEntry[];
 }
 
 type WorkflowRenderer = (
@@ -147,7 +196,36 @@ const renderTactical: WorkflowRenderer = ({
   />
 );
 
-const workflowRenderers = new Map<ChoiceRendererModel["workflow"], WorkflowRenderer>([
+const renderPlanetSelection: WorkflowRenderer = ({
+  choice,
+  model,
+  viewerSeat,
+  selectedOptionId,
+  selectedPlanetId,
+  onSelectOption,
+  onSelectPlanet,
+  onSubmit,
+  boardView,
+  lastError,
+}) => (
+  <PlanetSelectionBar
+    choice={choice}
+    model={model}
+    viewerSeat={viewerSeat}
+    selectedOptionId={selectedOptionId}
+    selectedPlanetId={selectedPlanetId}
+    onSelectOption={onSelectOption}
+    onSelectPlanet={onSelectPlanet}
+    onSubmit={onSubmit}
+    boardView={boardView}
+    lastError={lastError}
+  />
+);
+
+const workflowRenderers = new Map<
+  ChoiceRendererModel["workflow"],
+  WorkflowRenderer
+>([
   [
     "payment",
     ({
@@ -202,11 +280,35 @@ const workflowRenderers = new Map<ChoiceRendererModel["workflow"], WorkflowRende
   ["agenda_vote_planets", renderAgenda],
   [
     "action_card_reaction",
-    ({ choice, model, viewerSeat, onSubmit, isMinimized, onMinimizedChange, lastError }) => (
+    ({
+      choice,
+      model,
+      viewerSeat,
+      onSubmit,
+      isMinimized,
+      onMinimizedChange,
+      lastError,
+      events,
+      boardView,
+      activeSystemId,
+      turn,
+      players,
+      onShowSystem,
+      reactionModes,
+      onSetReactionMode,
+    }) => (
       <ReactionStatusBar
+        players={players}
+        onShowSystem={onShowSystem}
+        reactionModes={reactionModes}
+        onSetReactionMode={onSetReactionMode}
         choice={choice}
         model={model}
         viewerSeat={viewerSeat}
+        events={events}
+        boardView={boardView}
+        activeSystemId={activeSystemId}
+        activePlayerId={turn?.activePlayer ?? null}
         onSubmit={onSubmit}
         isOpen={!isMinimized}
         onClose={() => onMinimizedChange(true)}
@@ -297,6 +399,7 @@ const workflowRenderers = new Map<ChoiceRendererModel["workflow"], WorkflowRende
       ),
   ],
   ["technology_research", renderTechnologyResearch],
+  ["planet_selection", renderPlanetSelection],
 ]);
 
 function renderObjectiveScoring({
@@ -371,6 +474,7 @@ function renderCombat({
   lastError,
   boardView,
   players,
+  onSubmitBasketBatch,
 }: Parameters<WorkflowRenderer>[0]) {
   return (
     <SpaceCombatOverlay
@@ -385,6 +489,7 @@ function renderCombat({
       lastError={lastError}
       board={boardView}
       players={players}
+      onSubmitBatch={onSubmitBasketBatch}
     />
   );
 }
@@ -421,6 +526,7 @@ function renderAgenda({
   onMinimizedChange,
   lastError,
   selectedOptionId,
+  onSelectOption,
 }: Parameters<WorkflowRenderer>[0]) {
   return (
     <AgendaBallotModal
@@ -433,6 +539,7 @@ function renderAgenda({
       onClose={() => onMinimizedChange(true)}
       lastError={lastError}
       selectedOptionId={selectedOptionId}
+      onSelectOption={onSelectOption}
     />
   );
 }
@@ -441,17 +548,21 @@ function renderGeneric({
   choice,
   model,
   onSubmit,
+  onSubmitBasketBatch,
   lastError,
   isMinimized,
   onMinimizedChange,
   selectedOptionId,
   onSelectOption,
+  boardView,
 }: Parameters<WorkflowRenderer>[0]) {
   return (
     <PendingChoiceModal
+      boardView={boardView}
       choice={choice}
       model={model}
       onSubmit={onSubmit}
+      onSubmitBatch={onSubmitBasketBatch}
       lastError={lastError}
       isMinimized={isMinimized}
       onMinimizedChange={onMinimizedChange}
@@ -461,7 +572,9 @@ function renderGeneric({
   );
 }
 
-export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> = ({
+export const ChoiceRendererDispatcher: React.FC<
+  ChoiceRendererDispatcherProps
+> = ({
   choice,
   model: propModel,
   viewerSeat,
@@ -472,6 +585,8 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
   selectedOptionId,
   selectedSystemId,
   onSelectOption,
+  selectedPlanetId,
+  onSelectPlanet,
   isMinimized,
   onMinimizedChange,
   players,
@@ -488,11 +603,18 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
   onTacticalStep,
   landingDraft,
   onLandingDraftChange,
+  turn,
+  events,
+  onShowSystem,
+  reactionModes,
+  onSetReactionMode,
 }) => {
   const present = useParticipantText();
   const workspace = useWorkspace();
   const derivedModel = useMemo(() => {
-    return choice ? deriveChoiceRendererModel(choice, viewerSeat ?? null) : null;
+    return choice
+      ? deriveChoiceRendererModel(choice, viewerSeat ?? null)
+      : null;
   }, [choice, viewerSeat]);
 
   const model = propModel ?? derivedModel;
@@ -503,7 +625,9 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
     combatSubtype === "assign_casualty" ||
     combatSubtype === "announce_retreat" ||
     combatSubtype === "retreat_to";
-  const isBattleChoice = Boolean(boardView?.combat && choice?.context?.space_battle);
+  const isBattleChoice = Boolean(
+    boardView?.combat && choice?.context?.space_battle,
+  );
 
   const isCombatWorkflow =
     spectatorCombatWorkflow ||
@@ -535,6 +659,7 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
         players={players}
         viewerSeat={viewerSeat}
         onSubmit={onSubmit}
+        onSubmitBatch={onSubmitBasketBatch}
         onClose={() => onMinimizedChange(true)}
         lastError={lastError}
         landingDraft={landingDraft}
@@ -562,8 +687,35 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
     );
   }
 
-  if (!choice || (viewerSeat !== undefined && choice.actor !== viewerSeat && !isCombatWorkflow))
-    return null;
+  // Other seats see a slim waiting bar for a planet pick, so the pending action stays visible
+  // while the map remains usable.
+  if (choice && choice.actor !== viewerSeat && isPlanetSelectionChoice(choice))
+    return (
+      <PlanetSelectionBar
+        choice={{ ...choice, prompt: present(choice.prompt) }}
+        viewerSeat={viewerSeat}
+        onSubmit={onSubmit}
+        boardView={boardView}
+      />
+    );
+
+  // Not your turn in the action phase: the same bar, read-only, with the reason on every button.
+  const viewer = viewerSeat ? players?.[viewerSeat] : undefined;
+  const readOnlyBar =
+    viewer && turn?.phase === "action" && !isCombatWorkflow ? (
+      <TurnActionBar
+        model={deriveReadOnlyTurnBar(viewer, turn.activePlayer)}
+        onSubmit={onSubmit}
+      />
+    ) : null;
+
+  if (
+    !choice ||
+    (viewerSeat !== undefined &&
+      choice.actor !== viewerSeat &&
+      !isCombatWorkflow)
+  )
+    return readOnlyBar;
 
   // A view-only copy: IDs, payloads and the original pending choice stay intact.
   const visibleChoice = {
@@ -572,14 +724,32 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
     options: choice.options.map((option) => ({
       ...option,
       label: present(option.label),
-      description: option.description == null ? option.description : present(option.description),
+      description:
+        option.description == null
+          ? option.description
+          : present(option.description),
     })),
   };
+
+  // The turn menu and the end-turn question live on the persistent bar. Options the bar cannot
+  // place keep the old list.
+  if (isTurnMenuChoice(visibleChoice) && choice.actor === viewerSeat) {
+    const barModel = deriveTurnBar(visibleChoice, viewer);
+    if (barModel)
+      return (
+        <TurnActionBar
+          model={barModel}
+          onSubmit={onSubmit}
+          lastError={lastError ? present(lastError) : lastError}
+        />
+      );
+  }
 
   const renderer =
     isBattleChoice || (spectatorCombatWorkflow && !model)
       ? renderCombat
-      : (workflowRenderers.get(workflow) ?? workflowRenderers.get("generic_selection")!);
+      : (workflowRenderers.get(workflow) ??
+        workflowRenderers.get("generic_selection")!);
   const wrappedWorkflow =
     workflow === "payment" ||
     workflow === "tactical_movement" ||
@@ -596,6 +766,8 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
     selectedOptionId,
     selectedSystemId,
     onSelectOption,
+    selectedPlanetId,
+    onSelectPlanet,
     isMinimized,
     onMinimizedChange,
     players,
@@ -610,6 +782,11 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
     tacticalPlan,
     tacticalStep,
     onTacticalStep,
+    turn,
+    events,
+    onShowSystem,
+    reactionModes,
+    onSetReactionMode,
   });
 
   return (
@@ -620,19 +797,26 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
           "generic_selection",
           "strategy_card_draft",
           "system_activation",
+          "planet_selection",
+          "payment",
           "combat_sustain",
           "combat_casualty",
           "combat_retreat",
         ].includes(workflow) && (
-          <div className="choice-banner choice-minimized-pill" data-testid="choice-minimized-pill">
+          <div
+            className="choice-banner choice-minimized-pill"
+            data-testid="choice-minimized-pill"
+          >
             <span className="choice-minimized-pill__prompt">
               {workflow === "technology_research"
                 ? "Research Technology"
                 : workflow === "objective_scoring"
                   ? "Score Objective"
-                  : workflow === "tactical_movement" || visibleChoice.prompt === "movement"
+                  : workflow === "tactical_movement" ||
+                      visibleChoice.prompt === "movement"
                     ? "Move Units"
-                    : workflow === "tactical_cargo" || visibleChoice.prompt === "load_cargo"
+                    : workflow === "tactical_cargo" ||
+                        visibleChoice.prompt === "load_cargo"
                       ? "Load Cargo"
                       : visibleChoice.prompt}
             </span>
@@ -647,8 +831,25 @@ export const ChoiceRendererDispatcher: React.FC<ChoiceRendererDispatcherProps> =
           </div>
         )}
 
+      {/* While the payment list is minimised the map is the control; this bar confirms. */}
+      {isMinimized && workflow === "payment" && (
+        <PaymentBar
+          choice={visibleChoice}
+          model={model}
+          viewerSeat={viewerSeat}
+          player={players?.[choice.actor] ?? null}
+          onSubmit={onSubmit}
+          onSubmitBatch={onSubmitBasketBatch}
+          onOpenList={() => onMinimizedChange(false)}
+          lastError={lastError ? present(lastError) : lastError}
+        />
+      )}
+
       {wrappedWorkflow ? (
-        <Dialog.Root open={!isMinimized} onOpenChange={(open) => onMinimizedChange(!open)}>
+        <Dialog.Root
+          open={!isMinimized}
+          onOpenChange={(open) => onMinimizedChange(!open)}
+        >
           <Dialog.Content
             keepMounted
             className="decision-modal choice-workflow-dialog"
@@ -686,14 +887,23 @@ export const GameShell: React.FC<GameShellProps> = ({
   logHistoryKey,
   onChangeHistory,
   historyBusy,
+  onFetchReplay,
   choice,
   onSubmitChoice,
   onSubmitMovementBatch,
   onSubmitBasketBatch,
+  batchResume,
+  onResumeBatch,
+  onDismissBatchResume,
   lastError,
   selectedOptionId,
   selectedSystemId,
   onSelectOption,
+  selectedPlanetId,
+  onSelectPlanet,
+  onShowSystem,
+  reactionModes,
+  onSetReactionMode,
   viewerSeat,
   players,
   boardView,
@@ -701,6 +911,7 @@ export const GameShell: React.FC<GameShellProps> = ({
   revealedObjectives,
   scoredObjectives,
   objectiveProgress,
+  turn,
 }) => {
   const [openDrawer, setOpenDrawer] = useState<"events" | "players" | null>(null);
   const workspace = useWorkspace();
@@ -771,8 +982,13 @@ export const GameShell: React.FC<GameShellProps> = ({
     )
       return;
     if (choice.context?.subtype !== "produce_unit") {
-      if (choice.context?.subtype !== "pay_resources" && choice.context?.subtype !== "place_unit") {
-        setProductionError("Production ended; remaining staged builds were not submitted.");
+      if (
+        choice.context?.subtype !== "pay_resources" &&
+        choice.context?.subtype !== "place_unit"
+      ) {
+        setProductionError(
+          "Production ended; remaining staged builds were not submitted.",
+        );
         setProductionQueue(null);
       }
       return;
@@ -781,15 +997,21 @@ export const GameShell: React.FC<GameShellProps> = ({
       choice.context.target && "System" in choice.context.target
         ? choice.context.target.System
         : "";
-    if (choice.actor !== productionQueue.actor || system !== productionQueue.system) {
-      setProductionError("Production changed; remaining staged builds were not submitted.");
+    if (
+      choice.actor !== productionQueue.actor ||
+      system !== productionQueue.system
+    ) {
+      setProductionError(
+        "Production changed; remaining staged builds were not submitted.",
+      );
       setProductionQueue(null);
       return;
     }
     const unit = productionQueue.units[0];
     const matching = choice.options.filter(
       (candidate) =>
-        candidate.kind !== "decline" && (candidate.payload?.unit === unit || candidate.id === unit),
+        candidate.kind !== "decline" &&
+        (candidate.payload?.unit === unit || candidate.id === unit),
     );
     if (matching.length !== 1) {
       setProductionError(
@@ -807,7 +1029,13 @@ export const GameShell: React.FC<GameShellProps> = ({
       ? onSubmitBasketBatch({
           kind: "production",
           destination: system,
-          steps: [{ kind: "produce", unit, count: Number(option.payload?.count ?? 1) }],
+          steps: [
+            {
+              kind: "produce",
+              unit,
+              count: Number(option.payload?.count ?? 1),
+            },
+          ],
         })
       : onSubmitChoice(option.id);
     void submit
@@ -826,7 +1054,9 @@ export const GameShell: React.FC<GameShellProps> = ({
       .catch((error: unknown) => {
         if (currentQueueBinding.current !== productionQueue.binding) return;
         productionSubmitting.current = false;
-        setProductionError(error instanceof Error ? error.message : String(error));
+        setProductionError(
+          error instanceof Error ? error.message : String(error),
+        );
         setProductionQueue(null);
         submittedNonce.current = null;
       });
@@ -888,7 +1118,9 @@ export const GameShell: React.FC<GameShellProps> = ({
           className="button button--secondary"
           aria-expanded={openDrawer === "players"}
           aria-controls="player-sheet-drawer"
-          onClick={() => setOpenDrawer((drawer) => (drawer === "players" ? null : "players"))}
+          onClick={() =>
+            setOpenDrawer((drawer) => (drawer === "players" ? null : "players"))
+          }
         >
           Players
         </button>
@@ -898,7 +1130,9 @@ export const GameShell: React.FC<GameShellProps> = ({
           className="button button--secondary"
           aria-expanded={openDrawer === "events"}
           aria-controls="event-log-drawer"
-          onClick={() => setOpenDrawer((drawer) => (drawer === "events" ? null : "events"))}
+          onClick={() =>
+            setOpenDrawer((drawer) => (drawer === "events" ? null : "events"))
+          }
         >
           Events
         </button>
@@ -918,16 +1152,31 @@ export const GameShell: React.FC<GameShellProps> = ({
           busy={historyBusy}
           onRestore={
             onChangeHistory
-              ? (cursor) => onChangeHistory({ cursor }, (history?.cursor ?? 0) - cursor)
+              ? (cursor) =>
+                  onChangeHistory({ cursor }, (history?.cursor ?? 0) - cursor)
               : undefined
           }
-          onChangeHistory={onChangeHistory ? (action) => onChangeHistory(action) : undefined}
+          onChangeHistory={
+            onChangeHistory ? (action) => onChangeHistory(action) : undefined
+          }
+          onFetchReplay={onFetchReplay}
           isOpen={openDrawer === "events"}
-          onToggle={() => setOpenDrawer((drawer) => (drawer === "events" ? null : "events"))}
+          onToggle={() =>
+            setOpenDrawer((drawer) => (drawer === "events" ? null : "events"))
+          }
         />
       </section>
 
       <div className="app-shell__overlays">
+        {batchResume && onResumeBatch && onDismissBatchResume && (
+          <PausedPlanBanner
+            resume={batchResume}
+            choice={choice}
+            viewerSeat={viewerSeat}
+            onContinue={onResumeBatch}
+            onDismiss={onDismissBatchResume}
+          />
+        )}
         <PipelineRunnerContext.Provider value={pipelineRunner}>
           <ChoiceRendererDispatcher
             key={`${history?.generation ?? 0}:${boardView?.invasion?.invasion_seq ?? "none"}:${workspace.movementEditRevision ?? 0}`}
@@ -939,6 +1188,8 @@ export const GameShell: React.FC<GameShellProps> = ({
             revealedObjectives={revealedObjectives}
             scoredObjectives={scoredObjectives}
             objectiveProgress={objectiveProgress}
+            turn={turn}
+            events={events}
             onSubmit={onSubmitChoice}
             onSubmitMovementBatch={onSubmitMovementBatch}
             onSubmitBasketBatch={onSubmitBasketBatch}
@@ -946,6 +1197,11 @@ export const GameShell: React.FC<GameShellProps> = ({
             selectedOptionId={selectedOptionId}
             selectedSystemId={selectedSystemId}
             onSelectOption={onSelectOption}
+            selectedPlanetId={selectedPlanetId}
+            onSelectPlanet={onSelectPlanet}
+            onShowSystem={onShowSystem}
+            reactionModes={reactionModes}
+            onSetReactionMode={onSetReactionMode}
             isMinimized={isChoiceMinimized}
             onMinimizedChange={setIsChoiceMinimized}
             tacticalPlan={tacticalPlan}
@@ -954,10 +1210,13 @@ export const GameShell: React.FC<GameShellProps> = ({
             productionQueue={productionQueue?.units}
             productionError={productionError}
             landingDraft={
-              landingKey && landingDraftState?.key === landingKey ? landingDraftState.entries : []
+              landingKey && landingDraftState?.key === landingKey
+                ? landingDraftState.entries
+                : []
             }
             onLandingDraftChange={(entries) => {
-              if (landingKey) setLandingDraftState({ key: landingKey, entries });
+              if (landingKey)
+                setLandingDraftState({ key: landingKey, entries });
             }}
             onQueueProduction={(units) => {
               if (!choice || productionQueue?.units.length) return;

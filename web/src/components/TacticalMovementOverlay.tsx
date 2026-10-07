@@ -228,8 +228,21 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
       }
     }
 
+    // Gravity Drive is spent once per tactical action and the engine offers it only to the one
+    // ship that needs the bonus, so a group offered purely through it holds one ship.
+    for (const group of groupMap.values()) {
+      if (group.options.every((option) => option.gravityDrive)) {
+        group.totalAvailable = Math.min(group.totalAvailable, 1);
+      }
+    }
     return Array.from(groupMap.values());
   }, [choice, board, isCargoStep, workspace.draft, workspace.movementEdit, stagedMoves]);
+
+  const groupKey = (g: OriginShipGroup) =>
+    `${g.originSystemId}:${g.unitType}${g.damaged ? ":damaged" : ""}`;
+  const gravityDriveKeys = new Set(
+    shipGroups.filter((g) => g.options.every((option) => option.gravityDrive)).map(groupKey),
+  );
 
   // Discover cargo (ground forces + fighters) in origin systems where ships can move from
   const originCargoGroups = useMemo(() => {
@@ -474,6 +487,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
     });
   }, [originSystemIds, capacityByOrigin, cargoByOrigin]);
 
+  // Cargo can only be staged into free transport capacity from the same origin.
+  const spareCapacity = (origin: string) =>
+    (capacityByOrigin[origin] ?? 0) - (cargoByOrigin[origin] ?? 0);
+  const noCapacityTitle = "No free transport capacity from this system: stage a carrier first";
+
   const totalProjectedFleet = existingNonFightersInDestination + totalNonFightersMoving;
   const isOverFleetSupply = fleetTokens !== undefined && totalProjectedFleet > fleetTokens;
 
@@ -482,6 +500,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
   const handleUpdateCount = (key: string, delta: number, max: number) => {
     setStagedMoves((prev) => {
       const current = prev[key] ?? 0;
+      // At most one Gravity Drive ship across all groups.
+      if (delta > 0 && gravityDriveKeys.has(key)) {
+        const staged = [...gravityDriveKeys].reduce((sum, k) => sum + (prev[k] ?? 0), 0);
+        if (staged >= 1) return prev;
+      }
       const next = Math.max(0, Math.min(max, current + delta));
       return { ...prev, [key]: next };
     });
@@ -950,6 +973,13 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
               }
             }
           }
+          // The engine's cargo hold also takes own forces waiting in the active system (95.1),
+          // so they count as candidates even when the origin holds none.
+          for (const u of board?.systems?.[destinationSystemId]?.units ?? []) {
+            if (u.owner !== choice?.actor) continue;
+            const base = getUnitBaseType(u.unit_type);
+            if (base === "infantry" || base === "mech" || base === "fighter") count++;
+          }
           remainingCandidatesByOrigin[ship.origin] = count;
         }
       }
@@ -999,7 +1029,15 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
         await onSubmitBatch(destinationSystemId, steps);
         setStagedMoves({});
       } catch (error) {
-        setLocalError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        // The engine moved on from the plan, so sending the same plan again is rejected again.
+        // Drop it and let the player stage from the current offer.
+        if (/workflow interrupted|option unavailable|ambiguous option/i.test(message)) {
+          setStagedMoves({});
+          setLocalError(`${message} Your staged moves were cleared; stage them again.`);
+        } else {
+          setLocalError(message);
+        }
       } finally {
         planRef.current.active = false;
         setIsExecuting(false);
@@ -1146,7 +1184,7 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                       data-alert={isOriginOverCapacity}
                       data-warning={false}
                     >
-                      Cargo Capacity: {originCargo} / {originCap} Loaded
+                      Cargo: {originCargo} loaded / {originCap} capacity
                     </span>
                   </div>
 
@@ -1225,7 +1263,23 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                                 data-testid={`rally-inc-${g.originSystemId}-${g.unitType}${variant}`}
                                 onClick={() => handleUpdateCount(key, 1, g.totalAvailable)}
                                 disabled={
-                                  count >= g.totalAvailable || isExecuting || isDirectSubmitting
+                                  count >= g.totalAvailable ||
+                                  (gravityDriveKeys.has(key) &&
+                                    [...gravityDriveKeys].reduce(
+                                      (sum, k) => sum + (stagedMoves[k] ?? 0),
+                                      0,
+                                    ) >= 1) ||
+                                  ((g.isFighter || g.isGroundForce) &&
+                                    spareCapacity(g.originSystemId) <= 0) ||
+                                  isExecuting ||
+                                  isDirectSubmitting
+                                }
+                                title={
+                                  (g.isFighter || g.isGroundForce) &&
+                                  count < g.totalAvailable &&
+                                  spareCapacity(g.originSystemId) <= 0
+                                    ? noCapacityTitle
+                                    : undefined
                                 }
                                 className="button button--secondary button--icon workflow-button--stepper"
                               >
@@ -1298,7 +1352,15 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
                                 data-testid={`rally-inc-cargo-${c.originSystemId}-${c.unitType}-${c.source ?? "space"}${c.galvanized ? "-galvanized" : ""}`}
                                 onClick={() => handleUpdateCount(key, 1, c.totalAvailable)}
                                 disabled={
-                                  count >= c.totalAvailable || isExecuting || isDirectSubmitting
+                                  count >= c.totalAvailable ||
+                                  spareCapacity(c.originSystemId) <= 0 ||
+                                  isExecuting ||
+                                  isDirectSubmitting
+                                }
+                                title={
+                                  count < c.totalAvailable && spareCapacity(c.originSystemId) <= 0
+                                    ? noCapacityTitle
+                                    : undefined
                                 }
                                 className="button button--secondary button--icon workflow-button--stepper"
                               >
@@ -1347,7 +1409,11 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
             type="button"
             data-testid="finish-movement-btn"
             onClick={submitFinish}
-            disabled={isExecuting || isDirectSubmitting}
+            // Finishing would silently discard the staged fleet; commit or reset it first.
+            disabled={isExecuting || isDirectSubmitting || totalUnitsStaged > 0}
+            title={
+              totalUnitsStaged > 0 ? "Commit or reset the staged moves before finishing" : undefined
+            }
             className="button button--secondary workflow-button--wide"
           >
             {doneMovingOption.label || (isCargoStep ? "Done Loading" : "Finish Movement")}

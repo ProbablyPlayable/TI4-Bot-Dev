@@ -1411,3 +1411,134 @@ async fn http_create_join_spectate_and_takeover() {
     assert_ne!(replacement["player"]["id"], joined["player"]["id"]);
     server.abort();
 }
+
+#[test]
+fn a_lobby_started_with_a_map_template_survives_a_restart_on_the_same_board() {
+    let dir = std::env::temp_dir().join(format!("ti4_template_{:032x}", rand::random::<u128>()));
+    let store = Arc::new(FileGameStore::new(&dir).unwrap());
+    let original = GameRegistry::new().with_store(store.clone());
+    let (_, _, token) = original
+        .create_player_lobby_with_template(
+            "tmpl".into(),
+            3,
+            11,
+            "Host",
+            Some("3pHyperlanes".into()),
+        )
+        .unwrap();
+    let mut tokens = vec![token];
+    for name in ["Two", "Three"] {
+        let (_, _, t) = original
+            .join_player_lobby("tmpl", None, Some(name))
+            .unwrap();
+        tokens.push(t.unwrap());
+    }
+    for t in &tokens {
+        original.set_player_ready("tmpl", t.as_str(), true).unwrap();
+    }
+    original
+        .start_player_lobby("tmpl", tokens[0].as_str())
+        .unwrap();
+    let before = original.get_game("tmpl").unwrap().map_tiles();
+
+    let restarted = GameRegistry::new().with_store(store);
+    restarted.recover_all_games_report().unwrap();
+    let after = restarted.get_game("tmpl").unwrap().map_tiles();
+    assert_eq!(
+        before, after,
+        "recovery must rebuild the template board, not a random one"
+    );
+    assert!(
+        before.iter().any(|t| t.system_id.starts_with("83")
+            || t.system_id.starts_with("84")
+            || t.system_id.starts_with("85")
+            || t.system_id.starts_with("86")
+            || t.system_id.starts_with("87")
+            || t.system_id.starts_with("88")
+            || t.system_id.starts_with("89")
+            || t.system_id.starts_with("9")),
+        "3pHyperlanes carries hyperlane tiles"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_lobby_started_with_a_start_preset_survives_a_restart_with_the_same_fleets() {
+    let dir = std::env::temp_dir().join(format!("ti4_preset_{:032x}", rand::random::<u128>()));
+    let store = Arc::new(FileGameStore::new(&dir).unwrap());
+    let original = GameRegistry::new().with_store(store.clone());
+    let (_, _, token) = original
+        .create_player_lobby_with_options(
+            "preset".into(),
+            3,
+            21,
+            "Host",
+            None,
+            Some("combat".into()),
+        )
+        .unwrap();
+    let mut tokens = vec![token];
+    for name in ["Two", "Three"] {
+        let (_, _, t) = original
+            .join_player_lobby("preset", None, Some(name))
+            .unwrap();
+        tokens.push(t.unwrap());
+    }
+    for t in &tokens {
+        original
+            .set_player_ready("preset", t.as_str(), true)
+            .unwrap();
+    }
+    original
+        .start_player_lobby("preset", tokens[0].as_str())
+        .unwrap();
+    let fleet_count = |registry: &GameRegistry| -> usize {
+        registry
+            .get_game("preset")
+            .unwrap()
+            .current_state()
+            .board
+            .values()
+            .map(|system| system.units.len())
+            .sum()
+    };
+    let before =
+        serde_json::to_string(&original.get_game("preset").unwrap().current_state().board).unwrap();
+    let plain = GameRegistry::new();
+    let (_, _, plain_token) = plain
+        .create_player_lobby_with_options("plain".into(), 3, 21, "Host", None, None)
+        .unwrap();
+    let mut plain_tokens = vec![plain_token];
+    for name in ["Two", "Three"] {
+        let (_, _, t) = plain.join_player_lobby("plain", None, Some(name)).unwrap();
+        plain_tokens.push(t.unwrap());
+    }
+    for t in &plain_tokens {
+        plain.set_player_ready("plain", t.as_str(), true).unwrap();
+    }
+    plain
+        .start_player_lobby("plain", plain_tokens[0].as_str())
+        .unwrap();
+    let plain_units: usize = plain
+        .get_game("plain")
+        .unwrap()
+        .current_state()
+        .board
+        .values()
+        .map(|system| system.units.len())
+        .sum();
+    assert!(
+        fleet_count(&original) > plain_units,
+        "the combat preset adds fleets over the plain opening"
+    );
+
+    let restarted = GameRegistry::new().with_store(store);
+    restarted.recover_all_games_report().unwrap();
+    let after = serde_json::to_string(&restarted.get_game("preset").unwrap().current_state().board)
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "recovery must restore the prepared opening state"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

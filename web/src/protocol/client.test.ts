@@ -40,7 +40,12 @@ const snapshot: InitialSnapshotMsg = {
       laws: {},
     },
   },
-  turn_status: { kind: "active_turn", player: "seat_a", phase: "strategy", round: 1 },
+  turn_status: {
+    kind: "active_turn",
+    player: "seat_a",
+    phase: "strategy",
+    round: 1,
+  },
   events: [],
 };
 
@@ -65,7 +70,12 @@ describe("GameSessionClient reducer", () => {
         actor: "seat_a",
         nonce: "old",
         prompt: "Play Shields Holding",
-        options: [{ id: "reaction:seat_a:HITS_TO_ASSIGN:when", label: "Play Shields Holding" }],
+        options: [
+          {
+            id: "reaction:seat_a:HITS_TO_ASSIGN:when",
+            label: "Play Shields Holding",
+          },
+        ],
       },
     };
     const next = reduceServerMessage(previous, {
@@ -85,6 +95,39 @@ describe("GameSessionClient reducer", () => {
     expect(next.turnStatus).toMatchObject({ seat: "seat_b" });
   });
 
+  it("carries the server's display details into the pending choice", () => {
+    const next = reduceServerMessage(state, {
+      type: "pending_choice",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      game_version: 7,
+      nonce: "n-1",
+      choice: {
+        player: "seat_a",
+        prompt: "spend a strategy token to draw two action cards",
+        options: [{ id: "no", label: "decline" }, { id: "yes", label: "draw" }],
+        details: { kind: "strategy_secondary", card: "pok3politics", tokens_left: 3 },
+      },
+    } as never);
+    expect(next.pendingChoice?.details).toEqual({
+      kind: "strategy_secondary",
+      card: "pok3politics",
+      tokens_left: 3,
+    });
+  });
+
+  it("leaves details out when the server sent none", () => {
+    const next = reduceServerMessage(state, {
+      type: "pending_choice",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      game_version: 7,
+      nonce: "n-2",
+      choice: { player: "seat_a", prompt: "p", options: [{ id: "a", label: "a" }] },
+    } as never);
+    expect(next.pendingChoice).not.toHaveProperty("details");
+  });
+
   it("keeps the entire history including early batches", () => {
     const events = Array.from({ length: 510 }, (_, index) => ({
       id: String(index),
@@ -100,7 +143,10 @@ describe("GameSessionClient reducer", () => {
   });
   it("refuses malformed history cursors before they reach the UI", () => {
     expect(() =>
-      decodeServerMessage({ ...snapshot, history: { cursor: -1, redo_count: 0 } }, "game_12345"),
+      decodeServerMessage(
+        { ...snapshot, history: { cursor: -1, redo_count: 0 } },
+        "game_12345",
+      ),
     ).toThrow(/history status/);
     expect(() =>
       decodeServerMessage(
@@ -167,11 +213,18 @@ describe("GameSessionClient reducer", () => {
       ),
     );
     expect(after.events.map((event) => event.id)).toEqual(["one"]);
-    expect(after.history).toMatchObject({ cursor: 1, redo_count: 1, generation: 1 });
+    expect(after.history).toMatchObject({
+      cursor: 1,
+      redo_count: 1,
+      generation: 1,
+    });
     expect(late).toBe(after);
   });
   it("uses one snapshot reducer and refuses older state-bearing messages", () => {
-    const current = reduceServerMessage(state, decodeServerMessage(snapshot, "game_12345"));
+    const current = reduceServerMessage(
+      state,
+      decodeServerMessage(snapshot, "game_12345"),
+    );
     const stale = reduceServerMessage(
       current,
       decodeServerMessage(
@@ -190,7 +243,10 @@ describe("GameSessionClient reducer", () => {
   });
 
   it("replaces the projection with an accepted state update instead of merging stale snapshot fields", () => {
-    const current = reduceServerMessage(state, decodeServerMessage(snapshot, "game_12345"));
+    const current = reduceServerMessage(
+      state,
+      decodeServerMessage(snapshot, "game_12345"),
+    );
     const update = reduceServerMessage(
       current,
       decodeServerMessage(
@@ -199,7 +255,12 @@ describe("GameSessionClient reducer", () => {
           type: "state_update",
           game_version: 5,
           view: { ...snapshot.view, active_player: "seat_a" },
-          pending_choice: { prompt: "Choose", actor: "seat_a", nonce: "nonce-5", options: [] },
+          pending_choice: {
+            prompt: "Choose",
+            actor: "seat_a",
+            nonce: "nonce-5",
+            options: [],
+          },
         },
         "game_12345",
       ),
@@ -213,7 +274,13 @@ describe("GameSessionClient reducer", () => {
 
 describe("lobby decoding", () => {
   it("mirrors the server byte bound and rejects whitespace, controls, and format characters", () => {
-    for (const name of ["Z", "A".repeat(64), "🪐".repeat(16), "Ana María", "Same"])
+    for (const name of [
+      "Z",
+      "A".repeat(64),
+      "🪐".repeat(16),
+      "Ana María",
+      "Same",
+    ])
       expect(validNickname(name)).toBe(true);
     for (const name of [
       "",
@@ -271,9 +338,9 @@ describe("lobby decoding", () => {
         "game_12345",
       ).player_session,
     ).toBe(playerSession);
-    expect(() => decodeCreateGameResponse({ ...created, player_session: "x".repeat(129) })).toThrow(
-      /invalid game creation response/,
-    );
+    expect(() =>
+      decodeCreateGameResponse({ ...created, player_session: "x".repeat(129) }),
+    ).toThrow(/invalid game creation response/);
   });
 
   it("decodes public slots without a credential or viewer identity", () => {
@@ -311,7 +378,10 @@ describe("lobby decoding", () => {
     expect(JSON.stringify(lobby)).not.toContain("player_session");
     expect(() =>
       decodeLobby(
-        { ...lobby, slots: [{ ...lobby.slots[0], nickname: "x\u202e" }, lobby.slots[1]] },
+        {
+          ...lobby,
+          slots: [{ ...lobby.slots[0], nickname: "x\u202e" }, lobby.slots[1]],
+        },
         "game_12345",
       ),
     ).toThrow(/invalid lobby slot/);
@@ -771,14 +841,226 @@ describe("GameSessionClient ingress lifecycle", () => {
         }),
       });
     vi.stubGlobal("fetch", request);
-    const plan = { kind: "payment" as const, steps: [{ kind: "trade_good" as const }] };
+    const plan = {
+      kind: "payment" as const,
+      steps: [{ kind: "trade_good" as const }],
+    };
     await expect(client.submitBatch(plan)).rejects.toThrow("Connection lost");
     await client.submitBatch(plan);
     const first = JSON.parse(request.mock.calls[0][1].body);
     const second = JSON.parse(request.mock.calls[1][1].body);
-    expect(first).toMatchObject({ plan, expected_version: 4, nonce: "nonce-4" });
+    expect(first).toMatchObject({
+      plan,
+      expected_version: 4,
+      nonce: "nonce-4",
+    });
     expect(second.request_id).toBe(first.request_id);
     expect(request).toHaveBeenCalledTimes(2);
+    client.stop();
+  });
+
+  it("sends a token plan while a command token gain is pending, and refuses it otherwise", async () => {
+    const { client, send } = await connectedPlayer();
+    const pending = (subtype: string) => ({
+      ...snapshot,
+      type: "initial_snapshot" as const,
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce: "nonce-5",
+        choice: {
+          player: "player_a",
+          prompt: "gain a command token into which pool",
+          context: { subtype },
+          options: [{ id: "tactic_tokens", kind: "pool", label: "tactic pool" }],
+        },
+      },
+    });
+    const plan = {
+      kind: "tokens" as const,
+      steps: [{ kind: "pool" as const, pool: "tactic_tokens" }],
+    };
+    send(pending("ready_planet"));
+    await expect(client.submitBatch(plan)).rejects.toThrow("Workflow is no longer pending");
+    send(pending("gain_command_token"));
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: true,
+        snapshot: { ...snapshot, game_version: 5, viewer: { role: "player", seat: "player_a" } },
+      }),
+    });
+    vi.stubGlobal("fetch", request);
+    await client.submitBatch(plan);
+    expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ plan, nonce: "nonce-5" });
+    client.stop();
+  });
+
+  describe("a plan paused at a reaction window", () => {
+    let version = 6;
+    const pendingAt = (subtype: string, nonce: string) => ({
+      ...snapshot,
+      type: "initial_snapshot" as const,
+      game_version: version++,
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce,
+        choice: {
+          player: "player_a",
+          prompt: subtype,
+          context: { subtype },
+          options: [{ id: "decline", kind: "decline", label: "decline" }],
+        },
+      },
+    });
+    const plan = {
+      kind: "agenda_vote_planets" as const,
+      steps: [
+        { kind: "vote_planet" as const, planet: "jord" },
+        { kind: "vote_planet" as const, planet: "arc_prime" },
+        { kind: "done_voting" as const },
+      ],
+    };
+    // A confirmed batch reconnects the client, so later server messages arrive on the new socket.
+    const later = (message: object) => {
+      const socket = FakeWebSocket.latest!;
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          protocol_version: PROTOCOL_VERSION,
+          game_id: "game_12345",
+          ...message,
+        }),
+      } as MessageEvent);
+    };
+    const paused = (remaining: unknown[], shot: unknown) => ({
+      ok: true,
+      json: async () => ({
+        active: true,
+        interrupted: {
+          applied_steps: 1,
+          remaining_steps: remaining,
+          offered: { subtype: "reaction_after_VOTES_CAST", own_seat: true },
+        },
+        snapshot: shot,
+      }),
+    });
+
+    it("resolves without error, keeps the remainder, and sends it again on request", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      const remaining = plan.steps.slice(1);
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(
+          paused(remaining, pendingAt("reaction_after_VOTES_CAST", "nonce-r")),
+        )
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ active: true, snapshot: pendingAt("agenda_vote", "nonce-done") }),
+        });
+      vi.stubGlobal("fetch", request);
+      await expect(client.submitBatch(plan)).resolves.toBeUndefined();
+      expect(client.getState().batchResume).toMatchObject({
+        applied: 1,
+        plan: { kind: "agenda_vote_planets", steps: remaining },
+        waiting: { subtype: "reaction_after_VOTES_CAST", ownSeat: true },
+      });
+      expect(client.getState().lastError).toBeNull();
+      // The reaction is pending: the plan cannot be continued yet, the server would call it stale.
+      await expect(client.resumeBatch()).rejects.toThrow("Workflow is no longer pending");
+      later(pendingAt("vote_exhaust_planet", "nonce-v2"));
+      expect(client.getState().batchResume).not.toBeNull();
+      await client.resumeBatch();
+      const body = JSON.parse(request.mock.calls[1][1].body);
+      expect(body.plan).toEqual({ kind: "agenda_vote_planets", steps: remaining });
+      expect(body.nonce).toBe("nonce-v2");
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+
+    it("drops the remainder when the server refuses it, and when the game moves on", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      const remaining = plan.steps.slice(1);
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(paused(remaining, pendingAt("vote_exhaust_planet", "nonce-v2")))
+          .mockResolvedValueOnce({
+            ok: false,
+            status: 409,
+            text: async () => JSON.stringify({ message: "option unavailable" }),
+          }),
+      );
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).not.toBeNull();
+      await expect(client.resumeBatch()).rejects.toThrow("option unavailable");
+      expect(client.getState().batchResume).toBeNull();
+      expect(client.getState().lastError).toContain("option unavailable");
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(paused(remaining, pendingAt("reaction_after_VOTES_CAST", "r"))));
+      later(pendingAt("vote_exhaust_planet", "nonce-v3"));
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).not.toBeNull();
+      later(pendingAt("action_phase", "nonce-a"));
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+
+    it("treats a plan the server applied whole as finished", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ active: true, snapshot: pendingAt("agenda_vote", "n2") }),
+        }),
+      );
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+  });
+
+  it("sends a casualty plan while a sustain or casualty decision is pending", async () => {
+    const { client, send } = await connectedPlayer();
+    send({
+      ...snapshot,
+      type: "initial_snapshot",
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce: "nonce-4",
+        choice: {
+          player: "player_a",
+          prompt: "cancel a hit at 18",
+          context: { subtype: "sustain_damage" },
+          options: [{ id: "decline", kind: "decline", label: "take the hit" }],
+        },
+      },
+    });
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: true,
+        snapshot: {
+          ...snapshot,
+          game_version: 5,
+          viewer: { role: "player", seat: "player_a" },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", request);
+    const plan = {
+      kind: "casualties" as const,
+      steps: [{ kind: "destroy" as const, unit: "fighter", damaged: false }],
+    };
+    await client.submitBatch(plan);
+    expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({
+      plan,
+      nonce: "nonce-4",
+    });
     client.stop();
   });
 
@@ -821,6 +1103,35 @@ describe("GameSessionClient ingress lifecycle", () => {
       action: "undo_pipeline",
       expected_version: 6,
     });
+    client.stop();
+  });
+
+  it("fetches the replay with the player session and names the file after the game", async () => {
+    const { client } = await connectedPlayer();
+    const request = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ format: "ti4-replay", history: { decisions: [] } }),
+    });
+    vi.stubGlobal("fetch", request);
+    const replay = await client.fetchReplay();
+    expect(request.mock.calls[0][0]).toBe("/api/games/game_12345/replay");
+    expect(request.mock.calls[0][1].headers).toHaveProperty("x-ti4-player-session");
+    expect(replay.filename).toBe("ti4-replay-game_12345.json");
+    expect(JSON.parse(replay.text)).toEqual({ format: "ti4-replay", history: { decisions: [] } });
+    client.stop();
+  });
+
+  it("surfaces the server's reason when the replay is refused", async () => {
+    const { client } = await connectedPlayer();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        text: async () => "the session credential is not valid for this game",
+      }),
+    );
+    await expect(client.fetchReplay()).rejects.toThrow(/session credential is not valid/);
     client.stop();
   });
 
@@ -900,6 +1211,51 @@ describe("GameSessionClient ingress lifecycle", () => {
     });
     client.stop();
   });
+  it("sends set_reaction_mode and takes the modes from the seat's next state update", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    client.setReactionMode("Sabotage", "never");
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "set_reaction_mode",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      card: "Sabotage",
+      mode: "never",
+    });
+    // Nothing is assumed locally: the modes are what the server last said.
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    send({
+      ...snapshot,
+      type: "state_update",
+      game_version: 4,
+      viewer: { role: "player", seat: "player_a" },
+      reaction_modes: { Sabotage: "never", Junk: "sometimes" },
+    });
+    expect(client.getState().snapshot?.reaction_modes).toEqual({ Sabotage: "never" });
+    // A later update without the field is the seat having none.
+    send({
+      ...snapshot,
+      type: "state_update",
+      game_version: 5,
+      viewer: { role: "player", seat: "player_a" },
+    });
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    client.stop();
+  });
+
+  it("does not send a mode change for a spectator or without a connection", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const spectator = new GameSessionClient({ gameId: "game_12345", viewer: { role: "spectator" } });
+    spectator.setReactionMode("Sabotage", "never");
+    expect(spectator.getState().lastError).toMatch(/seated player/);
+    const offline = new GameSessionClient({
+      gameId: "game_12345",
+      viewer: { role: "player", seat: "player_a", playerSession: "private" },
+    });
+    offline.setReactionMode("Sabotage", "never");
+    expect(offline.getState().lastError).toMatch(/not connected/);
+  });
+
   async function connectedPlayer() {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal(
@@ -928,7 +1284,9 @@ describe("GameSessionClient ingress lifecycle", () => {
     const socket = FakeWebSocket.latest!;
     socket.readyState = FakeWebSocket.OPEN;
     socket.onopen?.();
-    await vi.waitFor(() => expect(client.getState().pendingChoice?.nonce).toBe("nonce-4"));
+    await vi.waitFor(() =>
+      expect(client.getState().pendingChoice?.nonce).toBe("nonce-4"),
+    );
     const send = (message: object) =>
       socket.onmessage?.({
         data: JSON.stringify({
@@ -940,7 +1298,10 @@ describe("GameSessionClient ingress lifecycle", () => {
     return { client, socket, send };
   }
 
-  it.each([{ reason: "stale_nonce" }, { reason: "stale_version", expected: 4, current: 5 }])(
+  it.each([
+    { reason: "stale_nonce" },
+    { reason: "stale_version", expected: 4, current: 5 },
+  ])(
     "rejects a refused submission ($reason) and allows retry",
     async (reason) => {
       const { client, socket, send } = await connectedPlayer();
@@ -957,13 +1318,37 @@ describe("GameSessionClient ingress lifecycle", () => {
       expect(client.getState().lastError).toMatch(/Rejected:/);
       const retried = client.submitChoice("opt-4");
       expect(
-        socket.sent.filter((message) => JSON.parse(message).type === "submit_choice"),
+        socket.sent.filter(
+          (message) => JSON.parse(message).type === "submit_choice",
+        ),
       ).toHaveLength(2);
       const stopped = expect(retried).rejects.toThrow(/disconnected|stopped/i);
       client.stop();
       await stopped;
     },
   );
+
+  it("abandons a submission that gets no reply so the next click sends a new frame", async () => {
+    const { client, socket } = await connectedPlayer();
+    vi.useFakeTimers();
+    try {
+      const first = client.submitChoice("opt-4");
+      const timedOut = expect(first).rejects.toThrow(/no response/i);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await timedOut;
+      const second = client.submitChoice("opt-4");
+      expect(
+        socket.sent.filter(
+          (message) => JSON.parse(message).type === "submit_choice",
+        ),
+      ).toHaveLength(2);
+      const stopped = expect(second).rejects.toThrow(/disconnected|stopped/i);
+      client.stop();
+      await stopped;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each(["ack-first", "update-first"])(
     "waits for acceptance and a newer authoritative state (%s)",
@@ -974,7 +1359,8 @@ describe("GameSessionClient ingress lifecycle", () => {
       void submitted.then(() => {
         settled = true;
       });
-      const accepted = () => send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
+      const accepted = () =>
+        send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
       const update = () =>
         send({
           ...snapshot,
@@ -1007,7 +1393,8 @@ describe("GameSessionClient ingress lifecycle", () => {
     async (order) => {
       const { client, socket, send } = await connectedPlayer();
       const submitted = client.submitChoice("opt-4");
-      const accepted = () => send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
+      const accepted = () =>
+        send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
       const nextChoice = () =>
         send({
           type: "pending_choice",
@@ -1049,7 +1436,9 @@ describe("GameSessionClient ingress lifecycle", () => {
     const failed = expect(submitted).rejects.toThrow(/disconnected/i);
     socket.onclose?.();
     await failed;
-    await expect(client.submitChoice("opt-4")).rejects.toThrow(/not connected/i);
+    await expect(client.submitChoice("opt-4")).rejects.toThrow(
+      /not connected/i,
+    );
     await vi.advanceTimersByTimeAsync(2_000);
     const reconnected = FakeWebSocket.latest!;
     expect(reconnected).not.toBe(socket);
@@ -1128,8 +1517,14 @@ describe("GameSessionClient ingress lifecycle", () => {
     send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(settled).toBe(false);
-    const failed = expect(submitted).rejects.toThrow(/Rejected: Stale decision nonce/);
-    send({ type: "action_rejected", game_version: 4, reason: { reason: "stale_nonce" } });
+    const failed = expect(submitted).rejects.toThrow(
+      /Rejected: Stale decision nonce/,
+    );
+    send({
+      type: "action_rejected",
+      game_version: 4,
+      reason: { reason: "stale_nonce" },
+    });
     await failed;
     expect(client.getState().lastError).toBe("Rejected: Stale decision nonce");
     client.stop();
@@ -1137,8 +1532,14 @@ describe("GameSessionClient ingress lifecycle", () => {
 
   it("routes the HTTP snapshot through the same validated reducer and closes its socket on stop", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot }));
-    const client = new GameSessionClient({ gameId: "game_12345", viewer: { role: "spectator" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot }),
+    );
+    const client = new GameSessionClient({
+      gameId: "game_12345",
+      viewer: { role: "spectator" },
+    });
 
     client.start();
     await vi.waitFor(() => expect(client.getState().gameVersion).toBe(4));
@@ -1156,7 +1557,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ ...snapshot, viewer: { role: "player", seat: "player_a" } }),
+        json: async () => ({
+          ...snapshot,
+          viewer: { role: "player", seat: "player_a" },
+        }),
       }),
     );
     const client = new GameSessionClient({
@@ -1173,7 +1577,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       player_session: "private",
     });
     vi.advanceTimersByTime(10_000);
-    expect(JSON.parse(socket.sent[1])).toMatchObject({ type: "ping", sequence: 1 });
+    expect(JSON.parse(socket.sent[1])).toMatchObject({
+      type: "ping",
+      sequence: 1,
+    });
     socket.onclose?.();
     vi.advanceTimersByTime(2_000);
     expect(FakeWebSocket.latest).not.toBe(socket);
@@ -1187,7 +1594,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ ...snapshot, viewer: { role: "player", seat: "player_b" } }),
+        json: async () => ({
+          ...snapshot,
+          viewer: { role: "player", seat: "player_b" },
+        }),
       }),
     );
     const client = new GameSessionClient({
@@ -1195,7 +1605,9 @@ describe("GameSessionClient ingress lifecycle", () => {
       viewer: { role: "player", seat: "player_a", playerSession: "private" },
     });
     client.start();
-    await vi.waitFor(() => expect(client.getState().lastError).toMatch(/viewer identity/));
+    await vi.waitFor(() =>
+      expect(client.getState().lastError).toMatch(/viewer identity/),
+    );
     expect(client.getState().snapshot).toBeNull();
     client.stop();
   });

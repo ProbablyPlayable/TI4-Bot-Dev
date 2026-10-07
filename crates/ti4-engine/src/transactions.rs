@@ -157,6 +157,9 @@ pub enum OfferError {
     ActionCardsNotTradeable,
     #[error("{0} does not hold {1}")]
     MissingActionCard(PlayerId, String),
+    /// Mahact, Hubris: nobody may give the Mahact player their Alliance note.
+    #[error("{0} cannot be given {1}")]
+    NoteRefused(PlayerId, String),
 }
 
 /// Systems where a player has a unit or controls a planet.
@@ -189,6 +192,10 @@ pub fn presence(state: &GameState, player: &PlayerId) -> BTreeSet<SystemId> {
 pub fn are_neighbours(state: &GameState, galaxy: &Galaxy, a: &PlayerId, b: &PlayerId) -> bool {
     if a == b {
         return false;
+    }
+    // I.I.H.Q. Modernization (Keleres): neighbours with everyone in or next to Mecatol Rex.
+    if crate::factions::keleres::mecatol_neighbours(state, galaxy, a, b) {
+        return true;
     }
     let (here, there) = (presence(state, a), presence(state, b));
     if here.intersection(&there).next().is_some() {
@@ -276,7 +283,8 @@ pub fn may_transact(
     proposer: &PlayerId,
     partner: &PlayerId,
 ) -> bool {
-    are_neighbours(state, galaxy, proposer, partner)
+    crate::factions::hooks_cards::transaction_reach(state, content, proposer, partner)
+        || are_neighbours(state, galaxy, proposer, partner)
         || partners(state, content, galaxy, proposer).contains(partner)
         || partners(state, content, galaxy, partner).contains(proposer)
 }
@@ -383,6 +391,16 @@ pub fn why_illegal(
     }
     if !can_pay(state, content, &offer.partner, &offer.received) {
         return Some(OfferError::CannotPay(offer.partner.clone()));
+    }
+    for (receiver, terms) in [
+        (&offer.partner, &offer.given),
+        (&offer.proposer, &offer.received),
+    ] {
+        if let Some(note) = &terms.promissory
+            && !crate::promissory::may_receive(state, receiver, note)
+        {
+            return Some(OfferError::NoteRefused(receiver.clone(), note.clone()));
+        }
     }
     // 94.3: action cards are not tradeable unless somebody at the table has Arbiters, or
     // Black Market Dealings is marking this negotiation as one in which they may change hands
@@ -510,6 +528,22 @@ pub fn resolve(
     take(state, &offer.partner, &offer.received);
     give(state, content, &offer.partner, &offer.given);
     give(state, content, &offer.proposer, &offer.received);
+    // 21.5: received commodities arrive as trade goods, so both count as trade goods gained.
+    crate::supply::note_trade_goods_gained(
+        state,
+        &offer.partner,
+        offer.given.trade_goods + offer.given.commodities,
+        "transaction",
+    );
+    crate::supply::note_trade_goods_gained(
+        state,
+        &offer.proposer,
+        offer.received.trade_goods + offer.received.commodities,
+        "transaction",
+    );
+    // Dark Pact: "When you give a number of commodities to the Empyrean player equal to your
+    // maximum commodity value, you each gain 1 trade good."
+    crate::factions::empyrean_units::dark_pact_gains(state, content, offer);
     // Recorded here rather than at the window that opened the deal: this is the one place a
     // transaction is *resolved*, and Lie in Wait counts resolutions.
     state
@@ -590,6 +624,7 @@ fn action_card_shape(
             // find -- "hacan cant sell action cards for promissory notes".
             for note in crate::promissory::available_notes(state, content, partner)
                 .into_iter()
+                .filter(|note| crate::promissory::may_receive(state, proposer, note))
                 .take(3)
             {
                 let mut payload = payload.clone();
@@ -714,12 +749,11 @@ pub fn available_actions(
     if state.diplomacy.enabled || !state.may_initiate_negotiation(player) {
         return Vec::new();
     }
-    let already = state.transacted_with(player);
     state
         .seating_order
         .iter()
         .filter(|other| *other != player && may_transact(state, content, galaxy, player, other))
-        .filter(|other| !already.contains(other))
+        .filter(|other| may_open_again(state, content, player, other))
         .map(|other| {
             let name = faction_name(state, other);
             crate::choice::ChoiceOption::labelled(
@@ -729,6 +763,50 @@ pub fn available_actions(
             )
         })
         .collect()
+}
+
+/// Whether `proposer` may still open a transaction with `partner` this turn: they have not dealt yet
+/// (94.1), or a faction module exempts the pair from the limit
+/// (`hooks_cards::transaction_exempt_from_limit`, Yssaril's Deepgloom Executable).
+#[must_use]
+pub fn may_open_again(
+    state: &GameState,
+    content: &ContentStore,
+    proposer: &PlayerId,
+    partner: &PlayerId,
+) -> bool {
+    !state.transacted_with(proposer).contains(partner)
+        || crate::factions::hooks_cards::transaction_exempt_from_limit(
+            state, content, proposer, partner,
+        )
+}
+
+/// Spend this pair's one transaction for the turn, unless a module exempts it from the limit.
+/// The game's opening path calls this where it used to call `GameState::record_transaction`.
+pub fn record_unless_exempt(
+    state: &mut GameState,
+    content: &ContentStore,
+    proposer: &PlayerId,
+    partner: &PlayerId,
+) {
+    if !crate::factions::hooks_cards::transaction_exempt_from_limit(
+        state, content, proposer, partner,
+    ) {
+        state.record_transaction(proposer, partner);
+    }
+}
+
+/// Payload of `TRANSACTION_RESOLVED`: `proposer` and `partner` (the two seats that dealt). Both
+/// are public: that a deal happened is known to the table (Lie in Wait, Pillage read the event).
+#[must_use]
+pub fn resolved_payload(
+    proposer: &PlayerId,
+    partner: &PlayerId,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut payload = std::collections::BTreeMap::new();
+    payload.insert("proposer".to_owned(), proposer.to_string().into());
+    payload.insert("partner".to_owned(), partner.to_string().into());
+    payload
 }
 
 /// The partner an opening option names, or `None` for any other option.
@@ -829,6 +907,9 @@ pub fn offer_options(
     // only note that could change hands was Support, so every other note in the corpus was
     // unreachable at any price.
     for note in crate::promissory::available_notes(state, content, proposer) {
+        if !crate::promissory::may_receive(state, partner, &note) {
+            continue; // Hubris
+        }
         // Each note prices itself (oracle `propose`): a Research Agreement is not on the table
         // until its partner can pay what a technology costs.
         let price = note_option_price(&note);
@@ -1056,8 +1137,15 @@ fn partner_assets(
 ) {
     let (my_goods, my_commodities) = holdings(state, proposer);
     let (_, their_commodities) = holdings(state, partner);
-    let mine = crate::promissory::available_notes(state, content, proposer);
-    let theirs = crate::promissory::available_notes(state, content, partner);
+    // Hubris: nobody gives the Mahact player an Alliance, so such a note is not offered.
+    let mine: Vec<String> = crate::promissory::available_notes(state, content, proposer)
+        .into_iter()
+        .filter(|note| crate::promissory::may_receive(state, partner, note))
+        .collect();
+    let theirs: Vec<String> = crate::promissory::available_notes(state, content, partner)
+        .into_iter()
+        .filter(|note| crate::promissory::may_receive(state, proposer, note))
+        .collect();
     let asking = |given: Option<&str>, want: &str| {
         let mut payload = BTreeMap::new();
         if let Some(given) = given {
@@ -1385,7 +1473,19 @@ impl TradeWindow {
     /// both wrong and non-terminating.
     #[must_use]
     pub fn open(state: &mut GameState, proposer: &PlayerId, partner: &PlayerId) -> Self {
-        state.record_transaction(proposer, partner);
+        Self::open_with_content(state, ContentStore::embedded(), proposer, partner)
+    }
+
+    /// [`Self::open`] with the game's content, so a module's exemption from the per-turn limit
+    /// (`hooks_cards::transaction_exempt_from_limit`) is honoured: an exempt pair is not recorded.
+    #[must_use]
+    pub fn open_with_content(
+        state: &mut GameState,
+        content: &ContentStore,
+        proposer: &PlayerId,
+        partner: &PlayerId,
+    ) -> Self {
+        record_unless_exempt(state, content, proposer, partner);
         if state.diplomacy.enabled {
             let _ = state.diplomacy.consume_initiation(proposer, partner);
         }
@@ -1395,6 +1495,12 @@ impl TradeWindow {
             stage: Stage::Proposing,
             rounds_left: 2,
         }
+    }
+
+    /// The two seats: `(proposer, partner)`. For [`resolved_payload`].
+    #[must_use]
+    pub const fn parties(&self) -> (&PlayerId, &PlayerId) {
+        (&self.proposer, &self.partner)
     }
 
     /// Whether negotiations have ended.
@@ -1958,6 +2064,43 @@ mod tests {
             "the opportunity is gone even though no deal was struck"
         );
         assert!(choice.ids().contains(&"cc3"), "a swap was on the table");
+    }
+
+    #[test]
+    fn an_exempt_pair_may_open_again_and_the_opening_is_not_recorded() {
+        let (hub, mut state) = trading_partners();
+        let content = ContentStore::embedded();
+        let exempt = crate::factions::hooks_cards::CardHooks {
+            transaction_limit_exempt: Some(|_, _, _, other| other.as_str() == "b"),
+            ..crate::factions::hooks_cards::CardHooks::NONE
+        };
+        crate::factions::hooks_cards::with_test_hooks(exempt, || {
+            let first = TradeWindow::open_with_content(&mut state, content, &a(), &b());
+            assert!(
+                state.transacted_with(&a()).is_empty(),
+                "an exempt transaction does not count against the limit"
+            );
+            assert_eq!(first.parties(), (&a(), &b()));
+            assert!(may_open_again(&state, content, &a(), &b()));
+            assert_eq!(
+                available_actions(&state, content, &hub.galaxy, &a()).len(),
+                1,
+                "still offered"
+            );
+        });
+        // Without the hook the same opening is spent, and not offered again.
+        let _ = TradeWindow::open_with_content(&mut state, content, &a(), &b());
+        assert!(state.transacted_with(&a()).contains(&b()));
+        assert!(!may_open_again(&state, content, &a(), &b()));
+        assert!(available_actions(&state, content, &hub.galaxy, &a()).is_empty());
+    }
+
+    #[test]
+    fn the_resolved_payload_names_both_parties() {
+        let payload = resolved_payload(&a(), &b());
+        assert_eq!(payload.get("proposer").and_then(Value::as_str), Some("a"));
+        assert_eq!(payload.get("partner").and_then(Value::as_str), Some("b"));
+        assert_eq!(payload.len(), 2);
     }
 
     #[test]

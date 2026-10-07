@@ -189,6 +189,12 @@ pub fn start_turn(
                     )
                     .with("planet", planet.to_string())
                     .with("technology", "pa")
+                    .with_planet_located(
+                        state,
+                        content,
+                        sources,
+                        planet.as_str(),
+                    )
                 })
                 .collect();
             options.push(ChoiceOption::decline());
@@ -210,9 +216,7 @@ pub fn start_turn(
                 break;
             }
             state.exhaust_planet(PlanetId::new(answer.id));
-            if let Some(seat) = state.player_mut(player) {
-                seat.trade_goods += 1;
-            }
+            crate::supply::gain_trade_goods_staged(state, player, 1, "psychoarchaeology");
         }
     }
 
@@ -286,10 +290,7 @@ pub fn start_turn(
         }
     }
 
-    if state
-        .player(player)
-        .is_some_and(|seat| seat.technologies.contains(&TechnologyId::new("cm")))
-    {
+    if has_technology_text(state, player, "cm") {
         let systems: Vec<SystemId> = state
             .board
             .keys()
@@ -392,10 +393,16 @@ pub fn end_turn(
                 crate::choice::DECLINE_KIND,
                 "finish redistribution",
             ));
-            let choice = Choice::new(
-                player.clone(),
-                "Predictive Intelligence: redistribute command tokens",
-                options,
+            // Display only: the pools and total, so clients can plan the whole restack at once.
+            let choice = crate::tokens::with_pool_details(
+                Choice::new(
+                    player.clone(),
+                    "Predictive Intelligence: redistribute command tokens",
+                    options,
+                ),
+                state,
+                "restack",
+                None,
             )
             .contextualized(DecisionContext::new(
                 player.clone(),
@@ -457,6 +464,7 @@ pub fn end_turn(
                 )
                 .with("planet", planet.to_string())
                 .with("technology", "bs")
+                .with_planet_located(state, content, sources, planet.as_str())
             })
             .collect();
         if let Some(seat) = state.player(player) {
@@ -877,6 +885,61 @@ pub fn specialties(
     found
 }
 
+/// The research track a module names by track or by colour (`"green"` is BIOTIC).
+fn track_named(name: &str) -> Option<&'static str> {
+    match name.to_ascii_uppercase().as_str() {
+        "BIOTIC" | "GREEN" => Some("BIOTIC"),
+        "CYBERNETIC" | "YELLOW" => Some("CYBERNETIC"),
+        "PROPULSION" | "BLUE" => Some("PROPULSION"),
+        "WARFARE" | "RED" => Some("WARFARE"),
+        _ => None,
+    }
+}
+
+/// Every faction module's way to research `alias` while ignoring its prerequisites. A resolver
+/// with a decision table must offer the waiver and its exact payment targets explicitly, then call
+/// [`research_with_waiver`].
+#[must_use]
+pub(crate) fn research_waiver_offers(
+    state: &GameState,
+    content: &ContentStore,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) -> Vec<(usize, crate::factions::hooks_strategy::ResearchWaiver)> {
+    crate::factions::hooks_strategy::research_waiver_offers(state, content, player, alias)
+}
+
+/// The first faction module's way to research `alias` while ignoring its prerequisites.
+#[must_use]
+pub fn research_waiver_offer(
+    state: &GameState,
+    content: &ContentStore,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) -> Option<crate::factions::hooks_strategy::ResearchWaiver> {
+    research_waiver_offers(state, content, player, alias)
+        .into_iter()
+        .next()
+        .map(|(_, waiver)| waiver)
+}
+
+/// Whether `alias` can only be researched now by taking a faction waiver rather than satisfying
+/// prerequisites or using Inheritance Systems. A decision-table caller uses this to ask for the
+/// optional waiver before it mutates any other research payment.
+#[must_use]
+pub(crate) fn faction_waiver_required(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) -> bool {
+    can_research(state, content, sources, player, alias)
+        && !prerequisites_met(state, content, sources, player, alias)
+        && !inheritance_systems_ready(state, content, sources, player)
+        && !research_waiver_offers(state, content, player, alias).is_empty()
+}
+
 /// Whether this player may research a technology now.
 #[must_use]
 pub fn can_research(
@@ -920,6 +983,7 @@ pub fn can_research(
     }
     prerequisites_met(state, content, sources, player, alias)
         || inheritance_systems_ready(state, content, sources, player)
+        || research_waiver_offer(state, content, player, alias).is_some()
 }
 
 /// Inheritance Systems (L1Z1X): "You may exhaust this card and spend 2 resources when you research
@@ -973,6 +1037,14 @@ fn prerequisites_met(
     for (colour, count) in specialties {
         *holdings.entry(colour).or_insert(0) += count;
     }
+    // Faction modules that stand in for a technology of some colour (Yin commander: green).
+    for (name, count) in
+        crate::factions::hooks_strategy::extra_prerequisite_colours(state, content, player)
+    {
+        if let Some(colour) = track_named(&name) {
+            *holdings.entry(colour).or_insert(0) += count;
+        }
+    }
     // Research Team laws attach to a planet and are exhausted to ignore one prerequisite of their
     // colour. They add to the same waiver budget the faction abilities use, because both are
     // "ignore a prerequisite" and the requirement is checked once.
@@ -1017,6 +1089,62 @@ pub fn researchable(
     open
 }
 
+/// Whether `player` has the printed text of technology `alias` to use: they own it, or they are
+/// the Nekro Virus and a Valefar Assimilator token (X or Y) sits on it while another player still
+/// owns it, so that card "gains that technology's text".
+///
+/// This is the gate for what a **faction technology's effect** does. It is *not* ownership: an
+/// assimilated technology never enters `Player::technologies`, so it counts for no prerequisite,
+/// objective, unit upgrade or "technologies you own" total. Generic technologies and prerequisites
+/// keep reading the owned set.
+#[must_use]
+pub fn has_technology_text(state: &GameState, player: &PlayerId, alias: &str) -> bool {
+    state
+        .player(player)
+        .is_some_and(|seat| seat.technologies.contains(&TechnologyId::new(alias)))
+        || crate::factions::nekro::assimilated_card(state, player, alias).is_some()
+}
+
+/// [`has_technology_text`] for a card that exhausts: the owner's copy is ready while unexhausted;
+/// an assimilated text is ready while the Valefar Assimilator carrying it is (its exhaustion is
+/// the Valefar card's, not the owner's).
+#[must_use]
+pub fn technology_text_ready(state: &GameState, player: &PlayerId, alias: &str) -> bool {
+    let id = TechnologyId::new(alias);
+    let Some(seat) = state.player(player) else {
+        return false;
+    };
+    if seat.technologies.contains(&id) {
+        return !seat.exhausted_technologies.contains(&id);
+    }
+    crate::factions::nekro::assimilated_card(state, player, alias).is_some_and(|card| {
+        !seat
+            .exhausted_technologies
+            .contains(&TechnologyId::new(card))
+    })
+}
+
+/// Exhaust the card that carries technology `alias`'s text for `player`: the technology itself, or
+/// the Valefar Assimilator carrying it. `false`, changing nothing, when the player has neither.
+pub fn exhaust_technology_text(state: &mut GameState, player: &PlayerId, alias: &str) -> bool {
+    let id = TechnologyId::new(alias);
+    let carrier = if state
+        .player(player)
+        .is_some_and(|seat| seat.technologies.contains(&id))
+    {
+        id
+    } else if let Some(card) = crate::factions::nekro::assimilated_card(state, player, alias) {
+        TechnologyId::new(card)
+    } else {
+        return false;
+    };
+    let Some(seat) = state.player_mut(player) else {
+        return false;
+    };
+    seat.exhausted_technologies.insert(carrier);
+    true
+}
+
 /// Gain a technology outright (90.5), without checking prerequisites.
 ///
 /// Separate from [`research`] because gaining is not researching: several effects grant a
@@ -1025,6 +1153,56 @@ pub fn grant(state: &mut GameState, player: &PlayerId, alias: &TechnologyId) {
     if let Some(seat) = state.player_mut(player) {
         seat.technologies.insert(alias.clone());
     }
+}
+
+/// Purge one of a player's technologies: the card leaves the game.
+///
+/// Returns `false`, changing nothing, when the player does not own it. A unit upgrade that is
+/// purged takes its unit form with it: the player's units of the upgraded type on the board go back
+/// to the form the card replaced, as [`apply_unit_upgrades`] put them there.
+pub fn purge(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) -> bool {
+    if !state
+        .player(player)
+        .is_some_and(|seat| seat.technologies.contains(alias))
+    {
+        return false;
+    }
+    let downgrades: std::collections::BTreeMap<String, String> =
+        ti4_content::units::catalogue(content, sources)
+            .values()
+            .filter(|kind| kind.required_technology() == Some(alias.as_str()))
+            .filter_map(|kind| {
+                kind.upgrades_from()
+                    .map(|before| (kind.id().to_owned(), before.to_owned()))
+            })
+            .collect();
+    if let Some(seat) = state.player_mut(player) {
+        seat.technologies.remove(alias);
+        seat.exhausted_technologies.remove(alias);
+    }
+    if downgrades.is_empty() {
+        return true;
+    }
+    for board in state.board.values_mut() {
+        let standing = board
+            .units
+            .iter_mut()
+            .chain(board.planet_units.values_mut().flatten());
+        for unit in standing {
+            if unit.owner == *player
+                && let Some(before) = downgrades.get(unit.type_id.as_str())
+            {
+                unit.type_id = ti4_model::id::UnitTypeId::new(before);
+            }
+        }
+    }
+    true
 }
 
 /// Replace this player's units on the board with the versions their upgrades unlock (90.8).
@@ -1053,11 +1231,15 @@ pub fn apply_unit_upgrades(
     let mut swaps: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for kind in catalogue.values() {
         let base = kind.base_type();
-        if let Some(better) =
-            ti4_content::units::unlocked_upgrade(content, sources, base, &faction, &held)
-            && better.id() != kind.id()
-        {
-            swaps.insert(kind.id().to_owned(), better.id().to_owned());
+        let chosen = ti4_content::units::unlocked_upgrade(content, sources, base, &faction, &held)
+            .map_or_else(|| kind.id().to_owned(), |better| better.id().to_owned());
+        // A module may name another form for this base type (Mentak Corsair's acquisition).
+        let chosen = crate::factions::hooks_strategy::unit_form_override(
+            state, content, sources, player, base, &chosen,
+        )
+        .map_or(chosen, |form| form.as_str().to_owned());
+        if chosen != kind.id() {
+            swaps.insert(kind.id().to_owned(), chosen);
         }
     }
     if swaps.is_empty() {
@@ -1147,7 +1329,57 @@ fn exhaust_specialties_for_research(
     }
 }
 
-/// Research a technology, having satisfied its prerequisites. `false` if it could not be.
+
+/// Research `alias` by taking a selected module waiver and paying its selected legal cost.
+///
+/// This is intentionally separate from [`research`]: a table-less caller cannot silently spend an
+/// optional faction ability. The payment hook revalidates its target, and a failed payment restores
+/// the state before returning `false`.
+pub fn research_with_waiver(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    alias: &TechnologyId,
+    waiver_index: usize,
+    payment: &str,
+) -> bool {
+    if !can_research(state, content, sources, player, alias)
+        || prerequisites_met(state, content, sources, player, alias)
+    {
+        return false;
+    }
+    let Some((_, waiver)) = research_waiver_offers(state, content, player, alias)
+        .into_iter()
+        .find(|(index, _)| *index == waiver_index)
+    else {
+        return false;
+    };
+    if !waiver
+        .payments
+        .iter()
+        .any(|candidate| candidate.id == payment)
+    {
+        return false;
+    }
+    let before = state.clone();
+    if !crate::factions::hooks_strategy::research_waiver_paid(
+        state,
+        content,
+        player,
+        alias,
+        waiver_index,
+        payment,
+    ) {
+        *state = before;
+        return false;
+    }
+    complete_research(state, content, sources, player, alias);
+    true
+}
+
+/// Research a technology, having satisfied its prerequisites or paying Inheritance Systems.
+/// Table-less callers never silently take an optional faction waiver. `false` if it could not be.
 pub fn research(
     state: &mut GameState,
     content: &ContentStore,
@@ -1161,6 +1393,9 @@ pub fn research(
     // Researchable only through Inheritance Systems: exhaust it and pay its 2 resources now, with
     // the cheapest plan (this path has no table to ask which planets; the plans are minimal).
     if !prerequisites_met(state, content, sources, player, alias) {
+        if !inheritance_systems_ready(state, content, sources, player) {
+            return false;
+        }
         let Some(plan) = crate::payment::plans(
             state,
             content,
@@ -1173,15 +1408,34 @@ pub fn research(
         .next() else {
             return false;
         };
-        for planet in plan.planets {
-            state.exhaust_planet(planet);
+        // `payment::apply` also spends commodities the Keleres agent turned into trade goods.
+        if !crate::payment::apply(state, player, &plan) {
+            return false;
         }
         if let Some(seat) = state.player_mut(player) {
-            seat.trade_goods -= plan.trade_goods;
             seat.exhausted_technologies.insert(TechnologyId::new("is"));
         }
     } else {
         exhaust_specialties_for_research(state, content, sources, player, alias);
+    }
+    complete_research(state, content, sources, player, alias);
+    true
+}
+
+/// Apply every common consequence after a legal research and any required price have settled.
+fn complete_research(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) {
+    // Propagation (Nekro): "When you would research a technology: Gain 3 command tokens instead."
+    // Every research route ends here, so none can forget it. The technology is not gained and
+    // nothing that fires on research fires; the game opens the token window at its next step.
+    if crate::factions::nekro::propagation_replaces_research(state, player) {
+        crate::factions::nekro::note_propagation(state, player);
+        return;
     }
     grant(state, player, alias);
     // 90.8: the upgrade covers the unit on the faction sheet, so units already on the board
@@ -1193,6 +1447,7 @@ pub fn research(
     crate::laws::revolution_tax(state, content, sources, player);
     // Research Agreement (Jol-Nar): "After the Jol-Nar player researches a technology that is not
     // a faction technology: Gain that technology. Then, return this card to the Jol-Nar player."
+    // Not optional: the card has no "may", so the holder gains it whenever the condition holds.
     // The holder gains it rather than researching it, so nothing that fires on research fires for
     // them. A holder who already owns the technology has nothing to gain and keeps the card.
     if faction_of(content, alias).is_none()
@@ -1206,7 +1461,6 @@ pub fn research(
         let name = crate::promissory::faction_name(state, player);
         crate::promissory::give_back(state, &crate::promissory::note_id("ra", &name));
     }
-    true
 }
 
 #[cfg(test)]
@@ -1351,6 +1605,51 @@ mod tests {
                 .technologies
                 .insert(TechnologyId::new(*alias));
         }
+    }
+
+    /// Psychoarchaeology's and Bio-Stims' planet options carry `planet` + `system`; Bio-Stims'
+    /// technology options and both declines do not name a planet.
+    #[test]
+    fn technology_planet_options_carry_planet_and_system_payloads() {
+        use crate::choice::planet_payload::{assert_locates, assert_not_a_planet, offered};
+        let content = ContentStore::embedded();
+        let hold = |state: &mut GameState, system: &str, planet: &str| {
+            state
+                .system_mut(&ti4_model::id::SystemId::new(system))
+                .set_control(PlanetId::new(planet), player());
+        };
+        let subtype = |choice: &Choice| choice.context.as_ref().unwrap().subtype.clone();
+
+        let mut state = game(&["a"]);
+        give(&mut state, &["pa"]);
+        hold(&mut state, "19", "wellon");
+        hold(&mut state, "27", "newalbion");
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
+        let mut table = Table::with_default(Box::new(decider));
+        start_turn(&mut state, content, POK, None, &mut table, &player()).unwrap();
+        let choice = seen.borrow()[0].clone();
+        assert_eq!(subtype(&choice), "psychoarchaeology_exhaust_specialty");
+        assert_locates(offered(&choice, "wellon"), "wellon", "19");
+        assert_locates(offered(&choice, "newalbion"), "newalbion", "27");
+        assert_not_a_planet(offered(&choice, crate::choice::DECLINE_ID));
+
+        let mut state = game(&["a"]);
+        give(&mut state, &["bs", "td"]);
+        hold(&mut state, "19", "wellon");
+        state.exhausted_planets.insert(PlanetId::new("wellon"));
+        state
+            .player_mut(&player())
+            .unwrap()
+            .exhausted_technologies
+            .insert(TechnologyId::new("td"));
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
+        let mut table = Table::with_default(Box::new(decider));
+        end_turn(&mut state, content, POK, None, &mut table, &player()).unwrap();
+        let choice = seen.borrow()[0].clone();
+        assert_eq!(subtype(&choice), "bio_stims_ready");
+        assert_locates(offered(&choice, "ready|planet|wellon"), "wellon", "19");
+        assert_not_a_planet(offered(&choice, "ready|technology|td"));
+        assert_not_a_planet(offered(&choice, crate::choice::DECLINE_ID));
     }
 
     #[test]
@@ -1537,6 +1836,41 @@ mod tests {
         let exhausted = &state.player(&player()).unwrap().exhausted_technologies;
         assert!(!exhausted.contains(&TechnologyId::new("td")));
         assert!(exhausted.contains(&TechnologyId::new("bs")));
+    }
+
+    /// Predictive Intelligence moves one token per decision; the question carries the pools and the
+    /// total held so a client can plan the whole restack at once (display only).
+    #[test]
+    fn predictive_intelligence_restack_carries_the_pools_and_the_total() {
+        let mut state = game(&["a"]);
+        give(&mut state, &["pi"]);
+        {
+            let seat = state.player_mut(&player()).unwrap();
+            seat.tactic_tokens = 3;
+            seat.fleet_tokens = 4;
+            seat.strategic_tokens = 2;
+        }
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
+        let mut table = Table::with_default(Box::new(decider));
+        end_turn(
+            &mut state,
+            ContentStore::embedded(),
+            POK,
+            None,
+            &mut table,
+            &player(),
+        )
+        .unwrap();
+        let choice = seen.borrow()[0].clone();
+        assert_eq!(
+            choice.context.as_ref().unwrap().subtype,
+            "predictive_intelligence_redistribute"
+        );
+        assert_eq!(choice.details["kind"], "command_tokens");
+        assert_eq!(choice.details["mode"], "restack");
+        assert_eq!(choice.details["total"], 9);
+        assert_eq!(choice.details["pools"]["fleet"], 4);
+        assert!(choice.options.iter().any(|option| option.id == "fleet|tactic"));
     }
 
     /// OBS-003e: `start_turn`/`end_turn`'s remaining reactive asks -- Chaos Mapping and
@@ -1920,6 +2254,74 @@ mod tests {
         );
     }
 
+    /// Faction unit upgrades swap the faction's units already on the board, by the faction's own
+    /// ids: Advanced Carrier II (Sol), Spec Ops II (Sol) and Super Dreadnought II (L1Z1X).
+    #[test]
+    fn faction_unit_upgrades_replace_the_units_already_on_the_board() {
+        let content = ContentStore::embedded();
+        let sources = ti4_model::content_types::DEFAULT;
+        let (planet_system, planet) = crate::fixtures::a_placed_planet();
+        let plain = ti4_model::id::SystemId::new(crate::fixtures::plain_systems(1)[0].clone());
+        for (faction, tech, before, after, on_planet) in [
+            ("sol", "ac2", "sol_carrier", "sol_carrier2", false),
+            ("sol", "so2", "sol_infantry", "sol_infantry2", true),
+            (
+                "l1z1x",
+                "sdn2",
+                "l1z1x_dreadnought",
+                "l1z1x_dreadnought2",
+                false,
+            ),
+        ] {
+            let mut state =
+                crate::fixtures::seated_game(&[("a", faction), ("b", "hacan")], sources);
+            let player = PlayerId::new("a");
+            let system = if on_planet {
+                planet_system.clone()
+            } else {
+                plain.clone()
+            };
+            state.board.entry(system.clone()).or_default();
+            let place = |state: &mut GameState| {
+                if on_planet {
+                    crate::fixtures::put_on_planet(state, &system, &planet, before, &player, 2);
+                } else {
+                    crate::fixtures::put(state, &system, before, &player, 2);
+                }
+            };
+            let ids = |state: &GameState| -> Vec<String> {
+                let board = state.system_state(&system);
+                let units = if on_planet {
+                    board.on_planet(&planet).to_vec()
+                } else {
+                    board.units_of(&player).into_iter().cloned().collect()
+                };
+                units
+                    .iter()
+                    .filter(|unit| unit.owner == player)
+                    .map(|unit| unit.type_id.to_string())
+                    .filter(|id| id == before || id == after)
+                    .collect()
+            };
+            let standing = ids(&state).len();
+            place(&mut state);
+            assert_eq!(
+                ids(&state),
+                vec![before.to_owned(); standing + 2],
+                "{faction} starts on {before}"
+            );
+
+            grant(&mut state, &player, &TechnologyId::new(tech));
+            apply_unit_upgrades(&mut state, content, sources, &player);
+
+            assert_eq!(
+                ids(&state),
+                vec![after.to_owned(); standing + 2],
+                "{faction} {tech}"
+            );
+        }
+    }
+
     #[test]
     fn a_research_agreement_hands_the_holder_the_same_technology_and_goes_home() {
         // "After the Jol-Nar player researches a technology that is not a faction technology: Gain
@@ -2189,6 +2591,149 @@ mod replaced_upgrades {
         assert!(
             !replaced_for_faction(content, "", &carrier_two),
             "an unseated faction blocks nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bf_f3_tests {
+    use super::*;
+    use crate::factions::hooks_strategy::{
+        ResearchWaiver, ResearchWaiverPayment, StrategyHooks, with_test_hooks,
+    };
+    use crate::fixtures::game;
+    use ti4_model::content_types::POK;
+    use ti4_model::id::UnitTypeId;
+
+    fn a() -> PlayerId {
+        PlayerId::new("a")
+    }
+
+    #[test]
+    fn an_extra_prerequisite_colour_stands_in_for_an_owned_technology() {
+        let state = game(&["a"]);
+        let content = ContentStore::embedded();
+        let gd = TechnologyId::new("gd"); // one PROPULSION (blue) prerequisite
+        assert!(!can_research(&state, content, POK, &a(), &gd));
+        let blue = StrategyHooks {
+            extra_prerequisite_colours: Some(|_, _, _| vec![("blue".to_owned(), 1)]),
+            ..StrategyHooks::NONE
+        };
+        with_test_hooks(blue, || {
+            assert!(can_research(&state, content, POK, &a(), &gd));
+            assert!(researchable(&state, content, POK, &a()).contains(&gd));
+        });
+        let wrong = StrategyHooks {
+            extra_prerequisite_colours: Some(|_, _, _| {
+                vec![("green".to_owned(), 1), ("mauve".to_owned(), 9)]
+            }),
+            ..StrategyHooks::NONE
+        };
+        with_test_hooks(wrong, || {
+            assert!(!can_research(&state, content, POK, &a(), &gd));
+        });
+    }
+
+    #[test]
+    fn a_module_waiver_requires_a_selected_payment_and_is_paid_once() {
+        let content = ContentStore::embedded();
+        let gd = TechnologyId::new("gd");
+        let waiver = StrategyHooks {
+            research_waiver_offer: Some(|_, _, _, tech| {
+                (tech.as_str() == "gd").then(|| ResearchWaiver {
+                    id: "w".to_owned(),
+                    label: "ignore prerequisites".to_owned(),
+                    payments: vec![ResearchWaiverPayment {
+                        id: "infantry:a".to_owned(),
+                        label: "return infantry a".to_owned(),
+                    }],
+                })
+            }),
+            research_waiver_paid: Some(|state, _, player, tech, payment| {
+                if payment != "infantry:a" {
+                    return false;
+                }
+                state
+                    .faction_marks
+                    .insert(format!("paid:{player}:{tech}"), String::new());
+                true
+            }),
+            ..StrategyHooks::NONE
+        };
+        let mut state = game(&["a"]);
+        assert!(!research(&mut state, content, POK, &a(), &gd), "no hook");
+        assert!(state.faction_marks.is_empty());
+        with_test_hooks(waiver, || {
+            assert!(research_waiver_offer(&state, content, &a(), &gd).is_some());
+            assert!(
+                research_waiver_offer(&state, content, &a(), &TechnologyId::new("ws")).is_none()
+            );
+            // The waiver index is the one `research_waiver_offers` reports for this module, not a
+            // literal position: with Yin's Brother Omar registered, this test table is no longer
+            // the first table that has a `research_waiver_offer`.
+            let index = research_waiver_offers(&state, content, &a(), &gd)
+                .into_iter()
+                .find(|(_, offered)| offered.id == "w")
+                .map(|(index, _)| index)
+                .expect("the test waiver is offered");
+            let before = state.clone();
+            assert!(!research_with_waiver(
+                &mut state,
+                content,
+                POK,
+                &a(),
+                &gd,
+                index,
+                "not-a-payment"
+            ));
+            assert_eq!(state, before, "an illegal payment is atomic");
+            assert!(
+                !research(&mut state, content, POK, &a(), &gd),
+                "table-less research does not take an optional waiver"
+            );
+            assert!(research_with_waiver(
+                &mut state,
+                content,
+                POK,
+                &a(),
+                &gd,
+                index,
+                "infantry:a"
+            ));
+        });
+        assert!(state.player(&a()).unwrap().technologies.contains(&gd));
+        assert_eq!(state.faction_marks.len(), 1);
+        assert!(state.faction_marks.contains_key("paid:a:gd"));
+    }
+
+    #[test]
+    fn a_unit_form_override_replaces_units_on_the_board_and_the_build_list() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        let (system, _) = crate::fixtures::a_placed_planet();
+        crate::fixtures::put(&mut state, &system, "cruiser", &a(), 1);
+        assert!(
+            crate::production::buildable_for(&state, content, POK, &a())
+                .contains(&"cruiser".to_owned())
+        );
+        let corsair = StrategyHooks {
+            unit_form_override: Some(|_, _, _, player, base, _| {
+                (player.as_str() == "a" && base == "cruiser")
+                    .then(|| UnitTypeId::new("mentak_cruiser3"))
+            }),
+            ..StrategyHooks::NONE
+        };
+        with_test_hooks(corsair, || {
+            let list = crate::production::buildable_for(&state, content, POK, &a());
+            assert!(list.contains(&"mentak_cruiser3".to_owned()));
+            assert!(!list.contains(&"cruiser".to_owned()));
+            let other = crate::production::buildable_for(&state, content, POK, &PlayerId::new("b"));
+            assert!(other.contains(&"cruiser".to_owned()));
+            apply_unit_upgrades(&mut state, content, POK, &a());
+        });
+        assert_eq!(
+            state.system_state(&system).units[0].type_id.as_str(),
+            "mentak_cruiser3"
         );
     }
 }

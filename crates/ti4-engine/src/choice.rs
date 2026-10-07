@@ -61,6 +61,10 @@ pub struct ChoiceOption {
     /// diagnostic reasons.
     #[serde(skip)]
     pub preview: Option<crate::preview::Preview>,
+    /// True when this is the only legal option and was auto-selected. For UX feedback only;
+    /// does not affect game logic or replay.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_resolved: bool,
 }
 
 impl PartialEq for ChoiceOption {
@@ -78,6 +82,7 @@ impl ChoiceOption {
             label: String::new(),
             payload: BTreeMap::new(),
             preview: None,
+            auto_resolved: false,
         }
     }
 
@@ -111,6 +116,35 @@ impl ChoiceOption {
         self
     }
 
+    /// Attach the `planet` (and, when known, `system`) payload a map UI uses to locate a planet
+    /// answer. Keys already present are left as they are; like [`Self::with`], identity is
+    /// unaffected.
+    #[must_use]
+    pub fn with_planet(mut self, planet: &str, system: Option<&str>) -> Self {
+        self.payload
+            .entry("planet".to_owned())
+            .or_insert_with(|| Value::from(planet));
+        if let Some(system) = system {
+            self.payload
+                .entry("system".to_owned())
+                .or_insert_with(|| Value::from(system));
+        }
+        self
+    }
+
+    /// [`Self::with_planet`], looking the planet's system up with [`crate::planets::system_of`].
+    #[must_use]
+    pub fn with_planet_located(
+        self,
+        state: &ti4_model::state::GameState,
+        content: &ti4_content::ContentStore,
+        sources: ti4_model::content_types::SourceSet,
+        planet: &str,
+    ) -> Self {
+        let system = crate::planets::system_of(state, content, sources, planet);
+        self.with_planet(planet, system.as_ref().map(ti4_model::id::SystemId::as_str))
+    }
+
     /// Attach an analytic consequence summary without changing this option's identity.
     #[must_use]
     pub fn previewed(mut self, preview: crate::preview::Preview) -> Self {
@@ -138,6 +172,67 @@ pub struct Choice {
     /// Why this question exists and what remains outstanding in its transaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::decision_context::DecisionContext>,
+    /// Facts a client needs to present the question (current pools, who played a card, tokens
+    /// left). Display only: never read by the engine, never copied into a [`DecisionRecord`],
+    /// and skipped when empty, so records, replays and fingerprints are unaffected.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub details: serde_json::Map<String, Value>,
+}
+
+/// Display only: the header of an offer card: what it is, its kind, when it applies and the
+/// printed or summarised effect. See [`Choice::offered`].
+#[must_use]
+pub fn offer_card(title: &str, tag: &str, window: Option<&str>, text: Option<&str>) -> Value {
+    serde_json::json!({ "title": title, "tag": tag, "window": window, "text": text })
+}
+
+/// Display only: one labelled fact of an offer card, shown as text.
+#[must_use]
+pub fn offer_fact(label: &str, value: impl Into<Value>) -> Value {
+    serde_json::json!({ "label": label, "value": value.into() })
+}
+
+/// Display only: a fact whose value is a unit type (shown with its name and icon).
+#[must_use]
+pub fn offer_fact_unit(label: &str, unit: &str) -> Value {
+    serde_json::json!({ "label": label, "unit": unit })
+}
+
+/// Display only: a fact whose value is a planet (shown by its name, with its system).
+#[must_use]
+pub fn offer_fact_planet(label: &str, planet: &str, system: &str) -> Value {
+    serde_json::json!({ "label": label, "planet": planet, "system": system })
+}
+
+/// Display only: a fact whose value is a seat (shown by the player's name).
+#[must_use]
+pub fn offer_fact_seat(label: &str, seat: &str) -> Value {
+    serde_json::json!({ "label": label, "seat": seat })
+}
+
+/// Display only: a fact whose value is a technology (shown by its name).
+#[must_use]
+pub fn offer_fact_technology(label: &str, technology: &str) -> Value {
+    serde_json::json!({ "label": label, "technology": technology })
+}
+
+/// Display only: a number that changes, e.g. commodities `1 -> 2` of at most `of`.
+#[must_use]
+pub fn offer_fact_change(label: &str, from: i64, to: i64, of: Option<i64>) -> Value {
+    serde_json::json!({ "label": label, "from": from, "to": to, "of": of })
+}
+
+/// Display only: the button caption for an option and an optional hint under it.
+#[must_use]
+pub fn offer_caption(label: &str, hint: Option<&str>) -> Value {
+    serde_json::json!({ "label": label, "hint": hint })
+}
+
+/// Display only: [`offer_caption`] for an option about another seat's unit: the client adds the
+/// seat's name beside the hint.
+#[must_use]
+pub fn offer_caption_for_seat(label: &str, hint: Option<&str>, seat: &str) -> Value {
+    serde_json::json!({ "label": label, "hint": hint, "seat": seat })
 }
 
 impl Choice {
@@ -148,7 +243,31 @@ impl Choice {
             prompt: prompt.into(),
             options,
             context: None,
+            details: serde_json::Map::new(),
         }
+    }
+
+    /// Attach one display-only fact for clients; see [`Choice::details`].
+    #[must_use]
+    pub fn detailed(mut self, key: &str, value: impl Into<Value>) -> Self {
+        self.details.insert(key.to_owned(), value.into());
+        self
+    }
+
+    /// Present the question as an offer card for clients (display only, like [`Choice::detailed`]):
+    /// `card` names what is asked (see [`offer_card`]), `facts` is a list of [`offer_fact`]s and
+    /// `captions` maps option ids to [`offer_caption`]s that say what each answer does. Option ids,
+    /// order and kinds are untouched, so decision records and replays are unaffected.
+    #[must_use]
+    pub fn offered(self, card: Value, facts: Vec<Value>, captions: &[(&str, Value)]) -> Self {
+        let captions: serde_json::Map<String, Value> = captions
+            .iter()
+            .map(|(id, caption)| ((*id).to_owned(), caption.clone()))
+            .collect();
+        self.detailed("kind", "offer")
+            .detailed("card", card)
+            .detailed("facts", Value::Array(facts))
+            .detailed("captions", Value::Object(captions))
     }
 
     /// Attach producer-authored typed semantics to this decision.
@@ -810,7 +929,9 @@ impl<'a> Observed<'a> {
             trade_goods: seat.trade_goods,
             commodities: seat.commodities,
             tactic_tokens: seat.tactic_tokens,
-            fleet_tokens: seat.fleet_tokens,
+            // The Mahact's fleet pool also holds other players' tokens (Edict), in public view.
+            fleet_tokens: seat.fleet_tokens
+                + crate::factions::mahact::foreign_tokens(self.state, player),
             strategic_tokens: seat.strategic_tokens,
             strategy_cards: &seat.strategy_cards,
             exhausted_strategy_cards: &seat.exhausted_strategy_cards,
@@ -1214,6 +1335,7 @@ impl<'a> Observed<'a> {
 
 /// Replace every seat's private holdings with markers except `keep`'s.
 fn redact_others(view: &mut GameState, keep: &PlayerId) {
+    ti4_model::view::redact_marks(view, keep);
     for seat in &mut view.players {
         if &seat.id != keep {
             seat.action_cards = seat
@@ -1316,6 +1438,120 @@ impl<'a> SeatObservation<'a> {
                 **holder == self.acting_seat && !self.observed.state.promissory_faceup.contains(*id)
             })
             .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Hidden cards other players have shown or allowed the bound seat to inspect, by owner —
+    /// and only to this seat.
+    ///
+    /// Effects with a lasting reveal record it through `factions::hooks_cards::reveal`; ongoing
+    /// permissions such as M'aban are computed from the current position each time. This accessor
+    /// filters on the bound seat, so no argument can name another viewer. The public [`Observed`]
+    /// has no accessor for it. A card its owner no longer holds is not reported.
+    #[must_use]
+    pub fn revealed_cards(&self) -> Vec<crate::factions::hooks_cards::Revealed> {
+        let state = self.observed.state;
+        let mut revealed = crate::factions::hooks_cards::revealed_to(state, &self.acting_seat);
+        // Standing hand permissions are read from the current board and current leader state.
+        // They are deliberately not persisted in faction_marks, which would go stale on movement
+        // or a change to the owner's hand.
+        for owner in &state.seating_order {
+            if crate::factions::hooks_cards::may_view_hand(
+                state,
+                self.observed.content,
+                self.observed.sources,
+                self.observed.galaxy,
+                &self.acting_seat,
+                owner,
+                crate::factions::hooks_cards::RevealKind::PromissoryNotes,
+            ) {
+                let ids: Vec<String> = state
+                    .promissory_notes
+                    .iter()
+                    .filter(|(id, holder)| {
+                        *holder == owner && !state.promissory_faceup.contains(*id)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                if !ids.is_empty() {
+                    if let Some(existing) = revealed.iter_mut().find(|row| {
+                        row.owner == *owner
+                            && row.kind == crate::factions::hooks_cards::RevealKind::PromissoryNotes
+                    }) {
+                        for id in ids {
+                            if !existing.ids.contains(&id) {
+                                existing.ids.push(id);
+                            }
+                        }
+                    } else {
+                        revealed.push(crate::factions::hooks_cards::Revealed {
+                            owner: owner.clone(),
+                            kind: crate::factions::hooks_cards::RevealKind::PromissoryNotes,
+                            ids,
+                        });
+                    }
+                }
+            }
+        }
+        revealed
+    }
+
+    /// The agenda deck's current top and bottom cards, when this bound seat has permission.
+    /// The order and cards are read live from the position; no reveal is stored.
+    #[must_use]
+    pub fn agenda_deck_ends(&self) -> Option<(String, String)> {
+        let state = self.observed.state;
+        if !crate::factions::naalu::commander_has_peek(state, &self.acting_seat) {
+            return None;
+        }
+        Some((
+            state.agenda_deck.first()?.clone(),
+            state.agenda_deck.last()?.clone(),
+        ))
+    }
+
+    /// The action cards other players have shown the bound seat: `(owner, cards)` in owner order.
+    /// See [`SeatObservation::revealed_cards`].
+    #[must_use]
+    pub fn revealed_action_cards(&self) -> Vec<(PlayerId, Vec<ti4_model::id::ActionCardId>)> {
+        self.revealed_of(crate::factions::hooks_cards::RevealKind::ActionCards)
+            .into_iter()
+            .map(|(owner, ids)| {
+                (
+                    owner,
+                    ids.into_iter()
+                        .map(ti4_model::id::ActionCardId::new)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The promissory notes (still in hand, so not public) other players have shown the bound seat.
+    /// See [`SeatObservation::revealed_cards`].
+    #[must_use]
+    pub fn revealed_promissory_notes(&self) -> Vec<(PlayerId, Vec<String>)> {
+        self.revealed_of(crate::factions::hooks_cards::RevealKind::PromissoryNotes)
+    }
+
+    /// The secret objectives other players have shown the bound seat. See
+    /// [`SeatObservation::revealed_cards`].
+    #[must_use]
+    pub fn revealed_secret_objectives(&self) -> Vec<(PlayerId, Vec<SecretObjectiveId>)> {
+        self.revealed_of(crate::factions::hooks_cards::RevealKind::SecretObjectives)
+            .into_iter()
+            .map(|(owner, ids)| (owner, ids.into_iter().map(SecretObjectiveId::new).collect()))
+            .collect()
+    }
+
+    fn revealed_of(
+        &self,
+        kind: crate::factions::hooks_cards::RevealKind,
+    ) -> Vec<(PlayerId, Vec<String>)> {
+        self.revealed_cards()
+            .into_iter()
+            .filter(|shown| shown.kind == kind)
+            .map(|shown| (shown.owner, shown.ids))
             .collect()
     }
 
@@ -1824,7 +2060,12 @@ impl DecisionLog {
             prompt: choice.prompt.clone(),
             chosen: option.id.clone(),
             offered: choice.ids().into_iter().map(str::to_owned).collect(),
-            context: choice.context.clone(),
+            // The trigger is display metadata derived from the event; a record and its fingerprint
+            // hold only what a replay needs.
+            context: choice
+                .context
+                .as_ref()
+                .map(crate::decision_context::DecisionContext::without_display_fields),
         });
     }
 
@@ -1867,6 +2108,26 @@ pub struct Table {
     default: Box<dyn Decider>,
     pub log: DecisionLog,
     observed_offer: Option<ObservedOffer>,
+    auto_resolved_observer: Option<Box<dyn FnMut(&AutoResolved) + Send>>,
+    /// Decisions settled without asking, since the last drain. Never part of the decision log.
+    auto_resolved: Vec<AutoResolved>,
+    choice_failures: u64,
+    last_choice_error: Option<IllegalChoice>,
+}
+
+/// A decision the engine settled itself because exactly one option was legal.
+///
+/// Public feedback only. It is deliberately *not* a [`DecisionRecord`]: the skipped ask is
+/// never journaled, so a replay re-derives the same lone option and the log is unchanged.
+/// It carries only what the actor was already shown (the prompt and the option's label).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoResolved {
+    pub player: PlayerId,
+    pub prompt: String,
+    pub option_id: String,
+    pub label: String,
+    /// Why there was nothing to decide, in a short sentence.
+    pub reason: String,
 }
 
 impl Default for Table {
@@ -1876,6 +2137,10 @@ impl Default for Table {
             default: Box::new(FirstOption),
             log: DecisionLog::default(),
             observed_offer: None,
+            auto_resolved_observer: None,
+            auto_resolved: Vec::new(),
+            choice_failures: 0,
+            last_choice_error: None,
         }
     }
 }
@@ -1907,6 +2172,45 @@ impl Table {
         self.observed_offer = Some(Box::new(callback));
     }
 
+    /// Be told, as it happens, about each decision the engine settles without asking.
+    pub fn on_auto_resolved(&mut self, callback: impl FnMut(&AutoResolved) + Send + 'static) {
+        self.auto_resolved_observer = Some(Box::new(callback));
+    }
+
+    /// Settle a choice that has exactly one option without asking anyone.
+    ///
+    /// Returns the option (flagged `auto_resolved`) and leaves a note for the actor's client.
+    /// Nothing enters the decision log, matching how these skips always behaved. `None` when
+    /// the choice has any other number of options, so the caller asks as usual.
+    pub fn auto_resolve(&mut self, choice: &Choice, reason: &str) -> Option<ChoiceOption> {
+        let option = auto_resolve_single(&choice.options)?;
+        let note = AutoResolved {
+            player: choice.player.clone(),
+            prompt: choice.prompt.clone(),
+            option_id: option.id.clone(),
+            label: if option.label.is_empty() {
+                option.id.clone()
+            } else {
+                option.label.clone()
+            },
+            reason: reason.to_owned(),
+        };
+        if let Some(observer) = &mut self.auto_resolved_observer {
+            observer(&note);
+        }
+        // Bounded: simulations never drain it.
+        if self.auto_resolved.len() >= 64 {
+            self.auto_resolved.remove(0);
+        }
+        self.auto_resolved.push(note);
+        Some(option)
+    }
+
+    /// Take the notes left by [`Table::auto_resolve`] since the last call.
+    pub fn take_auto_resolved(&mut self) -> Vec<AutoResolved> {
+        std::mem::take(&mut self.auto_resolved)
+    }
+
     /// Put a choice to its actor, validate the answer, and record it.
     ///
     /// # Errors
@@ -1917,8 +2221,10 @@ impl Table {
             .deciders
             .get_mut(&choice.player)
             .unwrap_or(&mut self.default);
-        let answer = decider.choose(choice)?;
-        self.settle(choice, answer)
+        let answer = decider.choose(choice);
+        let outcome = answer.and_then(|answer| self.settle(choice, answer));
+        self.remember_choice_error(&outcome);
+        outcome
     }
 
     /// Put a choice to its actor along with the public position.
@@ -1950,8 +2256,27 @@ impl Table {
         // up by `choice.player`, so the view it receives answers for exactly that seat. Policy-
         // side code never sees a constructor for this type.
         let seat_view = SeatObservation::bind(seen, choice.player.clone());
-        let answer = decider.choose_seeing(choice, &seat_view)?;
-        self.settle(choice, answer)
+        let answer = decider.choose_seeing(choice, &seat_view);
+        let outcome = answer.and_then(|answer| self.settle(choice, answer));
+        self.remember_choice_error(&outcome);
+        outcome
+    }
+
+    // Strict callers can detect errors swallowed by legacy Option-returning effect APIs.
+    pub(crate) fn choice_error_checkpoint(&self) -> u64 {
+        self.choice_failures
+    }
+
+    pub(crate) fn choice_error_since(&self, checkpoint: u64) -> Option<IllegalChoice> {
+        (self.choice_failures != checkpoint)
+            .then(|| self.last_choice_error.clone()).flatten()
+    }
+
+    fn remember_choice_error(&mut self, outcome: &Result<ChoiceOption, IllegalChoice>) {
+        if let Err(error) = outcome {
+            self.choice_failures = self.choice_failures.saturating_add(1);
+            self.last_choice_error = Some(error.clone());
+        }
     }
 
     /// Validate an answer and record it. Shared, so the two ask paths cannot drift.
@@ -1978,6 +2303,24 @@ where
         .into_iter()
         .map(|(id, label)| ChoiceOption::labelled(id, kind, label))
         .collect()
+}
+
+/// Auto-resolves single-option choices.
+///
+/// When exactly one legal option exists, returns it with `auto_resolved = true` set.
+/// Otherwise returns `None`, allowing the normal decision flow to proceed.
+///
+/// Used to skip meaningless decisions where the player has no real choice, improving UX
+/// by automatically selecting the only option and showing a non-blocking toast notification.
+#[must_use]
+pub fn auto_resolve_single(options: &[ChoiceOption]) -> Option<ChoiceOption> {
+    if options.len() == 1 {
+        let mut option = options[0].clone();
+        option.auto_resolved = true;
+        Some(option)
+    } else {
+        None
+    }
 }
 
 /// The first index of each distinct item, keeping the original order.
@@ -2031,9 +2374,93 @@ pub fn unit_label(verb: &str, type_id: &UnitTypeId, damaged: bool) -> String {
     format!("{verb} {type_id}{suffix}")
 }
 
+/// Assertions for the map-locating payload (`planet`, `system`) planet answers carry.
+#[cfg(test)]
+pub(crate) mod planet_payload {
+    use super::{Choice, ChoiceOption, Value};
+
+    /// The option offered under `id`, or a panic naming what was offered.
+    pub(crate) fn offered<'a>(choice: &'a Choice, id: &str) -> &'a ChoiceOption {
+        choice
+            .options
+            .iter()
+            .find(|option| option.id == id)
+            .unwrap_or_else(|| panic!("{id} not offered; got {:?}", choice.ids()))
+    }
+
+    /// `option` names `planet` in `system`.
+    pub(crate) fn assert_locates(option: &ChoiceOption, planet: &str, system: &str) {
+        assert_eq!(
+            option.payload.get("planet").and_then(Value::as_str),
+            Some(planet),
+            "planet payload of {}",
+            option.id
+        );
+        assert_eq!(
+            option.payload.get("system").and_then(Value::as_str),
+            Some(system),
+            "system payload of {}",
+            option.id
+        );
+    }
+
+    /// `option` is not a planet and says nothing about one.
+    pub(crate) fn assert_not_a_planet(option: &ChoiceOption) {
+        assert!(
+            !option.payload.contains_key("planet"),
+            "{} is not a planet but carries {:?}",
+            option.id,
+            option.payload
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `with_planet` adds `planet`/`system`, keeps keys already set, and never touches identity.
+    #[test]
+    fn with_planet_adds_location_without_overwriting_or_changing_identity() {
+        let plain = ChoiceOption::labelled("x", "planet", "X");
+        let located = plain.clone().with_planet("lodor", Some("26"));
+        assert_eq!(located, plain, "payload is not identity");
+        planet_payload::assert_locates(&located, "lodor", "26");
+
+        let kept = ChoiceOption::labelled("x", "planet", "X")
+            .with("planet", "quann")
+            .with("system", "25")
+            .with_planet("lodor", Some("26"));
+        planet_payload::assert_locates(&kept, "quann", "25");
+
+        let nowhere = ChoiceOption::labelled("x", "planet", "X").with_planet("lodor", None);
+        assert_eq!(
+            nowhere.payload.get("planet").and_then(Value::as_str),
+            Some("lodor")
+        );
+        assert!(
+            !nowhere.payload.contains_key("system"),
+            "no system invented"
+        );
+    }
+
+    /// `with_planet_located` looks the system up; an unknown planet gets no `system`.
+    #[test]
+    fn with_planet_located_finds_the_printed_tile_and_invents_nothing() {
+        let state = crate::fixtures::game(&["a"]);
+        let content = ContentStore::embedded();
+        let sources = ti4_model::content_types::POK;
+        let lodor = ChoiceOption::labelled("lodor", "planet", "lodor")
+            .with_planet_located(&state, content, sources, "lodor");
+        planet_payload::assert_locates(&lodor, "lodor", "26");
+        let ghost = ChoiceOption::labelled("ghost", "planet", "ghost").with_planet_located(
+            &state,
+            content,
+            sources,
+            "not_a_planet",
+        );
+        assert!(!ghost.payload.contains_key("system"));
+    }
 
     #[test]
     fn obs008c1_context_records_while_runtime_preview_stays_out_of_replay_identity() {
@@ -2128,6 +2555,59 @@ mod tests {
         assert!(!ChoiceOption::new("x", "action").is_decline());
         // A differently-named decline still counts.
         assert!(ChoiceOption::new("pass_window", DECLINE_KIND).is_decline());
+    }
+
+    #[test]
+    fn auto_resolve_single_resolves_single_options() {
+        let single = vec![ChoiceOption::labelled("only", "action", "Only Option")];
+        let resolved = auto_resolve_single(&single).expect("single option");
+        assert_eq!(resolved.id, "only");
+        assert!(resolved.auto_resolved, "flag should be set");
+    }
+
+    #[test]
+    fn table_auto_resolve_notes_the_lone_option_without_journaling_it() {
+        let mut table = Table::new();
+        let one = Choice::new(
+            PlayerId::new("a"),
+            "pay 1 more resources",
+            vec![ChoiceOption::labelled("tg", "pay", "trade goods")],
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        table.on_auto_resolved(move |n| sink.lock().unwrap().push(n.clone()));
+        let option = table.auto_resolve(&one, "only way").expect("one option");
+        assert!(option.auto_resolved);
+        assert!(table.log.is_empty(), "journal must stay untouched");
+        let notes = table.take_auto_resolved();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].label, "trade goods");
+        assert_eq!(notes[0].reason, "only way");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(table.take_auto_resolved().is_empty());
+
+        let two = Choice::new(
+            PlayerId::new("a"),
+            "p",
+            vec![ChoiceOption::labelled("x", "k", "X"), ChoiceOption::labelled("y", "k", "Y")],
+        );
+        assert!(table.auto_resolve(&two, "r").is_none());
+        assert!(table.take_auto_resolved().is_empty());
+    }
+
+    #[test]
+    fn auto_resolve_single_returns_none_for_multiple_options() {
+        let multiple = vec![
+            ChoiceOption::labelled("x", "action", "Do X"),
+            ChoiceOption::labelled("y", "action", "Do Y"),
+        ];
+        assert!(auto_resolve_single(&multiple).is_none());
+    }
+
+    #[test]
+    fn auto_resolve_single_returns_none_for_empty_options() {
+        let empty: Vec<ChoiceOption> = vec![];
+        assert!(auto_resolve_single(&empty).is_none());
     }
 
     #[test]
@@ -3122,6 +3602,107 @@ mod obs004_actor_owned_inventory {
         );
     }
 
+    #[test]
+    fn naalu_commander_reads_neighbor_hands_and_agenda_ends_live() {
+        use crate::fixtures::{hub_with_centre, put};
+        use ti4_model::id::SystemId;
+
+        let content = ContentStore::embedded();
+        let hub = hub_with_centre(crate::seating::MECATOL);
+        let mut state = crate::fixtures::game(&["a", "b", "c"]);
+        state.player_mut(&pid("a")).unwrap().faction = ti4_model::id::FactionId::new("naalu");
+        state
+            .player_mut(&pid("a"))
+            .unwrap()
+            .leaders
+            .insert(LeaderId::new("naalucommander"), LeaderStatus::Unlocked);
+        put(
+            &mut state,
+            &SystemId::new(hub.outer[0].clone()),
+            "infantry",
+            &pid("a"),
+            1,
+        );
+        put(
+            &mut state,
+            &SystemId::new(crate::seating::MECATOL),
+            "cruiser",
+            &pid("b"),
+            1,
+        );
+        let far = hub.across(&hub.outer[0]);
+        put(&mut state, &SystemId::new(far), "cruiser", &pid("c"), 1);
+        state.promissory_notes.insert("b:note".to_owned(), pid("b"));
+        state.promissory_notes.insert("c:note".to_owned(), pid("c"));
+        state.agenda_deck = vec![
+            "agenda_top".to_owned(),
+            "middle".to_owned(),
+            "agenda_bottom".to_owned(),
+        ];
+
+        let seen = Observed::new(&state, content, POK, Some(&hub.galaxy));
+        let a = SeatObservation::bind(&seen, pid("a"));
+        assert_eq!(
+            a.revealed_promissory_notes(),
+            vec![(pid("b"), vec!["b:note".to_owned()])]
+        );
+        assert!(a.revealed_action_cards().is_empty());
+        assert!(a.revealed_secret_objectives().is_empty());
+        assert!(
+            state
+                .faction_marks
+                .keys()
+                .all(|key| !key.starts_with("cards:reveal:")),
+            "M'aban's live permission creates no stored reveal"
+        );
+        assert_eq!(
+            a.agenda_deck_ends(),
+            Some(("agenda_top".to_owned(), "agenda_bottom".to_owned()))
+        );
+        assert!(
+            SeatObservation::bind(&seen, pid("b"))
+                .revealed_promissory_notes()
+                .is_empty()
+        );
+        assert!(
+            SeatObservation::bind(&seen, pid("c"))
+                .agenda_deck_ends()
+                .is_none()
+        );
+        let without_map = Observed::new(&state, content, POK, None);
+        let a_without_map = SeatObservation::bind(&without_map, pid("a"));
+        assert!(a_without_map.revealed_promissory_notes().is_empty());
+        assert_eq!(
+            a_without_map.agenda_deck_ends(),
+            Some(("agenda_top".to_owned(), "agenda_bottom".to_owned()))
+        );
+
+        // Hand changes, faceup play, and commander lock state are all observed immediately.
+        state.promissory_notes.insert("b:new".to_owned(), pid("b"));
+        state.promissory_faceup.insert("b:note".to_owned());
+        state.agenda_deck = vec!["new_top".to_owned(), "new_bottom".to_owned()];
+        let seen = Observed::new(&state, content, POK, Some(&hub.galaxy));
+        let a = SeatObservation::bind(&seen, pid("a"));
+        assert_eq!(
+            a.revealed_promissory_notes(),
+            vec![(pid("b"), vec!["b:new".to_owned()])]
+        );
+        assert_eq!(
+            a.agenda_deck_ends(),
+            Some(("new_top".to_owned(), "new_bottom".to_owned()))
+        );
+
+        state
+            .player_mut(&pid("a"))
+            .unwrap()
+            .leaders
+            .insert(LeaderId::new("naalucommander"), LeaderStatus::Locked);
+        let seen = Observed::new(&state, content, POK, Some(&hub.galaxy));
+        let a = SeatObservation::bind(&seen, pid("a"));
+        assert!(a.revealed_promissory_notes().is_empty());
+        assert_eq!(a.agenda_deck_ends(), None);
+    }
+
     /// Laws are public: every seat reads the same standing effects.
     ///
     /// Fourteen decision producers read this state for legality or application and no feature
@@ -3150,5 +3731,69 @@ mod obs004_actor_owned_inventory {
                 "a standing law binds the table, so it reads the same from either seat"
             );
         }
+    }
+
+    #[test]
+    fn a_reveal_is_visible_to_its_viewer_alone_and_never_through_the_public_position() {
+        // BF-00h-cards: three seats, a shows nothing, b's hand is shown to a. Only a's bound view
+        // reports it, in each of the three kinds; b and c get nothing, and the public `Observed`
+        // carries a count for b, as it did before.
+        use crate::factions::hooks_cards::{RevealKind, RevealScope, reveal, reveal_hand};
+        let content = ContentStore::embedded();
+        let mut state = crate::fixtures::game(&["a", "b", "c"]);
+        state.player_mut(&pid("b")).unwrap().action_cards = vec![
+            ti4_model::id::ActionCardId::new("bribery"),
+            ti4_model::id::ActionCardId::new("dh1"),
+        ];
+        state.player_mut(&pid("b")).unwrap().secret_objectives =
+            vec![SecretObjectiveId::new("otf")];
+        let note = "spynet:yssaril".to_owned();
+        state.promissory_notes.insert(note.clone(), pid("b"));
+        let before = Observed::new(&state, content, POK, None);
+        for seat in ["a", "b", "c"] {
+            assert!(
+                SeatObservation::bind(&before, pid(seat))
+                    .revealed_cards()
+                    .is_empty()
+            );
+        }
+        reveal_hand(
+            &mut state,
+            &pid("a"),
+            &pid("b"),
+            RevealScope::Choice,
+            "yssarilcommander",
+        );
+        for (kind, ids) in [
+            (RevealKind::SecretObjectives, vec!["otf".to_owned()]),
+            (RevealKind::PromissoryNotes, vec![note.clone()]),
+        ] {
+            assert!(reveal(
+                &mut state,
+                &pid("a"),
+                &pid("b"),
+                kind,
+                &ids,
+                RevealScope::Choice,
+                "yssarilcommander"
+            ));
+        }
+        let seen = Observed::new(&state, content, POK, None);
+        let a = SeatObservation::bind(&seen, pid("a"));
+        assert_eq!(a.revealed_action_cards()[0].1.len(), 2);
+        assert_eq!(a.revealed_promissory_notes(), vec![(pid("b"), vec![note])]);
+        assert_eq!(
+            a.revealed_secret_objectives(),
+            vec![(pid("b"), vec![SecretObjectiveId::new("otf")])]
+        );
+        for seat in ["b", "c"] {
+            assert!(
+                SeatObservation::bind(&seen, pid(seat))
+                    .revealed_cards()
+                    .is_empty(),
+                "{seat} was shown nothing"
+            );
+        }
+        assert_eq!(seen.seat(&pid("b")).unwrap().action_cards_held, 2);
     }
 }

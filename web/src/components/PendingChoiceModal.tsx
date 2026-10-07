@@ -1,17 +1,49 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { PendingChoiceDto } from "../protocol/types.ts";
+import { BoardView, ChoiceOptionDto, PendingChoiceDto } from "../protocol/types.ts";
 import { Dialog } from "../primitives/index.ts";
 import { usePipelineRunner, SemanticIntent } from "../hooks/usePipelineRunner.ts";
-import { ChoiceRendererModel } from "../presentation/choiceModel.ts";
+import { ChoiceRendererModel, isDeclineOption } from "../presentation/choiceModel.ts";
 import { useParticipantText } from "../presentation/PlayerIdentity.tsx";
 import { findStrategyCardMeta } from "../protocol/contentCatalog.ts";
+import {
+  describeCardOption,
+  handDecisionConfirmLabel,
+  handDecisionNote,
+} from "../presentation/cardOptions.ts";
+import { describeStrategySecondary } from "../presentation/strategySecondary.ts";
 import { DecisionHeader } from "./DecisionHeader.tsx";
 import { useWorkspace } from "./WorkspaceContext.tsx";
+import { describeCommandTokens, type TokenOutcome } from "../presentation/commandTokens.ts";
+import { CommandTokenPanel } from "./CommandTokenPanel.tsx";
+import { StrategySecondaryPanel } from "./StrategySecondaryPanel.tsx";
+import { describeTradeReplenish } from "../presentation/tradeReplenish.ts";
+import { TradeReplenishPanel } from "./TradeReplenishPanel.tsx";
+import { SystemPickConfirmBar, SystemPickMapButton, SystemPickOptionFacts } from "./SystemPickParts.tsx";
+import { RemoveUnitPanel, RemoveUnitOptionNote } from "./RemoveUnitParts.tsx";
+import { UnitAbilityOptionNote } from "./UnitAbilityParts.tsx";
+import { describeUnitAbilityOption } from "../presentation/unitAbilityOptions.ts";
+import { describeRemoveUnit } from "../presentation/removeUnit.ts";
+import { PoliticsContextPanel, PoliticsOptionNote } from "./PoliticsDecisionParts.tsx";
+import { LegendaryContextPanel, LegendaryOptionNote } from "./LegendaryParts.tsx";
+import { InvestmentsContextPanel, StrategyGoodsNote } from "./StrategyGoodsParts.tsx";
+import { describeAbilityOffer } from "../presentation/abilityOffer.ts";
+import { UnitPickOptionNote, UnitPickPanel } from "./UnitPickParts.tsx";
+import { TechnologyPickOptionNote, TechnologyPickPanel } from "./TechnologyPickParts.tsx";
+import { PredictOutcomeNote, PredictOutcomePanel } from "./PredictOutcomeParts.tsx";
+import { ExploreRewardPanel } from "./ExploreRewardParts.tsx";
+import { AbilityOfferPanel } from "./AbilityOfferPanel.tsx";
+import { describeOfferCard } from "../presentation/offerCard.ts";
+import { OfferCardPanel } from "./OfferCardPanel.tsx";
+import { describeVoteGoods } from "../presentation/voteGoods.ts";
+import { VoteGoodsPanel } from "./VoteGoodsPanel.tsx";
+import { investmentsProgress, isStrategyCardGrid } from "../presentation/strategyGoods.ts";
 
 export interface PendingChoiceModalProps {
   choice: PendingChoiceDto | null;
   model?: ChoiceRendererModel | null;
   onSubmit: (optionId: string) => Promise<void>;
+  /** Sends a staged plan as one server batch; without it a token gain stays a plain list. */
+  onSubmitBatch?: (plan: import("../protocol/client.ts").BasketPlan) => Promise<void>;
   lastError?: string | null;
   isMinimized?: boolean;
   onMinimizedChange?: (isMinimized: boolean) => void;
@@ -19,12 +51,15 @@ export interface PendingChoiceModalProps {
   onSelectOption?: (optionId: string) => void;
   selectedOptionIds?: string[];
   onSelectOptions?: (optionIds: string[]) => void;
+  /** Lets decisions that name units and systems show what is there. */
+  boardView?: BoardView;
 }
 
 export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
   choice,
   model,
   onSubmit,
+  onSubmitBatch,
   lastError,
   isMinimized: controlledIsMinimized,
   onMinimizedChange,
@@ -32,6 +67,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
   onSelectOption,
   selectedOptionIds: controlledSelectedOptionIds,
   onSelectOptions,
+  boardView,
 }) => {
   const present = useParticipantText();
   const workspace = useWorkspace();
@@ -123,7 +159,8 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
       opt.label.toLowerCase().includes(q) || (opt.description?.toLowerCase().includes(q) ?? false)
     );
   });
-  const strategyDraft = choice.context?.subtype === "draft_strategy_card";
+  const strategyDraft = isStrategyCardGrid(choice);
+  const investments = investmentsProgress(choice);
 
   const handleToggleOption = (id: string) => {
     if (isMultiSelect) {
@@ -146,6 +183,12 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
     return (
       <div data-testid="minimized-choice-banner" className="choice-banner panel">
         <span>{choice.prompt}</span>
+        <SystemPickConfirmBar
+          choice={choice}
+          board={boardView}
+          selectedOptionId={selectedOptionId}
+          onSubmit={onSubmit}
+        />
         <button
           type="button"
           data-testid="resume-choice-button"
@@ -161,6 +204,39 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
   const isSelectionValid = isMultiSelect
     ? selectedOptionIds.length >= minSelection && selectedOptionIds.length <= maxSelection
     : choice.options.some((opt) => opt.id === selectedOptionId);
+
+  // Leadership's secondary window plans its purchase on the token panel instead.
+  const tokens = describeCommandTokens(choice, Boolean(onSubmitBatch));
+  const secondary = tokens ? null : describeStrategySecondary(choice);
+  const replenish = tokens || secondary ? null : describeTradeReplenish(choice);
+  const abilityOffer = tokens || secondary || replenish ? null : describeAbilityOffer(choice);
+  const offerCard =
+    tokens || secondary || replenish || abilityOffer ? null : describeOfferCard(choice);
+  const voteGoods =
+    tokens || secondary || replenish || abilityOffer || offerCard ? null : describeVoteGoods(choice);
+  const confirmTokens = async (outcome: TokenOutcome) => {
+    if (outcome.kind === "option") await onSubmit(outcome.optionId);
+    else if (outcome.kind === "moves") {
+      // One engine question per move; the pipeline answers them in turn.
+      const intents: SemanticIntent[] = outcome.moveIds.map((id) => ({
+        predicate: (o: ChoiceOptionDto) => o.id === id,
+      }));
+      if (outcome.finish) intents.push({ predicate: isDeclineOption });
+      executePipeline(intents);
+    } else await onSubmitBatch?.({ kind: "tokens", steps: outcome.steps });
+  };
+  const submitOption = async (optionId: string) => {
+    if (isSubmitting || isPipelineRunning) return;
+    setSubmissionError(null);
+    setIsSubmitting(true);
+    try {
+      await onSubmit(optionId);
+    } catch (error) {
+      setSubmissionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -220,6 +296,8 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
           <DecisionHeader
             actor={choice.actor}
             title={choice.prompt}
+            progress={handDecisionNote(choice) ?? undefined}
+            choice={choice}
             onMinimize={() => setIsMinimized(true)}
             titleTestId="choice-prompt"
             minimizeTestId="minimize-choice-button"
@@ -245,7 +323,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
           )}
 
           {/* Search Bar for long option lists */}
-          {choice.options.length >= 6 && (
+          {choice.options.length >= 6 && !tokens && (
             <input
               type="search"
               data-testid="choice-search-input"
@@ -282,6 +360,59 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
             </div>
           )}
 
+          {secondary && (
+            <StrategySecondaryPanel
+              view={secondary}
+              disabled={isSubmitting || isPipelineRunning}
+              onChoose={(id) => void submitOption(id)}
+            />
+          )}
+          {replenish && (
+            <TradeReplenishPanel
+              view={replenish}
+              disabled={isSubmitting || isPipelineRunning}
+              onChoose={(id) => void submitOption(id)}
+            />
+          )}
+          {abilityOffer && (
+            <AbilityOfferPanel
+              view={abilityOffer}
+              disabled={isSubmitting || isPipelineRunning}
+              onChoose={(id) => void submitOption(id)}
+            />
+          )}
+          {offerCard && (
+            <OfferCardPanel
+              view={offerCard}
+              disabled={isSubmitting || isPipelineRunning}
+              onChoose={(id) => void submitOption(id)}
+            />
+          )}
+          {voteGoods && (
+            <VoteGoodsPanel
+              key={choice.nonce}
+              view={voteGoods}
+              disabled={isSubmitting || isPipelineRunning}
+              onChoose={(id) => void submitOption(id)}
+            />
+          )}
+          {tokens && (
+            <CommandTokenPanel
+              key={choice.nonce}
+              view={tokens}
+              disabled={isSubmitting || isPipelineRunning}
+              onConfirm={confirmTokens}
+            />
+          )}
+          {!secondary && !tokens && <RemoveUnitPanel choice={choice} board={boardView} />}
+          {!secondary && !tokens && !replenish && <PoliticsContextPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <LegendaryContextPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <InvestmentsContextPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <UnitPickPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <TechnologyPickPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <PredictOutcomePanel choice={choice} />}
+          {!secondary && !tokens && !replenish && <ExploreRewardPanel choice={choice} />}
+          {!secondary && !tokens && !replenish && !abilityOffer && !offerCard && !voteGoods && (
           <form
             onSubmit={handleSubmit}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -323,6 +454,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
                   const isMaxReached =
                     isMultiSelect && selectedOptionIds.length >= maxSelection && !isChecked;
                   const card = strategyDraft ? findStrategyCardMeta(opt.id) : null;
+                  const handCard = describeCardOption(choice.context?.subtype, opt);
 
                   return (
                     <label
@@ -354,8 +486,18 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
                       />
                       <div>
                         <div style={{ fontWeight: 600, color: isChecked ? "#38bdf8" : "#e2e8f0" }}>
-                          {card ? `${card.initiative}. ${card.name}` : opt.label}
+                          {card ? `${card.initiative}. ${card.name}` : (handCard?.title ?? describeRemoveUnit(choice, boardView)?.option(opt).title ?? describeUnitAbilityOption(choice, opt, boardView)?.title ?? opt.label)}
                         </div>
+                        {handCard?.badge && (
+                          <div className="card-option__badge" data-testid="card-option-badge">
+                            {handCard.badge}
+                          </div>
+                        )}
+                        {handCard?.text && (
+                          <p className="card-option__text" data-testid="card-option-text">
+                            {handCard.text}
+                          </p>
+                        )}
                         {card && (
                           <div className="strategy-draft-card__text">
                             <strong>Primary</strong>
@@ -366,6 +508,15 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
                             <p>{card.secondaryText || "No printed text available."}</p>
                           </div>
                         )}
+                        <UnitAbilityOptionNote choice={choice} option={opt} board={boardView} />
+                        <RemoveUnitOptionNote choice={choice} option={opt} board={boardView} />
+                        <UnitPickOptionNote choice={choice} option={opt} />
+                        <TechnologyPickOptionNote choice={choice} option={opt} />
+                        <PredictOutcomeNote choice={choice} option={opt} />
+                        <PoliticsOptionNote choice={choice} option={opt} />
+                        <LegendaryOptionNote choice={choice} option={opt} board={boardView} />
+                        {card && <StrategyGoodsNote choice={choice} option={opt} />}
+                        <SystemPickOptionFacts choice={choice} optionId={opt.id} board={boardView} />
                         {opt.description && (
                           <div
                             style={{
@@ -385,7 +536,12 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
               )}
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+              <SystemPickMapButton
+                choice={choice}
+                board={boardView}
+                onMinimize={() => setIsMinimized(true)}
+              />
               <button
                 type="submit"
                 data-testid="submit-choice-button"
@@ -400,9 +556,13 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
               >
                 {isSubmitting || isPipelineRunning
                   ? "Submitting..."
-                  : strategyDraft
+                  : investments
+                    ? "Place trade good"
+                    : strategyDraft
                     ? "Choose card"
-                    : choice.context?.subtype === "activate_system"
+                    : handDecisionConfirmLabel(choice.context?.subtype)
+                      ? handDecisionConfirmLabel(choice.context?.subtype)
+                      : choice.context?.subtype === "activate_system"
                       ? "Activate system"
                       : choice.context?.subtype === "commit_ground_forces"
                         ? "Land forces"
@@ -412,6 +572,7 @@ export const PendingChoiceModal: React.FC<PendingChoiceModalProps> = ({
               </button>
             </div>
           </form>
+          )}
         </fieldset>
       </Dialog.Content>
     </Dialog.Root>

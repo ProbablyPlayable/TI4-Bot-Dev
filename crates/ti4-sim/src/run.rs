@@ -143,6 +143,10 @@ fn seat(content: &ContentStore, table: &Table, seed: u64) -> Result<(GameState, 
         }
     }
 
+    // Setup dealt the notes before factions were known, so note ids read a blank faction and no
+    // faction note was dealt; re-deal now that every seat has its faction (as training does).
+    ti4_engine::promissory::deal(&mut state, content, table.sources);
+
     // Enough neutral tiles to sit between the homes and Mecatol.
     let filler: Vec<String> = ti4_engine::seating::neutral_systems(content, 30, table.sources)
         .into_iter()
@@ -228,6 +232,10 @@ pub fn play_learned(
             seat.faction = faction.clone();
         }
     }
+
+    // Setup dealt the notes before factions were known, so note ids read a blank faction and no
+    // faction note was dealt; re-deal now that every seat has its faction (as training does).
+    ti4_engine::promissory::deal(&mut state, content, sources);
 
     // Home systems in assignment order: the pool places them into its home slots.
     let mut homes: Vec<String> = Vec::with_capacity(table.factions.len());
@@ -393,6 +401,8 @@ pub fn run(
 }
 
 /// Play `count` games with a named set of seats.
+/// # Panics
+/// Panics if a seed worker panics; an incomplete batch is never returned as success.
 #[must_use]
 pub fn run_with(
     content: &'static ContentStore,
@@ -402,7 +412,9 @@ pub fn run_with(
     seats: Seats,
 ) -> Batch {
     let seeds: Vec<u64> = seeds.into_iter().collect();
-    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(16);
     let chunk = seeds.len().div_ceil(workers.max(1)).max(1);
 
     let mut results: Vec<GameResult> = std::thread::scope(|scope| {
@@ -420,8 +432,7 @@ pub fn run_with(
             .collect();
         handles
             .into_iter()
-            .filter_map(|handle| handle.join().ok())
-            .flatten()
+            .flat_map(|handle| handle.join().expect("simulation seed worker panicked"))
             .collect()
     });
     results.sort_by_key(|result| result.seed);
@@ -456,6 +467,51 @@ mod tests {
             result.events.values().sum::<usize>() > 0,
             "and emitted events"
         );
+    }
+
+    /// Every victory point a seat holds at the end has a `vp_ledger` row behind it.
+    ///
+    /// Run 26 of the 2026-10-06 sweep ended with hacan on 1 VP from the secret `te` and no
+    /// ledger row: secrets, relics and Styx moved points without recording them, and every report
+    /// built on the ledger (`vp_sources`, `game_cost`, the nightly digest) undercounted.
+    #[test]
+    fn every_seats_victory_points_equal_its_ledger_rows() {
+        let content = ContentStore::embedded();
+        let players = seats(&["a", "b", "c", "d"]);
+        let table = Table::seated(content, &players, POK);
+        let mut scored = 0;
+        // Each of these scores a secret; the scored seed-4 game also draws the Shard of the
+        // Throne (a relic point), the custodians and Imperial.
+        for (seed, kind) in [
+            (1, Seats::Random),
+            (2, Seats::Random),
+            (4, Seats::Scored),
+        ] {
+            let (state, galaxy) = seat(content, &table, seed).unwrap();
+            let mut game =
+                Game::with_table(state, content, kind.table(&players, seed)).with_galaxy(galaxy);
+            let outcome = game.run(Horizon::default().rounds, Horizon::default().steps);
+            assert!(outcome.is_ok(), "seed {seed} {}: {outcome:?}", kind.label());
+            for player in &game.state.players {
+                let rows: Vec<_> = game
+                    .state
+                    .vp_ledger
+                    .iter()
+                    .filter(|(seat, _, _)| *seat == player.id)
+                    .collect();
+                let ledger: i32 = rows.iter().map(|(_, delta, _)| *delta).sum();
+                assert_eq!(
+                    player.victory_points,
+                    ledger,
+                    "seed {seed} {}: {} holds {} VP but its ledger rows sum to {ledger}: {rows:?}",
+                    kind.label(),
+                    player.id,
+                    player.victory_points,
+                );
+                scored += player.victory_points;
+            }
+        }
+        assert!(scored > 0, "nobody scored, so the ledger was never exercised");
     }
 
     #[test]

@@ -6,7 +6,7 @@ pub mod replay;
 pub mod transport;
 pub mod worker;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread::JoinHandle;
 
@@ -108,6 +108,8 @@ pub struct SessionConfig {
     pub batches: Vec<crate::storage::BatchRecord>,
     /// State at the first unplanned choice, computed by private replay for a committed batch.
     pub replay_boundary_state: Option<GameState>,
+    /// Card names each seat asked never to be offered (see `ti4_engine::reaction_modes`).
+    pub reaction_modes: BTreeMap<PlayerId, BTreeSet<String>>,
 }
 
 impl SessionConfig {
@@ -140,7 +142,14 @@ impl SessionConfig {
             history_generation: 0,
             batches: Vec::new(),
             replay_boundary_state: None,
+            reaction_modes: BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_reaction_modes(mut self, modes: BTreeMap<PlayerId, BTreeSet<String>>) -> Self {
+        self.reaction_modes = modes;
+        self
     }
 
     #[must_use]
@@ -396,6 +405,7 @@ impl GameSession {
             lock.redo_decisions.len(),
             lock.history_generation,
         );
+        snapshot.reaction_modes = lock.reaction_modes_for(viewer);
         snapshot.current_path = crate::protocol::server::current_log_path(
             &lock.latest_state,
             pending.map(|(choice, _)| choice),
@@ -508,6 +518,22 @@ impl GameSession {
             redo_count: lock.redo_decisions.len(),
             generation: lock.history_generation,
         }
+    }
+
+    /// Set one seat's handling of one action card, by printed name.
+    ///
+    /// # Errors
+    /// A client-facing message when the seat or card is unknown or the setting cannot be saved.
+    pub fn set_reaction_mode(
+        &self,
+        seat: &PlayerId,
+        card: &str,
+        mode: ti4_model::state::ReactionMode,
+    ) -> Result<(), String> {
+        self.shared
+            .lock()
+            .expect("shared lock")
+            .set_reaction_mode(seat, card, mode)
     }
 
     pub fn game_version(&self) -> u64 {
@@ -754,12 +780,35 @@ impl GameSession {
         self.shared.lock().expect("shared lock").planning.plans()
     }
 
+    /// The live history exactly as `history.json` would hold it right now (unsaved batches
+    /// included), with the game's seed and seats, read under one lock so the pieces agree.
+    #[must_use]
+    pub fn replay_export(&self) -> (crate::storage::GameHistory, Option<u64>, Vec<PlayerId>) {
+        let lock = self.shared.lock().expect("shared lock");
+        (
+            crate::storage::GameHistory {
+                decisions: lock.decision_log.clone(),
+                redo: lock.redo_decisions.clone(),
+                events: lock.event_log.clone(),
+                redo_events: lock.redo_events.clone(),
+                event_counter: lock.event_counter,
+                revision: lock.game_version.saturating_add(1),
+                generation: lock.history_generation,
+                batches: lock.batches.clone(),
+            },
+            lock.seed,
+            lock.player_ids.clone(),
+        )
+    }
+
     pub fn restart_config(&self) -> SessionConfig {
         let mut config = self.initial_config.clone();
         config.plans = self.plans();
         // Callers can replace the decision prefix (batch commit, undo, redo).
         // The old speculative view must never be reused for a different cursor.
         config.replay_boundary_state = None;
+        // A rewind or a batch starts a new worker; what each seat asked for survives it.
+        config.reaction_modes = self.shared.lock().expect("shared lock").reaction_modes_snapshot();
         config
     }
 

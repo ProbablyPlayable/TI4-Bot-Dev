@@ -40,13 +40,20 @@ export interface UseGameSessionReturn {
   lastError: string | null;
   events: GameLogEntry[];
   history: import("../protocol/types.ts").HistoryStatus;
+  batchResume?: import("../protocol/client.ts").BatchResume | null;
   submitChoice: (optionId: string) => Promise<void>;
+  /** Never (or again) offer one action card, by printed name, to this seat. */
+  setReactionMode: (card: string, mode: import("../protocol/types.ts").ReactionModeSetting) => void;
   changeHistory: (action: import("../protocol/client.ts").HistoryChange) => Promise<void>;
+  /** The game's replay JSON for copying out (any seated player). */
+  fetchReplay: () => Promise<{ text: string; filename: string }>;
   submitMovementBatch: (
     destination: string,
     steps: import("../protocol/client.ts").MovementStep[],
   ) => Promise<void>;
   submitBatch: (plan: import("../protocol/client.ts").BasketPlan) => Promise<void>;
+  resumeBatch: () => Promise<void>;
+  dismissBatchResume: () => void;
 }
 
 export function useGameSession({
@@ -81,8 +88,12 @@ export function useGameSession({
       client.applyPlanning(identity, nonce, expectedVersion),
     submitPlanningChoice: (identity, optionId) => client.submitPlanningChoice(identity, optionId),
     submitChoice,
+    setReactionMode: (card, mode) => client.setReactionMode(card, mode),
     changeHistory,
+    fetchReplay: () => client.fetchReplay(),
     submitMovementBatch: (destination, steps) => client.submitMovementBatch(destination, steps),
     submitBatch: (plan) => client.submitBatch(plan),
+    resumeBatch: () => client.resumeBatch(),
+    dismissBatchResume: () => client.dismissBatchResume(),
   };
 }
