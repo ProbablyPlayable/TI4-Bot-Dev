@@ -21,9 +21,24 @@
   stroke-width: 1;
 }
 
+/* A home system has a tint of its seat. The outline is free for control. */
 .galaxy .system.home .hex {
-  fill: #161f2c;
-  stroke: color-mix(in srgb, var(--seat) 53%, transparent);
+  fill: color-mix(in srgb, var(--seat) 10%, #131c28);
+}
+
+/* Who has ships in the system. */
+.galaxy .control {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-opacity: 0.85;
+  pointer-events: none;
+}
+
+.galaxy .control.contested {
+  stroke: #ff5d4d;
+  stroke-opacity: 1;
+  stroke-width: 2.6;
+  stroke-dasharray: 7 3;
 }
 
 .galaxy .system.inspected .hex {
@@ -60,23 +75,10 @@
   font-size: 8px;
 }
 
-.galaxy .t-name {
-  fill: #c2d0de;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-
-.galaxy .system.active .t-name {
-  fill: var(--color-gold);
-}
-
-.galaxy .system.active .t-name.t-active {
-  fill: #c3a06e;
-}
-
-.galaxy .t-mark {
-  font-size: 9.5px;
+.galaxy .t-mark text {
+  font-size: 11px;
   font-weight: 700;
+  text-anchor: start;
 }
 
 .galaxy .t-pick {
@@ -86,23 +88,12 @@
   text-anchor: start;
 }
 
-/* Far away, small text is hidden. Marks and task values stay. */
-.galaxy.far .t-id,
-.galaxy.far .t-name:not(.keep) {
+/* Far away, the system number is hidden. Marks and task values stay. */
+.galaxy.far .t-id {
   display: none;
 }
 
-.galaxy.far .system:hover .t-name,
-.galaxy.far .system.linked .t-name,
-.galaxy.far .system:focus-visible .t-name {
-  display: inline;
-}
-
-.galaxy.far .t-name {
-  font-size: 11px;
-}
-
-.galaxy.far .t-mark {
+.galaxy.far .t-mark text {
   font-size: 12.5px;
 }
 
@@ -129,12 +120,47 @@
   stroke-width: 2.4;
 }
 
+/* A planet that the open task can use. It must be the first thing the player sees on the board. */
+.galaxy .planet.payable > circle {
+  fill-opacity: 0.6;
+  stroke: var(--color-text);
+  stroke-opacity: 1;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 4px var(--seat, var(--color-text)));
+}
+
+.galaxy .planet.payable > text {
+  font-weight: 800;
+}
+
+/* The value that does not pay: smaller and quiet, but readable. */
+.galaxy .planet.payable .v-off {
+  font-size: 0.72em;
+  font-weight: 600;
+  fill-opacity: 0.7;
+}
+
+.galaxy .planet.payable:hover > circle,
+.galaxy .planet.payable:focus-visible > circle {
+  stroke: var(--color-gold);
+  stroke-width: 3;
+}
+
+.galaxy svg[data-tasking] .control,
+.galaxy svg[data-tasking] .planet:not(.payable),
+.galaxy svg[data-tasking] .t-mark,
+.galaxy svg[data-tasking] .t-id,
+.galaxy svg[data-tasking] .anomaly,
+.galaxy svg[data-tasking] .wormhole {
+  opacity: 0.28;
+}
+
 .galaxy .planet.exhausted circle {
   fill-opacity: 0.35;
   stroke-dasharray: 2 2;
 }
 
-.galaxy .planet.chosen circle {
+.galaxy .planet.chosen > circle {
   fill: var(--color-gold);
   fill-opacity: 0.32;
   stroke: var(--color-gold);
@@ -142,7 +168,17 @@
   stroke-width: 2.4;
 }
 
-.galaxy .planet.chosen.picked circle {
+.galaxy .planet.payable.chosen > circle {
+  fill-opacity: 0.9;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 5px var(--color-gold));
+}
+
+.galaxy .planet.payable.chosen > text {
+  fill: var(--color-canvas);
+}
+
+.galaxy .planet.chosen.picked > circle {
   fill: var(--color-green);
   stroke: var(--color-green);
 }

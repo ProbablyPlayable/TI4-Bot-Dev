@@ -7,6 +7,8 @@ export type SystemId = string;
 export type PlanetId = string;
 
 export type UnitType =
+  | "flagship"
+  | "warsun"
   | "dreadnought"
   | "carrier"
   | "cruiser"
@@ -39,6 +41,12 @@ export interface PillView {
   label: string;
 }
 
+/** Rule or help text. It is not visible by default: the player opens it by hover or click. */
+export interface HelpView {
+  title: string;
+  text: string;
+}
+
 export interface GaugeView {
   label: string;
   used: number;
@@ -58,6 +66,8 @@ export interface CounterView {
 export type LinkToken = string;
 
 const UNIT_NAMES: Record<UnitType, [string, string]> = {
+  flagship: ["Flagship", "Flagships"],
+  warsun: ["War sun", "War suns"],
   dreadnought: ["Dreadnought", "Dreadnoughts"],
   carrier: ["Carrier", "Carriers"],
   cruiser: ["Cruiser", "Cruisers"],

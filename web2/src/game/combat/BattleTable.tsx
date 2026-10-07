@@ -7,10 +7,32 @@ import type {
   OutcomeView,
 } from "../../model";
 import { forceText, plural, unitName } from "../../model";
-import { Button, Card, ChipTabs, Die, Eyebrow, Icon, InlineNote, Offer, Pill, cx } from "../../ui";
+import {
+  Button,
+  Card,
+  ChipTabs,
+  Die,
+  Eyebrow,
+  Hint,
+  Icon,
+  InlineNote,
+  Offer,
+  Pill,
+  cx,
+} from "../../ui";
 import { ActionButton, useDispatch, useSeat, useSeats } from "../context";
 
-function Side({ side }: { side: BattleSideView }) {
+/** `lines`: which header lines the table has. Both sides keep them, so their unit rows start level. */
+function Side({
+  side,
+  lines,
+  odds,
+}: {
+  side: BattleSideView;
+  lines: { meta: boolean; cards: boolean };
+  /** Simulated result for this side, before the roll. */
+  odds?: { wins: number; left: string };
+}) {
   const dispatch = useDispatch();
   const seat = useSeat(side.seat);
   return (
@@ -27,12 +49,18 @@ function Side({ side }: { side: BattleSideView }) {
           {seat.faction}
           {side.isViewer ? " · You" : ""}
         </span>
-        {side.hits !== null && (
-          <span className="ml-auto font-strong tabular-nums">{plural(side.hits, "hit")}</span>
-        )}
+        <span className="ml-auto flex items-baseline gap-3 tabular-nums">
+          {odds && (
+            <span className="text-sm text-muted" title="Simulated result of this battle">
+              <strong className="text-md font-strong text-text">{odds.wins}%</strong> win · ~
+              {odds.left} survive
+            </span>
+          )}
+          {side.hits !== null && <span className="font-strong">{plural(side.hits, "hit")}</span>}
+        </span>
       </div>
-      {side.meta.length > 0 && (
-        <div className="mt-0.5 mb-[5px] flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted">
+      {lines.meta && (
+        <div className="mt-0.5 flex h-[18px] gap-x-3 overflow-hidden text-xs whitespace-nowrap text-muted">
           {side.meta.map((item) => (
             <span
               key={item.text}
@@ -46,6 +74,12 @@ function Side({ side }: { side: BattleSideView }) {
           ))}
         </div>
       )}
+      {lines.cards && (
+        <div className="h-[18px] truncate text-xs text-muted" title={side.cards}>
+          {side.cards}
+        </div>
+      )}
+      {(lines.meta || lines.cards) && <div className="h-[5px]" />}
       {side.rows.length === 0 && (
         <div className="min-h-[34px] border-t border-line/50 py-[3px] text-sm leading-7 text-faint">
           No units
@@ -111,23 +145,45 @@ function Side({ side }: { side: BattleSideView }) {
 }
 
 /** One table for every dice step: space cannon, barrage, combat rounds, bombardment, ground combat. */
-export function BattleTable({ view }: { view: BattleTableView }) {
+export function BattleTable({ view, odds }: { view: BattleTableView; odds?: OddsView }) {
   const seats = useSeats();
+  const draw = odds ? 100 - odds.attackerWins - odds.defenderWins : 0;
   return (
     <>
       <div className="overflow-hidden rounded-lg border border-line">
         <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-b border-line bg-white/[.016] px-3 py-1.5 text-sm">
           <strong>{view.label}</strong>
           <span className="text-muted">{view.score}</span>
+          {odds && (
+            <span className="inline-flex items-center gap-2 text-muted">
+              Avg {odds.rounds} rounds{draw > 0 ? ` · ${draw}% both destroyed` : ""}
+              <Hint label="About the odds">
+                Simulated · {odds.rollouts} rollouts · {odds.caveat}
+              </Hint>
+            </span>
+          )}
           {view.owed && (
             <span className="ml-auto font-strong text-accent">
               {plural(view.owed.hits, "hit")} for {seats[view.owed.seat].name} to assign
             </span>
           )}
         </div>
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(330px,1fr))] max-[860px]:grid-cols-1">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(330px,1fr))]">
           {view.sides.map((side) => (
-            <Side key={side.seat} side={side} />
+            <Side
+              key={side.seat}
+              side={side}
+              odds={
+                odds && {
+                  wins: side.seat === odds.attacker ? odds.attackerWins : odds.defenderWins,
+                  left: side.seat === odds.attacker ? odds.attackerLeft : odds.defenderLeft,
+                }
+              }
+              lines={{
+                meta: view.sides.some((item) => item.meta.length > 0),
+                cards: view.sides.some((item) => item.cards),
+              }}
+            />
           ))}
         </div>
       </div>
@@ -227,14 +283,13 @@ export function BattleOffers({ offers }: { offers: BattleOfferView[] }) {
             key={offer.title}
             eyebrow={offer.eyebrow}
             title={offer.title}
+            hint={offer.text && <Hint label={`About ${offer.title}`}>{offer.text}</Hint>}
             actions={
               offer.actions.length
                 ? offer.actions.map((action) => <ActionButton key={action.label} view={action} />)
                 : undefined
             }
-          >
-            {offer.text}
-          </Offer>
+          />
         ),
       )}
     </>
@@ -267,8 +322,7 @@ export function BattleRecords({
         value={record.key}
         onChange={onSelect}
       />
-      {record.odds && <OddsCard view={record.odds} />}
-      <BattleTable view={record.table} />
+      <BattleTable view={record.table} odds={record.odds} />
     </>
   );
 }

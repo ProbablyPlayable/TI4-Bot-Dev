@@ -12,6 +12,8 @@ const PATHS = {
   redo: '<path d="m16 6 5 5-5 5"/><path d="M21 11H10a5 5 0 0 0 0 10h3"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   carrier: '<path d="M4 9h16v6H4zM7 6h10v3M7 15v3m5-3v3m5-3v3M2 12h2m16 0h2"/>',
+  flagship: '<path d="m12 2 6 7 2 11H4L6 9l6-7Zm0 5v9m-4-3h8M9 20v2m6-2v2"/>',
+  warsun: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M4 12h5m6 0h5"/>',
   dreadnought: '<path d="m12 2 5 6 2 12H5L7 8l5-6Zm0 4v10M7 11h10"/>',
   cruiser: '<path d="m12 3 7 15-7-3-7 3L12 3Zm0 5v7"/>',
   destroyer: '<path d="m12 4 7 15-7-4-7 4L12 4ZM8 12h8"/>',

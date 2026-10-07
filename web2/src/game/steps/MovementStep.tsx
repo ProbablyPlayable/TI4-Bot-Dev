@@ -34,7 +34,7 @@ function MoveRow({ row }: { row: MoveRowView }) {
       {...props}
       extra={
         route && (
-          <div className="mt-[3px] flex flex-wrap items-center gap-1.5 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
             {route.options.length ? (
               <select
                 className="max-w-full rounded-[5px] border border-line bg-canvas px-1.5 py-0.5 text-text"
@@ -116,7 +116,7 @@ function Origin({ origin }: { origin: OriginView }) {
         aria-expanded={false}
         onClick={() => dispatch({ type: "expandOrigin", system: origin.system })}
         className={cx(
-          "flex w-full flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-lg border border-line px-3.5 py-[9px] text-left text-sm text-muted",
+          "flex w-full flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-lg border border-line px-3.5 py-1.5 text-left text-sm text-muted",
           linked && "bg-cyan/[.06]",
         )}
         {...props}
@@ -171,7 +171,12 @@ export function MovementStep({ view }: { view: MovementView }) {
   return (
     <>
       {view.origins.length ? (
-        view.origins.map((origin) => <Origin key={origin.system} origin={origin} />)
+        // Two columns: the panel is wide, and every origin must be in view without scroll.
+        <div className="columns-2 gap-2.5 [&>*]:mb-2.5 [&>*]:break-inside-avoid">
+          {view.origins.map((origin) => (
+            <Origin key={origin.system} origin={origin} />
+          ))}
+        </div>
       ) : (
         <InlineNote tone="quiet">
           No ships are staged. You may activate a system without moving.

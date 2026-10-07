@@ -7,6 +7,7 @@ import {
   CardHeading,
   CardText,
   CheckRow,
+  Hint,
   ChipTabs,
   Counter,
   Die,
@@ -61,7 +62,7 @@ export function Gallery() {
         {accents.map(([name, accent]) => (
           <div
             key={name}
-            className="@container space-y-6"
+            className="space-y-6"
             style={{ "--accent": accent } as React.CSSProperties}
           >
             <h2 className="text-md font-semibold text-accent">Accent · {name}</h2>
@@ -134,12 +135,7 @@ export function Gallery() {
                 tabs={[
                   { name: "Activation", status: "done", caption: "#27 Starpoint" },
                   { name: "Movement", status: "needs-review", caption: "Needs review" },
-                  {
-                    name: "Space combat",
-                    shortName: "combat",
-                    status: "decision",
-                    caption: "Your decision",
-                  },
+                  { name: "Space combat", status: "decision", caption: "Your decision" },
                   { name: "Invasion", status: "skipped", caption: "Skipped" },
                   { name: "Production", status: "future", caption: "" },
                 ]}
@@ -237,10 +233,13 @@ export function Gallery() {
               <Offer
                 eyebrow="Action card · Start of a combat round"
                 title="Morale Boost"
+                hint={
+                  <Hint label="About Morale Boost">
+                    Apply +1 to the result of each of your unit’s combat rolls during this round.
+                  </Hint>
+                }
                 actions={<Button>Play Morale Boost</Button>}
-              >
-                Apply +1 to the result of each of your unit’s combat rolls during this round.
-              </Offer>
+              />
               <Gauges>
                 <Gauge label="Fleet supply" used={2} total={3} />
                 <Gauge label="Transport capacity" used={5} total={4} />

@@ -1,4 +1,4 @@
-import { test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
 // Screenshots of every example, next to the same example in the HTML click dummy.
@@ -17,40 +17,44 @@ const EXAMPLES = [
   "live-secondary",
   "live-component",
   "live-combat",
+  "live-combat-full",
   "live-invasion",
   "summary",
 ];
-const SIZES = { wide: { width: 1440, height: 900 }, narrow: { width: 1000, height: 800 } };
+// One size: the design target is 1920×1080 or larger. Narrower screens are a non-goal (AGENTS.md).
+const SIZE = { width: 1920, height: 1080 };
 const LEGACY = fileURLToPath(new URL("../../web/tactical-action-demo.html", import.meta.url));
 const legacy = process.env.LEGACY !== "0";
 
 const shot = (page: Page, name: string) =>
   page.screenshot({ path: `shots/${name}.png`, animations: "disabled" });
 
-for (const [size, viewport] of Object.entries(SIZES)) {
-  test.describe(size, () => {
-    test.use({ viewport });
-    for (const example of EXAMPLES) {
-      test(`web2 ${example}`, async ({ page }) => {
-        await page.goto(`/?example=${example}`);
-        await page.locator("#step-panel").waitFor();
-        await shot(page, `web2/${size}/${example}`);
+test.use({ viewport: SIZE });
+
+test.describe("examples", () => {
+  for (const example of EXAMPLES) {
+    test(`web2 ${example}`, async ({ page }) => {
+      await page.goto(`/?example=${example}`);
+      await page.locator("#step-panel").waitFor();
+      await shot(page, `web2/examples/${example}`);
+      // The open step must fit: experts must not scroll to see the state of a step.
+      const overflow = await page
+        .locator("#step-panel > div:nth-of-type(2)")
+        .evaluate((element) => element.scrollHeight - element.clientHeight);
+      expect(overflow, "the step content needs vertical scroll").toBeLessThanOrEqual(0);
+    });
+    if (legacy)
+      test(`legacy ${example}`, async ({ page }) => {
+        await page.goto(`file://${LEGACY}`);
+        await page.selectOption("#example", example);
+        await shot(page, `legacy/examples/${example}`);
       });
-      if (legacy)
-        test(`legacy ${example}`, async ({ page }) => {
-          await page.goto(`file://${LEGACY}`);
-          await page.selectOption("#example", example);
-          await shot(page, `legacy/${size}/${example}`);
-        });
-    }
-  });
-}
+  }
+});
 
 test.describe("flows", () => {
-  test.use({ viewport: SIZES.wide });
-
   test("gallery", async ({ page }) => {
-    await page.setViewportSize({ width: 1600, height: 1500 });
+    await page.setViewportSize({ width: 1920, height: 1500 });
     await page.goto("/?gallery");
     await shot(page, "web2/gallery");
   });
@@ -90,6 +94,26 @@ test.describe("flows", () => {
     await page.getByRole("button", { name: "Res / Inf" }).click();
     await page.getByRole("button", { name: /Exhaust Jord/ }).click();
     await shot(page, "web2/flow/production-pay");
+  });
+
+  test("rule text opens on hover and stays on click", async ({ page }) => {
+    await page.goto("/?example=live-strategic");
+    const hint = page.getByRole("button", { name: "Rules: Leadership · Primary" });
+    await expect(page.getByRole("note")).toHaveCount(0);
+    await hint.hover();
+    await expect(page.getByRole("note")).toContainText("Gain 3 command tokens");
+    await hint.click();
+    await page.mouse.move(10, 10);
+    await expect(page.getByRole("note")).toBeVisible();
+    await shot(page, "web2/flow/rules-hint");
+  });
+
+  test("pay on the board only", async ({ page }) => {
+    await page.goto("/?example=live-strategic");
+    await expect(page.locator("#step-panel").getByRole("checkbox")).toHaveCount(0);
+    await page.getByRole("button", { name: /Exhaust Jord/ }).click();
+    await expect(page.locator("#step-panel")).toContainText("Jord 2");
+    await shot(page, "web2/flow/strategic-pay");
   });
 
   test("apply a draft", async ({ page }) => {

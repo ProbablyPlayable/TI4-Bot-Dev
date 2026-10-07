@@ -2,42 +2,44 @@ import type { PlayerRowView, PlayerTableView } from "../../model";
 import { cx } from "../../ui";
 import { SeatSymbol, useSeat } from "../context";
 
+// Full names: the table is wide at the design size (1920×1080). The title explains the format.
 const COLUMNS = [
   ["VP", "Victory points of 10"],
-  ["SC", "Strategy card · ✓ used"],
-  ["R", "Resources: ready / total"],
-  ["I", "Influence: ready / total"],
-  ["TG", "Trade goods"],
-  ["C", "Commodities / limit"],
-  ["T·F·S", "Command tokens: tactic · fleet · strategy"],
-  ["AC", "Action cards in hand"],
-  ["SO", "Secret objectives: scored / held"],
-  ["Pl", "Planets"],
+  ["Strategy cards", "Strategy cards · ✓ used · two for each player in a game of four or fewer"],
+  ["Resources", "Resources: ready / total"],
+  ["Influence", "Influence: ready / total"],
+  ["Trade goods", "Trade goods"],
+  ["Commodities", "Commodities / limit"],
+  ["Tactic · Fleet · Strategy", "Command tokens: tactic · fleet · strategy"],
+  ["Action cards", "Action cards in hand"],
+  ["Secrets", "Secret objectives: scored / held"],
+  ["Planets", "Planets"],
 ] as const;
 
-const CELL = "px-[5px] py-0.5 text-right whitespace-nowrap tabular-nums";
+const CELL = "px-2 py-0.5 text-right whitespace-nowrap tabular-nums";
 
 function Row({ row, first, onOpen }: { row: PlayerRowView; first: boolean; onOpen: () => void }) {
   const seat = useSeat(row.seat);
-  const card = row.strategyCard;
   const values = [
     <strong className="text-text">{row.victoryPoints}</strong>,
-    card ? (
-      <span
-        className={cx(card.used && "opacity-60")}
-        title={`${card.number} ${card.name}${card.used ? " · used" : ""}`}
-      >
-        {card.number} {card.short}
-        {card.used ? " ✓" : ""}
-      </span>
-    ) : (
-      "–"
-    ),
+    row.strategyCards.length
+      ? row.strategyCards.map((card, index) => (
+          <span
+            key={card.number}
+            className={cx(card.used && "opacity-60")}
+            title={`${card.number} ${card.name}${card.used ? " · used" : ""}`}
+          >
+            {index > 0 && " · "}
+            {card.number} {card.name}
+            {card.used ? " ✓" : ""}
+          </span>
+        ))
+      : "–",
     row.resources.join("/"),
     row.influence.join("/"),
     row.tradeGoods,
     row.commodities.join("/"),
-    row.tokens.join("·"),
+    row.tokens.join(" · "),
     row.actionCards,
     row.secrets.join("/"),
     row.planets,
@@ -76,12 +78,12 @@ function Row({ row, first, onOpen }: { row: PlayerRowView; first: boolean; onOpe
           <span className={cx("min-w-0 truncate", quiet ?? "text-muted")}>{seat.faction}</span>
           {row.speaker && (
             <span className="text-2xs text-gold" title="Speaker">
-              Spk
+              Speaker
             </span>
           )}
           {row.passed && <span className="text-2xs text-faint">passed</span>}
         </button>
-        <div className="absolute top-0 right-[calc(100%+6px)] z-20 hidden w-[min(340px,90vw)] cursor-default rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-[0_10px_30px_#0008] group-focus-within:block group-hover:block max-[860px]:hidden!">
+        <div className="absolute top-0 right-[calc(100%+6px)] z-20 hidden w-[min(340px,90vw)] cursor-default rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-[0_10px_30px_#0008] group-focus-within:block group-hover:block">
           <strong>
             <SeatSymbol seat={row.seat} /> {seat.name} · {seat.faction}
           </strong>
@@ -122,10 +124,7 @@ export function PlayerTable({
   const hint = open ? "Show only you and the active player" : "Show all players";
   const head = "border-b border-line py-[3px] text-2xs font-semibold text-faint";
   return (
-    <section
-      aria-label="Players"
-      className="relative flex-none border-b border-line bg-board max-[860px]:-order-1 max-[860px]:overflow-x-auto"
-    >
+    <section aria-label="Players" className="relative flex-none border-b border-line bg-board">
       <table className="w-full border-collapse text-xs leading-[1.3]">
         <thead>
           <tr>
@@ -149,7 +148,7 @@ export function PlayerTable({
                 key={label}
                 scope="col"
                 title={title}
-                className={cx(head, "px-[5px] text-right whitespace-nowrap")}
+                className={cx(head, "px-2 text-right whitespace-nowrap")}
               >
                 <abbr title={title} className="cursor-help no-underline">
                   {label}

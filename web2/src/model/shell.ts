@@ -26,7 +26,8 @@ export interface PlayerRowView {
   speaker: boolean;
   passed: boolean;
   victoryPoints: number;
-  strategyCard: { number: number; name: string; short: string; used: boolean } | null;
+  /** One card for each player with five or more players, two with four or fewer. In initiative order. */
+  strategyCards: { number: number; name: string; used: boolean }[];
   resources: [ready: number, total: number];
   influence: [ready: number, total: number];
   tradeGoods: number;

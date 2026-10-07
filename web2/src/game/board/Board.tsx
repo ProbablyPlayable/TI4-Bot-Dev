@@ -18,7 +18,7 @@ const MAP_VIEWS: { id: MapViewId; label: string; legend: string }[] = [
 function SystemInspector({ view }: { view: InspectorView }) {
   const dispatch = useDispatch();
   return (
-    <div className="absolute bottom-2.5 left-2.5 z-2 max-h-[40%] w-[280px] overflow-auto rounded border border-line bg-surface/95 px-3 py-2.5 text-xs max-[1180px]:max-h-[30%] max-[1180px]:w-[230px] max-[860px]:hidden">
+    <div className="absolute bottom-2.5 left-2.5 z-2 max-h-[40%] w-[280px] overflow-auto rounded border border-line bg-surface/95 px-3 py-2.5 text-xs">
       <CloseButton
         label="Close system details"
         className="float-right -mt-1 -mr-1.5 ml-1.5"
@@ -109,9 +109,9 @@ export function Board({
   return (
     <section
       aria-label="Galaxy board"
-      className="relative flex min-h-0 min-w-0 overflow-hidden bg-board max-[860px]:h-[58vh] max-[860px]:flex-none"
+      className="relative flex min-h-0 min-w-0 overflow-hidden bg-board"
     >
-      <div className="pointer-events-none absolute top-2 right-[210px] left-2.5 z-2 flex flex-wrap items-center gap-x-3 gap-y-1 max-[1180px]:right-2.5">
+      <div className="pointer-events-none absolute top-2 right-[210px] left-2.5 z-2 flex flex-wrap items-center gap-x-3 gap-y-1">
         <Segmented
           label="Map view"
           options={MAP_VIEWS}
@@ -121,16 +121,14 @@ export function Board({
         />
       </div>
       {!view.inspector && (
-        <span className="absolute bottom-3 left-3 z-2 flex max-w-[42%] flex-wrap gap-x-3 gap-y-0.5 text-xs text-faint max-[1180px]:hidden">
+        <span className="absolute bottom-3 left-3 z-2 flex max-w-[42%] flex-wrap gap-x-3 gap-y-0.5 text-xs text-faint">
           <span>{MAP_VIEWS.find((item) => item.id === mapView)!.legend}</span>
           <span>▼ your command token</span>
           <span>α β wormholes</span>
+          <span>inner ring: ships of one player · red dashed: contested</span>
         </span>
       )}
-      <div
-        aria-label="Map zoom"
-        className="absolute top-2 right-2.5 z-2 flex gap-[3px] max-[1180px]:top-11 max-[1180px]:right-auto max-[1180px]:left-2.5"
-      >
+      <div aria-label="Map zoom" className="absolute top-2 right-2.5 z-2 flex gap-[3px]">
         <button
           type="button"
           className={`${tool} w-7`}
@@ -176,7 +174,7 @@ export function Board({
         <GalaxyMap view={view} mapView={mapView} svgRef={svg} />
       </div>
       {view.inspector && <SystemInspector view={view.inspector} />}
-      <div className="absolute right-2.5 bottom-2.5 z-2 flex max-w-[calc(100%-310px)] items-center gap-2.5 rounded border border-line bg-surface/95 py-1 pr-1.5 pl-3 text-xs text-muted max-[860px]:max-w-[calc(100%-20px)]">
+      <div className="absolute right-2.5 bottom-2.5 z-2 flex max-w-[calc(100%-310px)] items-center gap-2.5 rounded border border-line bg-surface/95 py-1 pr-1.5 pl-3 text-xs text-muted">
         <span>{view.latestResult}</span>
         <Button tone="quiet" size="sm" aria-expanded={logOpen} onClick={onLog}>
           Log

@@ -12,7 +12,7 @@ export interface CounterProps {
 
 export function Counter({ value, max, step = 1, label, onChange }: CounterProps) {
   const button =
-    "size-8 text-lg text-muted enabled:hover:bg-raised enabled:hover:text-text disabled:opacity-30";
+    "size-7 text-lg text-muted enabled:hover:bg-raised enabled:hover:text-text disabled:opacity-30";
   return (
     <div className="inline-flex items-center rounded-md border border-line bg-canvas">
       <button

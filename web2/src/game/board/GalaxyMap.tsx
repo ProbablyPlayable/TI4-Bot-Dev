@@ -9,7 +9,7 @@ import type {
 } from "../../model";
 import { plural } from "../../model";
 import { cx } from "../../ui";
-import { useDispatch, useSeats } from "../context";
+import { SeatShape, useDispatch, useSeats } from "../context";
 import { useLink } from "../link";
 import { HEX_R, hexCenter, hexPoints, routePath } from "./hex";
 
@@ -73,12 +73,14 @@ function Planet({
   planet,
   x,
   y,
+  r,
   view,
   task,
 }: {
   planet: PlanetMarkView;
   x: number;
   y: number;
+  r: number;
   view: MapViewId;
   task: PlanetTaskView | null;
 }) {
@@ -93,9 +95,21 @@ function Planet({
       {body}
     </text>
   );
-  // A planet that the task can use keeps its value when chosen. A ring and a check mark show the choice.
+  // A planet that the task can use shows resources and influence, so the player sees what the
+  // payment gives up. The value that pays is large. A ring and a check mark show the choice.
+  const pays = task?.unit === "influence" ? "influence" : "resources";
+  const value = (kind: "resources" | "influence") => (
+    <tspan className={kind === pays ? "v-on" : "v-off"}>{planet[kind]}</tspan>
+  );
   const inside = payable
-    ? text(task.values[planet.id])
+    ? text(
+        <>
+          {value("resources")}
+          <tspan className="v-off">/</tspan>
+          {value("influence")}
+        </>,
+        r > 11 ? 12.5 : 11,
+      )
     : view === "economy"
       ? text(
           <>
@@ -103,21 +117,21 @@ function Planet({
             <tspan style={{ fill: "var(--color-faint)" }}>/</tspan>
             <tspan style={{ fill: "var(--color-cyan)" }}>{planet.influence}</tspan>
           </>,
-          8,
+          8.5,
         )
       : view === "ground"
-        ? text(`${planet.groundForces}${planet.planetaryShield ? "◈" : ""}`, 9)
+        ? text(`${planet.groundForces}${planet.planetaryShield ? "◈" : ""}`, 9.5)
         : view === "tech"
-          ? planet.tech && text(planet.tech, 10, TECH_COLOR[planet.tech])
-          : planet.owner
-            ? text(seats[planet.owner].symbol, 8, color)
-            : null;
+          ? planet.tech && text(planet.tech, 11, TECH_COLOR[planet.tech])
+          : planet.owner && (
+              <SeatShape symbol={seats[planet.owner].symbol} x={x} y={y} size={11} color={color} />
+            );
   const button = payable
     ? {
         role: "button",
         tabIndex: 0,
         "aria-pressed": chosen,
-        "aria-label": `${task.verb} ${planet.name}, ${task.values[planet.id]} ${task.unit}`,
+        "aria-label": `${task.verb} ${planet.name}, ${task.values[planet.id]} ${task.unit}, ${planet.resources} resources / ${planet.influence} influence`,
         onKeyDown: pressOnKey,
         onClick: (event: React.MouseEvent) => {
           event.stopPropagation();
@@ -125,11 +139,14 @@ function Planet({
         },
       }
     : {};
+  // A planet that the task can use is larger than the others.
+  const radius = payable ? r + 1.5 : r;
   return (
     <g
       className={cx(
         "planet",
         !planet.owner && "free",
+        payable && "payable",
         chosen && (payable ? (task.kind === "pay" ? "chosen" : "chosen picked") : "exhausted"),
         linked && "linked",
       )}
@@ -141,10 +158,10 @@ function Planet({
         {planet.name} · {planet.resources} resources / {planet.influence} influence
         {planet.owner ? " · " + seats[planet.owner].faction : ""}
       </title>
-      <circle cx={x} cy={y} r="10" />
+      <circle cx={x} cy={y} r={radius} />
       {inside}
       {chosen && payable && (
-        <g className="chosen-badge" transform={`translate(${x + 8} ${y - 8})`}>
+        <g className="chosen-badge" transform={`translate(${x + radius - 2} ${y - radius + 2})`}>
           <circle r="4.6" />
           <path d="m-2.2 0 1.6 1.7 2.8-3.2" />
         </g>
@@ -162,15 +179,25 @@ interface TileProps {
   task: PlanetTaskView | null;
 }
 
+/** Vertical centre of the planets, the wormhole and the anomaly in a tile. */
+const BODY_Y = -5;
+
+/**
+ * One system. It shows what matters for play: planets, wormhole, anomaly, command token and fleets.
+ * The name is flavor: it is in the tooltip and in the inspector, not on the tile.
+ */
 const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
   const dispatch = useDispatch();
   const seats = useSeats();
   const { linked, props } = useLink([`sys:${tile.id}`]);
   const { x, y } = hexCenter(tile);
-  const names = tile.name.toUpperCase().split(" / ");
   const strength = view === "space";
-  const keep = active || !!tile.home || tile.landmark || inspected;
   const label = `${tile.name}, system ${tile.id}${tile.home ? `, ${seats[tile.home].faction} home system` : ""}${tile.anomaly ? ", " + ANOMALY_LABEL[tile.anomaly] : ""}${tile.wormhole ? `, ${tile.wormhole} wormhole` : ""}${tile.commandToken ? ", your command token is here" : ""}${tile.fleets.map((fleet) => `, ${plural(fleet.ships, seats[fleet.seat].faction + " ship")}`).join("")}`;
+  // Planets and the wormhole are in one row. A system has at most three planets.
+  const slots = tile.planets.length + (tile.wormhole ? 1 : 0);
+  const gap = slots > 3 ? 19 : 25;
+  const slotX = (index: number) => x + (index - (slots - 1) / 2) * gap;
+  const planetR = slots > 2 ? 10 : 11.5;
   return (
     <g
       className={cx(
@@ -189,7 +216,18 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
       onClick={() => dispatch({ type: "inspectSystem", system: tile.id })}
       {...props}
     >
+      <title>
+        {tile.name} · #{tile.id}
+      </title>
       <polygon className="hex" points={hexPoints({ x, y }, HEX_R - 2)} />
+      {tile.control && (
+        // Inner ring: the player with ships here. Red and dashed when two or more players have ships.
+        <polygon
+          className={cx("control", tile.control === "contested" && "contested")}
+          points={hexPoints({ x, y }, HEX_R - 5.5)}
+          style={tile.control === "contested" ? undefined : { stroke: seats[tile.control].color }}
+        />
+      )}
       <text className="t-id" x={x} y={y - 31}>
         #{tile.id}
       </text>
@@ -199,7 +237,7 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
         </path>
       )}
       {tile.anomaly && (
-        <g transform={`translate(${x} ${y - 10})`}>
+        <g className="anomaly" transform={`translate(${x} ${y + BODY_Y})`}>
           <AnomalyGlyph kind={tile.anomaly} />
         </g>
       )}
@@ -207,52 +245,40 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
         <Planet
           key={planet.id}
           planet={planet}
-          x={x + (tile.planets.length > 1 ? index * 24 - 12 : 0) - (tile.wormhole ? 8 : 0)}
-          y={y - 10}
+          x={slotX(index)}
+          y={y + BODY_Y}
+          r={planetR}
           view={view}
           task={task}
         />
       ))}
       {tile.wormhole && (
-        <g
-          className="wormhole"
-          transform={`translate(${x + (tile.planets.length ? 14 : 0)} ${y - 10})`}
-        >
-          <circle r="7.5" />
-          <text y="3">{tile.wormhole}</text>
+        <g className="wormhole" transform={`translate(${slotX(slots - 1)} ${y + BODY_Y})`}>
+          <circle r="8" />
+          <text y="3.2">{tile.wormhole}</text>
         </g>
       )}
-      {(tile.name === "Empty space" && !active ? [] : names).map((name, index) => (
-        <text
-          key={name}
-          className={cx("t-name", keep && "keep")}
-          x={x}
-          y={y + 13 + index * 9.5}
-          fontSize={name.length > 10 ? 7.5 : 9}
-        >
-          {name}
-        </text>
-      ))}
-      {active && names.length === 1 && (
-        <text className="t-name t-active keep" x={x} y={y + 22.5} fontSize="7">
-          ACTIVE
-        </text>
-      )}
-      {tile.fleets.map((fleet, index) => (
-        <text
-          key={fleet.seat}
-          className="t-mark"
-          x={x + (index - (tile.fleets.length - 1) / 2) * (strength ? 34 : 26)}
-          y={y + 38}
-          style={{ fill: seats[fleet.seat].color }}
-        >
-          {seats[fleet.seat].symbol}
-          {fleet.ships}
-          {strength ? `·${fleet.strength.toFixed(1)}` : ""}
-        </text>
-      ))}
+      {tile.fleets.map((fleet, index) => {
+        const markX = x + (index - (tile.fleets.length - 1) / 2) * (strength ? 38 : 28);
+        const shift = strength ? 13 : 6;
+        return (
+          <g key={fleet.seat} className="t-mark">
+            <SeatShape
+              symbol={seats[fleet.seat].symbol}
+              x={markX - shift}
+              y={y + 23}
+              size={11}
+              color={seats[fleet.seat].color}
+            />
+            <text x={markX - shift + 8} y={y + 27} style={{ fill: seats[fleet.seat].color }}>
+              {fleet.ships}
+              {strength ? `·${fleet.strength.toFixed(1)}` : ""}
+            </text>
+          </g>
+        );
+      })}
       {tile.pickedUp > 0 && (
-        <text className="t-pick" x={x - 24} y={y - 22}>
+        <text className="t-pick" x={x - 24} y={y - 24}>
           +{tile.pickedUp}
         </text>
       )}
@@ -286,7 +312,13 @@ export function GalaxyMap({
     [view.tiles],
   );
   return (
-    <svg ref={svgRef} role="group" aria-label="Galaxy board">
+    <svg
+      ref={svgRef}
+      role="group"
+      aria-label="Galaxy board"
+      // While the player chooses planets, everything else on the board is dimmed.
+      data-tasking={view.planetTask?.interactive ? "" : undefined}
+    >
       <defs>
         <marker
           id="route-end"

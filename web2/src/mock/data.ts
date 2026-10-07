@@ -68,6 +68,7 @@ export const ROLE: Record<Side, "Attacker" | "Defender"> = { att: "Attacker", de
 export const other = (side: Side): Side => (side === "att" ? "def" : "att");
 export const SUPPLY = 3;
 // q and r are axial hex coordinates on a five-ring board (61 systems, eight players).
+// A system has at most three planets; three systems here have three.
 // The active system's planets live in state.planets. `fleets` holds the ships of the other players.
 export const MAP: Record<string, MapSystem> = {
   "27": {
@@ -114,8 +115,12 @@ export const MAP: Record<string, MapSystem> = {
   "36": {
     q: 4,
     r: -4,
-    name: "Arnor",
-    planets: [{ id: "arnor", name: "Arnor", res: 2, inf: 1, owner: "sol" }],
+    name: "Arnor / Lor / Siig",
+    planets: [
+      { id: "arnor", name: "Arnor", res: 2, inf: 1, owner: "sol" },
+      { id: "lor", name: "Lor", res: 1, inf: 2, owner: "sol" },
+      { id: "siig", name: "Siig", res: 0, inf: 2, owner: null },
+    ],
   },
   "34": {
     q: 4,
@@ -240,8 +245,18 @@ export const MAP: Record<string, MapSystem> = {
     [1, 2, "Primor", ["Primor 2/1 letnev"], { fleets: { letnev: { cruiser: 1, destroyer: 1 } } }],
     [2, 2, "Cealdri / Xanhact", ["Cealdri 0/2 xxcha Y", "Xanhact 0/1 -"]],
     [-3, 3, "Atlas", ["Atlas 3/1 mentak"]],
-    [-2, 3, "Abaddon / Ashtroth", ["Abaddon 1/0 jolnar", "Ashtroth 2/0 mentak"]],
-    [-1, 3, "Rigel I / Rigel II", ["Rigel I 0/1 jolnar", "Rigel II 1/2 jolnar G"]],
+    [
+      -2,
+      3,
+      "Abaddon / Ashtroth / Loki",
+      ["Abaddon 1/0 jolnar", "Ashtroth 2/0 mentak", "Loki 1/2 -"],
+    ],
+    [
+      -1,
+      3,
+      "Rigel I / Rigel II / Rigel III",
+      ["Rigel I 0/1 jolnar", "Rigel II 1/2 jolnar G", "Rigel III 1/1 jolnar"],
+    ],
     [0, 3, "Empty space", [], { fleets: { letnev: { carrier: 1, fighter: 2 } } }],
     [1, 3, "Perimeter", ["Perimeter 2/1 letnev"]],
     [-4, 4, "Empty space"],
@@ -461,7 +476,6 @@ export const CARDS = [
   "Technology",
   "Imperial",
 ];
-export const CARD_SHORT = ["Lead", "Dipl", "Pol", "Cons", "Trade", "War", "Tech", "Imp"];
 export const TECH: Record<string, string> = {
   tarmann: "G",
   vefut: "R",
@@ -536,7 +550,27 @@ export const P: Record<string, { name: string; faction: string; fleet: number; h
   hacan: { name: "Alex", faction: "Hacan", fleet: 4, hand: ["Shields Holding", "Skilled Retreat"] },
 };
 // Key order is the row order of every unit list.
+// Key order is the display order of a force.
 export const U: Record<UnitType, UnitRule> = {
+  flagship: {
+    name: "Flagship",
+    combat: 5,
+    move: 1,
+    capacity: 3,
+    cost: 8,
+    sustain: true,
+    ship: true,
+  },
+  warsun: {
+    name: "War sun",
+    combat: 3,
+    move: 2,
+    capacity: 6,
+    cost: 12,
+    sustain: true,
+    bombard: 3,
+    ship: true,
+  },
   dreadnought: {
     name: "Dreadnought",
     combat: 5,
@@ -564,6 +598,8 @@ export const LOSS_ORDER: UnitType[] = [
   "cruiser",
   "mech",
   "dreadnought",
+  "flagship",
+  "warsun",
 ];
 export const STOCK: Counts = {
   fighter: 6,
@@ -695,7 +731,7 @@ export const examples: Record<string, any> = {
     route: "friendly",
     until: 4,
     movement: { "j-cruiser": 0 },
-    tip: "Build a cart, pay, and place. Hover a payment row to find the planet on the map, or click the planet.",
+    tip: "Build a cart, pay, and place. Pay on the map: click the bright planets.",
   },
   "draft-review": {
     mode: "draft",
@@ -713,6 +749,33 @@ export const examples: Record<string, any> = {
     route: "hostile",
     until: 2,
     tip: "Roll, play Direct Hit or Morale Boost, then assign hits on the rows. Try “View as” Alex.",
+  },
+  // A layout test: both sides have every ship type. Fleet supply is not applied.
+  "live-combat-full": {
+    mode: "live",
+    route: "hostile",
+    until: 2,
+    forces: {
+      att: {
+        flagship: 1,
+        warsun: 1,
+        dreadnought: 2,
+        carrier: 1,
+        cruiser: 2,
+        destroyer: 2,
+        fighter: 4,
+      },
+      def: {
+        flagship: 1,
+        warsun: 1,
+        dreadnought: 1,
+        carrier: 2,
+        cruiser: 1,
+        destroyer: 2,
+        fighter: 3,
+      },
+    },
+    tip: "Every ship type on both sides, to check that the battle table fits. Fleet supply is not applied here.",
   },
   "live-invasion": {
     mode: "live",
@@ -740,7 +803,7 @@ export const examples: Record<string, any> = {
       results: {},
       mine: { buy: 1, pools: { t: 2, f: 1, s: 1 }, pay: {} },
     },
-    tip: "A strategic action has two steps. Pay on the rows or on the board, resolve the primary, then watch the secondaries resolve in seat order.",
+    tip: "A strategic action has two steps. Pay on the map, resolve the primary, then watch the secondaries resolve in seat order.",
   },
   "live-secondary": {
     mode: "live",

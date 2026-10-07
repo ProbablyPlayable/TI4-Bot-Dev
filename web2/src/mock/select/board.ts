@@ -229,6 +229,13 @@ export function selectBoard(world: World, state: State): BoardView {
       ...(shipCount(solCounts) ? { sol: solCounts } : {}),
       ...E.others(state, id),
     };
+    const marks = Object.keys(fleets)
+      .map((seat) => ({
+        seat,
+        ships: shipCount(fleets[seat]),
+        strength: hits(E.force(fleets[seat])),
+      }))
+      .filter((mark) => mark.ships);
     const troops = (planet: any) =>
       here
         ? E.size(planet.units, (type: UnitType) => U[type].ground)
@@ -246,7 +253,6 @@ export function selectBoard(world: World, state: State): BoardView {
       q: system.q,
       r: system.r,
       home: system.home ?? null,
-      landmark: id === "50",
       anomaly: system.anomaly ?? null,
       wormhole: system.wormhole ?? null,
       commandToken: !!system.token,
@@ -260,13 +266,8 @@ export function selectBoard(world: World, state: State): BoardView {
         groundForces: troops(planet),
         planetaryShield: !!(here && planet.structures?.includes("pds")),
       })),
-      fleets: Object.keys(fleets)
-        .map((seat) => ({
-          seat,
-          ships: shipCount(fleets[seat]),
-          strength: hits(E.force(fleets[seat])),
-        }))
-        .filter((mark) => mark.ships),
+      control: marks.length > 1 ? "contested" : (marks[0]?.seat ?? null),
+      fleets: marks,
       pickedUp: entries
         .filter((entry) => entry.key.includes(">") && entry.line.origin === id)
         .reduce((sum, entry) => sum + entry.count, 0),

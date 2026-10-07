@@ -106,18 +106,6 @@
     outline-offset: 2px;
   }
 
-  @media (max-width: 860px) {
-    html,
-    body,
-    #root {
-      height: auto;
-    }
-
-    body {
-      overflow: auto;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,

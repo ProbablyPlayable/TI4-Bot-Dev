@@ -1,15 +1,5 @@
 import type { BlockView, RowView } from "../../model";
-import {
-  Badge,
-  Card,
-  CardHeading,
-  Counter,
-  InlineNote,
-  ListRow,
-  SummaryGrid,
-  SummaryStat,
-  cx,
-} from "../../ui";
+import { Badge, Card, CardHeading, Counter, Hint, InlineNote, ListRow, cx } from "../../ui";
 import { ActionButton, RichText, useDispatch } from "../context";
 import { useLink } from "../link";
 import { PaymentList } from "../steps/PaymentList";
@@ -28,8 +18,14 @@ function Row({ row }: { row: RowView }) {
           </span>
         ) : undefined
       }
-      compact={row.order !== undefined}
-      title={<RichText value={row.title} />}
+      title={
+        <span className="inline-flex items-center gap-2">
+          <span>
+            <RichText value={row.title} />
+          </span>
+          {row.hint && <Hint label="Rules">{row.hint}</Hint>}
+        </span>
+      }
       subtitle={row.subtitle}
       linked={linked}
       {...props}
@@ -59,14 +55,6 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
     <>
       {blocks.map((block, index) => {
         switch (block.kind) {
-          case "summary":
-            return (
-              <SummaryGrid key={index}>
-                <SummaryStat eyebrow={block.eyebrow} title={block.title}>
-                  {block.text}
-                </SummaryStat>
-              </SummaryGrid>
-            );
           case "note":
             return (
               <InlineNote key={index} tone={block.tone} strong={block.strong}>
@@ -79,9 +67,21 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
                 <CardHeading title={block.title} bad={block.bad}>
                   {block.aside}
                 </CardHeading>
-                {block.rows.map((row, at) => (
-                  <Row key={at} row={row} />
-                ))}
+                {block.rows.every((row) => row.order !== undefined) ? (
+                  // A list in seat order: two columns, read down the left column first.
+                  <div
+                    className="grid grid-flow-col grid-cols-2 [&>.row]:border-t-0"
+                    style={{
+                      gridTemplateRows: `repeat(${Math.ceil(block.rows.length / 2)}, auto)`,
+                    }}
+                  >
+                    {block.rows.map((row, at) => (
+                      <Row key={at} row={row} />
+                    ))}
+                  </div>
+                ) : (
+                  block.rows.map((row, at) => <Row key={at} row={row} />)
+                )}
               </Card>
             );
           case "payment":
@@ -99,15 +99,12 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
                 )}
               >
                 <CardHeading title={block.title}>
-                  <Badge tone={block.pill.tone}>{block.pill.label}</Badge>
+                  <span className="inline-flex items-center gap-2">
+                    <Badge tone={block.pill.tone}>{block.pill.label}</Badge>
+                    {block.hint && <Hint label={`About ${block.title}`}>{block.hint}</Hint>}
+                  </span>
                 </CardHeading>
-                {block.text && (
-                  <div className="px-3.5 py-3 text-xs">
-                    {block.text}
-                    <br />
-                    <span className="text-muted">{block.hint}</span>
-                  </div>
-                )}
+                {block.text && <div className="px-3.5 py-2 text-xs">{block.text}</div>}
                 {block.blocks.length > 0 && (
                   <div className="space-y-2.5 p-2.5">
                     <Blocks blocks={block.blocks} />

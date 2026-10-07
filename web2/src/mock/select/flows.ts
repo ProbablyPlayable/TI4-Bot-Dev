@@ -3,6 +3,7 @@ import type {
   BlockView,
   FlowActionView,
   FooterView,
+  HelpView,
   PaymentView,
   PillView,
   RowView,
@@ -45,14 +46,16 @@ function leadershipEditor(state: State): BlockView[] {
     cost: own.buy * 3,
     paid,
     unit: "influence",
-    summary: "",
-    choices: PAY.map((source) => ({
-      id: source.id,
-      label: source.label,
-      system: source.system ?? null,
-      aside: `${plural(source.inf ?? source.res, "influence", "influence")}${source.system ? ` · gives up ${plural(source.res, "resource")}` : ""}`,
-      checked: !!own.pay[source.id],
-    })),
+    editable: true,
+    summary: PAY.filter((source) => source.system && own.pay[source.id])
+      .map((source) => `${source.label.replace("Exhaust ", "")} ${source.inf}`)
+      .join(" + "),
+    goods:
+      PAY.filter((source) => !source.system).map((source) => ({
+        id: source.id,
+        label: source.label.replace(/^Spend /, ""),
+        checked: !!own.pay[source.id],
+      }))[0] ?? null,
   };
   return [
     {
@@ -64,7 +67,7 @@ function leadershipEditor(state: State): BlockView[] {
         {
           icon: "token",
           title: ["Buy tokens"],
-          subtitle: "3 influence each · up to 3",
+          subtitle: "3 influence each",
           control: {
             kind: "counter",
             counter: { id: "buy", value: own.buy, max: 3, label: "bought token" },
@@ -82,6 +85,7 @@ type Parts = {
   heading: string;
   pill: PillView | null;
   trail?: FlowActionView["trail"];
+  help: HelpView[];
   blocks: BlockView[];
   footer: FooterView;
 };
@@ -109,7 +113,7 @@ function flowParts(state: State): Parts {
     ): RowView => ({
       icon,
       title: [name],
-      subtitle: text,
+      hint: text,
       control: {
         kind: "button",
         button: intent
@@ -178,10 +182,11 @@ function flowParts(state: State): Parts {
             ),
           ],
         },
+      ],
+      help: [
         {
-          kind: "note",
-          tone: "quiet",
-          text: "Not your turn? This panel shows the acting player's action, and you can draft your next tactical action in Draft.",
+          title: "Not your turn?",
+          text: "This panel shows the acting player's action, and you can draft your next tactical action in Draft.",
         },
       ],
       footer: foot("Your turn. Choose one action."),
@@ -190,23 +195,15 @@ function flowParts(state: State): Parts {
   if (state.kind === "component") {
     const done = flow.stage === "done";
     const own = flow.owner === "sol";
-    const rows: RowView[] = PAY.filter((source) => source.system).map((source) => ({
+    // The player chooses the planet on the board. The panel shows the choice only.
+    const rows: RowView[] = PAY.filter((source) => source.id === flow.target).map((source) => ({
       icon: "planet",
       title: [`${source.label.replace("Exhaust ", "")} · #${source.system}`],
       subtitle: `${plural(source.res, "resource")} → +${plural(source.res, "trade good")}`,
       link: [`pl:${source.id}`, `sys:${source.system}`],
-      control: {
-        kind: "button",
-        button: {
-          ...button(
-            { type: "flowTarget", planet: source.id },
-            flow.target === source.id ? "Selected" : "Select",
-            flow.target === source.id ? "primary" : "quiet",
-          ),
-          pressed: flow.target === source.id,
-        },
-      },
+      control: { kind: "badge", pill: { tone: "live", label: "Selected" } },
     }));
+    if (!rows.length) rows.push({ icon: "planet", title: ["No planet chosen"] });
     return {
       title: [
         "Component action",
@@ -221,16 +218,16 @@ function flowParts(state: State): Parts {
         { label: "Target", status: done ? "complete" : "active" },
         { label: "Result", status: done ? "complete" : "todo" },
       ],
-      blocks: [
+      help: [
         {
-          kind: "summary",
-          eyebrow: "Action card",
-          title: flow.card,
+          title: `Action card · ${flow.card}`,
           text: "Gain trade goods equal to the resource value of 1 planet you control.",
         },
+      ],
+      blocks: [
         done
           ? { kind: "note", tone: "success", strong: "Resolved.", text: flow.result }
-          : { kind: "card", title: "Planet", aside: "Pick here or on the board", rows },
+          : { kind: "card", title: "Planet", aside: "Choose on the map", rows },
       ],
       footer: foot(
         done
@@ -259,23 +256,24 @@ function flowParts(state: State): Parts {
     "Strategic action",
     `${flow.card} · ${SEATS[flow.owner].name} (${SEATS[flow.owner].faction})`,
   ];
-  const text: BlockView = {
-    kind: "summary",
-    eyebrow: `${flow.card} · ${step ? "Secondary" : "Primary"}`,
-    title: step ? "Buy command tokens" : "Gain 3 command tokens",
-    text: step
-      ? "Each other player may buy tokens for 3 influence each. No strategy token is spent."
-      : "Then buy any number of tokens for 3 influence each.",
-  };
+  const help: HelpView[] = [
+    {
+      title: `${flow.card} · ${step ? "Secondary" : "Primary"}`,
+      text: step
+        ? "Buy command tokens. Each other player may buy tokens for 3 influence each. No strategy token is spent."
+        : "Gain 3 command tokens. Then buy any number of tokens for 3 influence each.",
+    },
+  ];
   if (step === 0) {
     if (primaryMine && flow.stage === "primary") {
       const error: string = E.flowProblem(state);
       return {
         title,
-        heading: "Primary",
+        heading: `${flow.card} · Primary`,
         pill: { tone: "live", label: "Your decision" },
         trail: ["Gain tokens", "Buy", "Pay", "Place"].map((label) => ({ label, status: "active" })),
-        blocks: [text, ...leadershipEditor(state)],
+        help,
+        blocks: leadershipEditor(state),
         footer: foot(
           error || "This commits to the live game.",
           [
@@ -294,13 +292,13 @@ function flowParts(state: State): Parts {
     const open = flow.stage === "primary";
     return {
       title,
-      heading: "Primary",
+      heading: `${flow.card} · Primary`,
       pill: {
         tone: open ? "quiet" : "done",
         label: open ? `Waiting for ${SEATS[flow.owner].name}` : "Resolved",
       },
+      help,
       blocks: [
-        text,
         open
           ? {
               kind: "note",
@@ -369,10 +367,10 @@ function flowParts(state: State): Parts {
   if (!inOrder || flow.mine.resolved || flow.stage === "done")
     return {
       title,
-      heading: "Secondaries",
+      heading: `${flow.card} · Secondaries`,
       pill,
+      help,
       blocks: [
-        text,
         list,
         ...(flow.mine.resolved && inOrder
           ? [
@@ -423,9 +421,10 @@ function flowParts(state: State): Parts {
       };
   return {
     title,
-    heading: "Secondaries",
+    heading: `${flow.card} · Secondaries`,
     pill,
-    blocks: [text, draft, list],
+    help,
+    blocks: [draft, list],
     footer: foot(
       own.ready
         ? "Your draft waits for your seat. You can still change it."
@@ -511,7 +510,6 @@ export function selectFlow(world: World, state: State): FlowActionView {
       state.kind === "picker"
         ? null
         : { tone: done ? "done" : "live", label: done ? "Complete" : "In progress" },
-    wide: false,
     past: world.mode === "history" ? { label: state.past.label } : null,
     ...flowTabs(state),
     selected: state.selected,
@@ -519,6 +517,7 @@ export function selectFlow(world: World, state: State): FlowActionView {
     heading: parts.heading,
     pill: parts.pill,
     trail: parts.trail ?? [],
+    help: parts.help,
     blocks: parts.blocks,
     footer: parts.footer,
   };

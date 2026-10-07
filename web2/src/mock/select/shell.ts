@@ -8,7 +8,7 @@ import type {
   ShellView,
   ToolbarView,
 } from "../../model";
-import { CARDS, CARD_SHORT, HISTORY, SEATS, SEAT_IDS } from "../data";
+import { CARDS, HISTORY, SEATS, SEAT_IDS } from "../data";
 import { E } from "../loose";
 import { currentState, pastState, type State, type World } from "../world";
 import { selectBoard } from "./board";
@@ -83,15 +83,8 @@ function players(world: World, state: State): PlayerTableView {
         speaker: !!player.speaker,
         passed: !!player.passed,
         victoryPoints: player.vp,
-        strategyCard:
-          index < 0
-            ? null
-            : {
-                number: index + 1,
-                name: CARDS[index],
-                short: CARD_SHORT[index],
-                used: owners[index].used,
-              },
+        strategyCards:
+          index < 0 ? [] : [{ number: index + 1, name: CARDS[index], used: owners[index].used }],
         resources: player.res,
         influence: player.inf,
         tradeGoods: player.tg,

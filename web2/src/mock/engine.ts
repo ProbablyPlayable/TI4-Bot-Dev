@@ -616,7 +616,7 @@ export function setup(state) {
       { id: "wellon", name: "Wellon", res: 1, inf: 2, owner: null, units: {}, structures: [] },
     ];
   } else {
-    state.enemyFleet = force(garrison(state) || {});
+    state.enemyFleet = force(state.forces?.def || garrison(state) || {});
     state.planets = [
       {
         id: "starpoint",
@@ -680,6 +680,8 @@ export const T = {
     }
     state.ground = { infantry: counts.infantry || 0, mech: counts.mech || 0 };
     state.fleet = force({ ...counts, infantry: 0, mech: 0 }, damaged);
+    // An example can set both fleets, to show a battle that the scripted lines cannot build.
+    if (state.forces) state.fleet = force(state.forces.att);
     const exits = riftExits(state, state.data.movement);
     if (exits.length && state.mode === "live") {
       const dice = { i: 4 };
@@ -691,7 +693,7 @@ export const T = {
       });
     }
     for (const type of LOSS_ORDER)
-      while (U[type].ship && ships(state.fleet) > SUPPLY && state.fleet[type]?.n) {
+      while (!state.forces && U[type].ship && ships(state.fleet) > SUPPLY && state.fleet[type]?.n) {
         drop(state.fleet, type);
         state.removed.push(type);
       }
@@ -908,7 +910,13 @@ export function makeState(example) {
   const until = config.until ?? 5;
   Object.assign(state.data.movement, config.movement);
   if (config.invasion) state.data.invasion = { ...config.invasion };
-  Object.assign(state, { stale: !!config.stale, tip: config.tip, auto: true, hold: !!config.hold });
+  Object.assign(state, {
+    stale: !!config.stale,
+    tip: config.tip,
+    auto: true,
+    hold: !!config.hold,
+    forces: config.forces,
+  });
   if (until > 0) commitStep(state, 0);
   if (until > 1 && state.frontier === 1 && state.blocker === "decision") commitStep(state, 1);
   if (until > 2 && state.battle?.stage === "pre") {

@@ -13,10 +13,12 @@ export interface ListRowProps extends Omit<HTMLAttributes<HTMLDivElement>, "titl
   controls?: ReactNode;
   invalid?: boolean;
   linked?: boolean;
-  compact?: boolean;
 }
 
-/** One thing in a list with its controls on the right: a unit line, an option, a player. */
+/**
+ * One thing in a list with its controls on the right: a unit line, an option, a player.
+ * It is one line: the panel is wide at the design size, and a short row keeps the step free of scroll.
+ */
 export function ListRow({
   icon,
   lead,
@@ -26,15 +28,13 @@ export function ListRow({
   controls,
   invalid,
   linked,
-  compact,
   className,
   ...rest
 }: ListRowProps) {
   return (
     <div
       className={cx(
-        "row flex items-center justify-between gap-3 px-3.5 [.row+&]:border-t [.row+&]:border-line/50 @max-[640px]:flex-wrap",
-        compact ? "py-1" : "py-[7px]",
+        "row flex min-h-9 items-center justify-between gap-3 px-3.5 py-0.5 [.row+&]:border-t [.row+&]:border-line/50",
         invalid && "bg-red/[.027]",
         linked && "bg-cyan/[.06]",
         className,
@@ -42,26 +42,16 @@ export function ListRow({
       {...rest}
     >
       <div className="flex min-w-0 items-center gap-2.5 text-base">
-        {lead ?? (icon && <Icon name={icon} className="size-[22px] text-icon" />)}
-        <div className="min-w-0">
+        {lead ?? (icon && <Icon name={icon} className="size-5 shrink-0 text-icon" />)}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5">
           <strong className={cx("font-mid", invalid && "text-red")}>{title}</strong>
           {subtitle != null && (
-            <small
-              className={cx(
-                "text-xs",
-                compact ? "ml-1.5 inline" : "block",
-                invalid ? "text-red" : "text-muted",
-              )}
-            >
-              {subtitle}
-            </small>
+            <small className={cx("text-xs", invalid ? "text-red" : "text-muted")}>{subtitle}</small>
           )}
           {extra}
         </div>
       </div>
-      {controls != null && (
-        <div className="flex shrink-0 items-center gap-2 @max-[640px]:ml-auto">{controls}</div>
-      )}
+      {controls != null && <div className="flex shrink-0 items-center gap-2">{controls}</div>}
     </div>
   );
 }

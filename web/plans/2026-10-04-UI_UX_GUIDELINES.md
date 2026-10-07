@@ -431,7 +431,7 @@ Use these checks when accepting a UI change:
 - The player can see what committed and what remains after an interrupted move, payment, build, landing, or research flow.
 - The board keeps camera, map view, and useful selection through decisions, references, Live/Draft switches, and normal updates.
 - Results name what happened and its cause. No common gameplay event ends as an unexplained “Decision resolved”.
-- Required controls, Resume, reference access, and error recovery remain reachable at 1440×900, 1024×768, 390×844, and a short landscape size. Check keyboard use as well as mouse/touch.
+- Required controls, Resume, reference access, and error recovery remain reachable at 1440×900, 1024×768, 390×844, and a short landscape size. (Superseded for `web2/` on 2026-10-07: only 1920×1080 or larger is a target; see `web2/AGENTS.md`.) Check keyboard use as well as mouse/touch.
 - The acting player, reacting player, uninvolved player, and spectator each see the right public/private information and attention level.
 
 ### Coverage needed before calling the decision UI complete

@@ -73,6 +73,75 @@ export function Menu({
   );
 }
 
+/**
+ * Rule or help text behind a "?" button. Hover or focus shows it; a click keeps it open.
+ * The players are experts, so this text is never in the layout.
+ */
+export function Hint({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState<"peek" | "pinned" | null>(null);
+  const root = useRef<HTMLSpanElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (open !== "pinned") return;
+    const close = (event: Event) => {
+      if (
+        event instanceof KeyboardEvent
+          ? event.key === "Escape"
+          : !root.current?.contains(event.target as Node)
+      )
+        setOpen(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  const peek = () => setOpen((now) => now ?? "peek");
+  const unpeek = () => setOpen((now) => (now === "peek" ? null : now));
+  // Fixed position: the text is not cut by a scrolling parent.
+  const rect = open ? button.current?.getBoundingClientRect() : undefined;
+  const width = 340;
+  return (
+    <span ref={root} className="relative inline-flex" onMouseEnter={peek} onMouseLeave={unpeek}>
+      <button
+        ref={button}
+        type="button"
+        aria-label={label}
+        aria-expanded={!!open}
+        onFocus={peek}
+        onBlur={unpeek}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(open === "pinned" ? null : "pinned");
+        }}
+        className={cx(
+          "grid size-[18px] shrink-0 place-items-center rounded-full border text-2xs leading-none font-bold hover:border-line-strong hover:text-text",
+          open === "pinned" ? "border-cyan text-cyan" : "border-line text-faint",
+        )}
+      >
+        ?
+      </button>
+      {rect && (
+        <div
+          role="note"
+          className="fixed z-30 pt-1.5"
+          style={{
+            top: rect.bottom,
+            left: Math.max(8, Math.min(rect.left - 12, window.innerWidth - width - 8)),
+            width,
+          }}
+        >
+          <div className="space-y-2 rounded-lg border border-[#415065] bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-pop">
+            {children}
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 export interface DialogProps {
   open: boolean;
   onClose: () => void;

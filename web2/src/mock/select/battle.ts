@@ -138,10 +138,9 @@ export function battleTable(
         tone: used > E.capacityOf(now) ? "bad" : undefined,
       });
     }
-    if (options.meta)
-      meta.push({
-        text: `${plural(hand.length, "action card")}${viewer === seat && hand.length ? ": " + hand.join(", ") : ""}`,
-      });
+    const cards = options.meta
+      ? `${plural(hand.length, "action card")}${viewer === seat && hand.length ? ": " + hand.join(", ") : ""}`
+      : "";
     if (mod) meta.push({ text: `+${mod.value} to combat rolls · ${mod.source}`, tone: "accent" });
     const rolled = Object.keys(rec.targets[name]).length > 0;
     return {
@@ -150,6 +149,7 @@ export function battleTable(
       isViewer: viewer === seat,
       hits: rec.pre || !rolled ? null : rec.hits[name],
       meta,
+      cards,
       rows,
     };
   };

@@ -85,6 +85,8 @@ One panel shows each type of action. An action has a type, a title, and a list o
 
 Rule: the stepper is shown only when the action has two or more steps.
 
+> Superseded for `web2/` (2026-10-07): the panel has one fixed width and there is no width control. See `web2/AGENTS.md`.
+
 The panel has two widths. The narrow width is the default. The panel becomes wide for a step with dice. A button lets the player change the width. In the narrow panel the two sides of the battle table are one below the other.
 
 ### Choose an action
@@ -210,6 +212,8 @@ Status: **Available**, **Partly**, **Missing**, or **Check** (not verified in th
 | Data for the map views | Available | The current overlays use it. |
 
 ## Open points
+
+> Superseded for `web2/` (2026-10-07): the design target is 1920×1080 or larger. Smaller screens and phones are a non-goal. See `web2/AGENTS.md`.
 
 1. **Eight players, tested.** The table and the board fit at 1440 × 900 and at 1024 × 768 with no horizontal scroll. At 1024 px the faction name is cut and the full board is in the far level of detail. Test the table with real faction names and with values of two digits in each column.
 2. **Small screens.** On a phone the table is above the board and uses approximately 190 px. Decide if the small table is the default there.

@@ -21,7 +21,7 @@ export function DemoApp() {
     history.replaceState(null, "", `?${params}`);
   }, [demo.example, demo.viewer]);
   return (
-    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-[860px]:block max-[860px]:h-auto">
+    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]">
       <GameShell session={session} />
       <DemoBar demo={demo} />
     </div>

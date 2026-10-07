@@ -4,6 +4,7 @@ import type {
   BattleRecordView,
   CombatView,
   FooterView,
+  HelpView,
   InvasionPlanetView,
   InvasionView,
   MoveRowView,
@@ -56,7 +57,6 @@ function activation(state: State): ActivationView {
     editing,
     draft,
     systems: Object.keys(MAP).map((id) => ({ id, label: sysLabel(id) })),
-    rechecksLater: editing && !!state.done[1],
   };
   if (!editing)
     return {
@@ -598,7 +598,15 @@ function production(state: State): ProductionView {
     subtitle: "",
     rows: [],
     gauges: [],
-    payment: { title: "", cost: 0, paid: 0, unit: "resource", choices: null, summary: "" },
+    payment: {
+      title: "",
+      cost: 0,
+      paid: 0,
+      unit: "resource",
+      editable: false,
+      summary: "",
+      goods: null,
+    },
     done: null,
   };
   if (state.skipped[4]) return { ...empty, skipped: skippedText(state.skipped[4]) };
@@ -662,22 +670,18 @@ function production(state: State): ProductionView {
       cost: total.cost,
       paid: total.paid,
       unit: "resource",
-      choices: editing
-        ? PAY.map((source) => ({
+      editable: editing,
+      // While the player edits, the trade goods are a control, so the text names the planets only.
+      summary: PAY.filter((source) => data.pay[source.id] && (source.system || !editing))
+        .map((source) => `${source.label.replace(/^Spend |^Exhaust /, "")} ${source.res}`)
+        .join(" + "),
+      goods: editing
+        ? (PAY.filter((source) => !source.system).map((source) => ({
             id: source.id,
-            label: source.label,
-            system: source.system ?? null,
-            aside: `${plural(source.res, "resource")}${source.inf ? ` · gives up ${source.inf} influence` : ""}`,
+            label: source.label.replace(/^Spend /, ""),
             checked: !!data.pay[source.id],
-          }))
+          }))[0] ?? null)
         : null,
-      summary:
-        PAY.filter((source) => data.pay[source.id])
-          .map(
-            (source) =>
-              `${source.label.replace(/^Spend |^Exhaust /, "")} · ${plural(source.res, "resource")}`,
-          )
-          .join(" + ") || "No payment needed",
     },
     done:
       done && !editing
@@ -804,6 +808,12 @@ function stepTrail(state: State, step: number): Trail {
       status: mark(editing),
     }));
   return [];
+}
+
+/** Explanations of the open step. The panel shows them on hover or click only. */
+function stepHelp(state: State, step: number): HelpView[] {
+  const text = stepLede(state, step);
+  return text ? [{ title: STEPS[step], text }] : [];
 }
 
 function stepLede(state: State, step: number): string {
@@ -985,17 +995,11 @@ function task(state: State): TaskView {
             : undefined,
         }
       : null,
-    lede: stepLede(state, step),
+    help: stepHelp(state, step),
     content,
     footer: taskFooter(state),
   };
 }
-
-export const autoWide = (state: State): boolean =>
-  state.kind === "tactical" &&
-  (state.selected === 2 ||
-    (state.selected === 3 && !state.edit) ||
-    (state.selected === 1 && !state.edit && !!(state.cannon || state.boundary === "cannon")));
 
 export function selectTactical(world: World, state: State): TacticalActionView {
   const draft = state.mode === "draft";
@@ -1011,13 +1015,11 @@ export function selectTactical(world: World, state: State): TacticalActionView {
       tone: draft ? "draft" : done ? "done" : "live",
       label: draft ? "Private draft" : done ? "Complete" : "In progress",
     },
-    wide: autoWide(state),
     past: world.mode === "history" ? { label: state.past.label } : null,
     tabs: STEPS.map((name, step) => {
       const status = E.stepState(state, step);
       return {
         name,
-        shortName: name === "Space combat" ? "combat" : undefined,
         status,
         caption: stepCaption(state, step, status),
       };

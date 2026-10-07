@@ -2,6 +2,7 @@ import type {
   CounterView,
   Force,
   GaugeView,
+  HelpView,
   LinkToken,
   PillView,
   PlanetId,
@@ -26,7 +27,6 @@ export type TrailStatus = "complete" | "active" | "todo" | "skipped";
 
 export interface StepTabView {
   name: string;
-  shortName?: string;
   status: StepStatus;
   caption: string;
 }
@@ -78,7 +78,10 @@ export interface BattleSideView {
   role: "Attacker" | "Defender";
   isViewer: boolean;
   hits: number | null;
+  /** Limits and modifiers, on one line. */
   meta: { text: string; tone?: "bad" | "accent" }[];
+  /** Action cards, on their own line. The viewer sees the names of their cards. */
+  cards: string;
   rows: BattleRowView[];
 }
 
@@ -138,7 +141,6 @@ export interface ActivationView {
     originsInRange: number;
   } | null;
   systems: { id: SystemId; label: string }[];
-  rechecksLater: boolean;
   /** Recorded: the active system. */
   active: { system: SystemId; name: string } | null;
   draft: boolean;
@@ -238,22 +240,18 @@ export interface InvasionView {
   revision: string;
 }
 
-export interface PaymentChoiceView {
-  id: string;
-  label: string;
-  system: SystemId | null;
-  aside: string;
-  checked: boolean;
-}
-
+/** The total of a payment. The player chooses the planets on the board, not in the panel. */
 export interface PaymentView {
   title: string;
   cost: number;
   paid: number;
   unit: string;
-  /** Null when the payment is recorded and read-only. */
-  choices: PaymentChoiceView[] | null;
+  /** False when the payment is recorded and read-only. */
+  editable: boolean;
+  /** What pays now, for example "Jord 4 + Lodor 1". Empty when nothing is chosen. */
   summary: string;
+  /** Trade goods are not on the board, so they have a control in the panel. */
+  goods: { id: string; label: string; checked: boolean } | null;
 }
 
 export interface ProductionView {
@@ -287,7 +285,8 @@ export interface TaskView {
   pill: PillView;
   trail: { label: string; status: TrailStatus; reason?: string }[];
   edit: { label: string; step: number; disabled: boolean; hint?: string } | null;
-  lede: string;
+  /** Rules and explanations of this step. */
+  help: HelpView[];
   content: StepContentView;
   footer: FooterView;
 }
@@ -303,13 +302,14 @@ export interface RowView {
   icon?: "planet" | "card" | "token" | "minus";
   order?: number;
   title: Rich;
-  subtitle: string;
+  subtitle?: string;
+  /** Rule text, shown on hover or click. */
+  hint?: string;
   link?: LinkToken[];
   control?: RowControlView;
 }
 
 export type BlockView =
-  | { kind: "summary"; eyebrow: string; title: string; text: string }
   | { kind: "note"; tone: "accent" | "success" | "quiet"; strong?: string; text: string }
   | { kind: "card"; title: string; aside?: string; bad?: boolean; rows: RowView[] }
   | { kind: "payment"; payment: PaymentView }
@@ -329,8 +329,6 @@ interface PanelFrame {
   title: string;
   subtitle: string;
   badge: PillView | null;
-  /** The content needs a wide panel, for example a battle table. */
-  wide: boolean;
   /** Set when the panel shows a past action, read-only. */
   past: { label: string } | null;
   tabs: StepTabView[];
@@ -352,6 +350,8 @@ export interface FlowActionView extends PanelFrame {
   heading: string;
   pill: PillView | null;
   trail: { label: string; status: TrailStatus }[];
+  /** Rules and explanations of this action. */
+  help: HelpView[];
   blocks: BlockView[];
   footer: FooterView;
 }

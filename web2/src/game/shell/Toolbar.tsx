@@ -33,9 +33,9 @@ export function Toolbar({
     </button>
   );
   return (
-    <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 py-1.5 max-[860px]:flex-wrap max-[860px]:gap-x-2.5 max-[860px]:gap-y-1.5">
+    <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 py-1.5">
       <div className="flex min-w-0 flex-col text-xs leading-[1.3] text-muted">
-        <span className="max-[1180px]:hidden">
+        <span className="">
           Round {view.round} · {view.phase}
         </span>
         <strong className="truncate text-sm font-semibold text-text">
@@ -64,10 +64,7 @@ export function Toolbar({
           </>
         )}
       </nav>
-      <nav
-        aria-label="Reference"
-        className="ml-auto flex gap-1 max-[860px]:order-4 max-[860px]:ml-0 max-[860px]:basis-full max-[860px]:overflow-x-auto"
-      >
+      <nav aria-label="Reference" className="ml-auto flex gap-1">
         {REFERENCES.map(([id, label]) => (
           <Button
             key={id}
@@ -82,7 +79,7 @@ export function Toolbar({
         ))}
       </nav>
       {view.draft && (
-        <div className="flex items-center gap-1.5 max-[860px]:ml-auto">
+        <div className="flex items-center gap-1.5">
           <Button
             tone="quiet"
             size="icon"

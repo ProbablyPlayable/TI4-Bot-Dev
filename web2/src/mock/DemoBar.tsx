@@ -28,6 +28,7 @@ const GROUPS: [string, [string, string][]][] = [
     "Live action",
     [
       ["live-combat", "Live · Space combat decisions"],
+      ["live-combat-full", "Live · Space combat, every ship type"],
       ["live-invasion", "Live · Waiting in ground combat"],
       ["summary", "Live · Completed action"],
     ],

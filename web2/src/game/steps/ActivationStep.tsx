@@ -1,15 +1,6 @@
 import type { ActivationView } from "../../model";
 import { plural } from "../../model";
-import {
-  Badge,
-  Card,
-  CardHeading,
-  CardText,
-  InlineNote,
-  ListRow,
-  SummaryGrid,
-  SummaryStat,
-} from "../../ui";
+import { Badge, Card, CardHeading, CardText, ListRow, SummaryGrid, SummaryStat } from "../../ui";
 import { useDispatch } from "../context";
 import { useLink } from "../link";
 
@@ -38,8 +29,8 @@ function Chosen({ chosen }: { chosen: NonNullable<ActivationView["chosen"]> }) {
           title={`${plural(chosen.shipsInRange, "ship")} in range`}
           subtitle={
             chosen.shipsInRange
-              ? `From ${plural(chosen.originsInRange, "system")}. You choose the ships in Movement.`
-              : "None of your ships can move here. You can still activate the system."
+              ? `From ${plural(chosen.originsInRange, "system")}`
+              : "You can still activate the system."
           }
         />
       )}
@@ -53,9 +44,10 @@ export function ActivationStep({ view }: { view: ActivationView }) {
   if (!view.editing)
     return (
       <SummaryGrid>
-        <SummaryStat eyebrow="Active system" title={`#${view.active?.system} ${view.active?.name}`}>
-          None of your command tokens were here.
-        </SummaryStat>
+        <SummaryStat
+          eyebrow="Active system"
+          title={`#${view.active?.system} ${view.active?.name}`}
+        />
         <SummaryStat eyebrow="Cost" title="1 tactic token">
           {view.draft ? "Planned · Not spent until you apply" : "Spent · Tactic pool 3 → 2"}
         </SummaryStat>
@@ -65,7 +57,7 @@ export function ActivationStep({ view }: { view: ActivationView }) {
     <>
       <Card>
         <CardHeading title="Activation target">
-          Costs 1 tactic token · Click a system on the board
+          Costs 1 tactic token · Choose on the map
         </CardHeading>
         <label className="flex items-center gap-2.5 border-b border-line px-3.5 py-2 text-xs text-muted">
           <span>Find system</span>
@@ -90,18 +82,8 @@ export function ActivationStep({ view }: { view: ActivationView }) {
             <option key={system.id} value={system.label} />
           ))}
         </datalist>
-        {view.chosen ? (
-          <Chosen chosen={view.chosen} />
-        ) : (
-          <CardText>
-            No system chosen. Click a system on the board. Each system without your command token
-            can be activated.
-          </CardText>
-        )}
+        {view.chosen ? <Chosen chosen={view.chosen} /> : <CardText>No system chosen.</CardText>}
       </Card>
-      {view.rechecksLater && (
-        <InlineNote>Changing the destination rechecks movement and every later step.</InlineNote>
-      )}
     </>
   );
 }

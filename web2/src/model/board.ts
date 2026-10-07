@@ -18,17 +18,19 @@ export interface PlanetMarkView {
 /** One system on the board. Compare `BoardTileView` + `SystemView`. */
 export interface TileView {
   id: SystemId;
+  /** Not drawn on the board. The inspector and assistive technology use it. */
   name: string;
   q: number;
   r: number;
   home: SeatId | null;
-  /** Always keeps its name when the board is far away. */
-  landmark: boolean;
   anomaly: Anomaly | null;
   wormhole: string | null;
   /** The viewer's command token is here. */
   commandToken: boolean;
+  /** At most three. */
   planets: PlanetMarkView[];
+  /** Who has ships here: one seat, or "contested" when two or more players have ships. */
+  control: SeatId | "contested" | null;
   /** Ships in the space area. `strength` is the average number of hits per combat round. */
   fleets: { seat: SeatId; ships: number; strength: number }[];
   /** Cargo that staged ships pick up here. */

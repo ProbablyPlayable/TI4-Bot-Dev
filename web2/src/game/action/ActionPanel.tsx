@@ -1,6 +1,13 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import type { ActionView, FooterView, PillView, StepContentView, TaskView } from "../../model";
-import { Badge, Button, StepTabs, Trail, cx, type TrailItem } from "../../ui";
+import type {
+  ActionView,
+  FooterView,
+  HelpView,
+  PillView,
+  StepContentView,
+  TaskView,
+} from "../../model";
+import { Badge, Button, Hint, StepTabs, Trail, cx, type TrailItem } from "../../ui";
 import { ActionButton, useDispatch } from "../context";
 import { Blocks } from "../flows/Blocks";
 import { ActivationStep } from "../steps/ActivationStep";
@@ -28,7 +35,8 @@ interface TaskPanelProps {
   pill: PillView | null;
   trail: TrailItem[];
   edit?: TaskView["edit"];
-  lede?: string;
+  /** Rules and explanations. They are shown on hover or click only. */
+  help: HelpView[];
   footer: FooterView;
   /** Scroll position is kept while this stays the same. */
   contentKey: string;
@@ -43,7 +51,7 @@ function TaskPanel({
   pill,
   trail,
   edit,
-  lede,
+  help,
   footer,
   contentKey,
   labelledBy,
@@ -66,9 +74,19 @@ function TaskPanel({
       tabIndex={-1}
       className="flex min-h-0 min-w-0 flex-1 flex-col outline-none"
     >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line px-5 py-[9px] max-[860px]:px-3.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line px-5 py-[9px]">
         <h2 className="text-lg font-semibold tracking-[-.2px]">{heading}</h2>
         {pill && <Badge tone={pill.tone}>{pill.label}</Badge>}
+        {help.length > 0 && (
+          <Hint label={`Rules: ${heading}`}>
+            {help.map((item) => (
+              <p key={item.title}>
+                <strong className="block">{item.title}</strong>
+                {item.text}
+              </p>
+            ))}
+          </Hint>
+        )}
         <Trail items={trail} />
         {edit && (
           <Button
@@ -83,16 +101,15 @@ function TaskPanel({
             {edit.label}
           </Button>
         )}
-        {lede && <p className="basis-full text-sm text-muted">{lede}</p>}
       </div>
       <div
         key={contentKey}
         ref={content}
-        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pt-3.5 pb-5 max-[860px]:overflow-visible max-[860px]:px-3.5"
+        className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-5 pt-3 pb-4"
       >
         {children}
       </div>
-      <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5 max-[860px]:sticky max-[860px]:bottom-0 max-[860px]:flex-wrap max-[860px]:px-3.5 @max-[640px]:flex-wrap">
+      <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5">
         <span
           id="footer-note"
           role={footer.error ? "status" : undefined}
@@ -100,7 +117,7 @@ function TaskPanel({
         >
           {footer.note}
         </span>
-        <div className="flex shrink-0 items-center gap-2 max-[860px]:ml-auto max-[860px]:flex-wrap max-[860px]:justify-end @max-[640px]:ml-auto @max-[640px]:flex-wrap @max-[640px]:justify-end">
+        <div className="flex shrink-0 items-center gap-2">
           {footer.actions.map((action) => (
             <ActionButton key={action.label} view={action} describedBy="footer-note" />
           ))}
@@ -113,23 +130,14 @@ function TaskPanel({
 /**
  * The action panel: one frame for every action. A tactical action has five steps, a strategic action
  * has two, a component action has none. Live, Draft and History use the same frame.
+ * The panel has one width for every step.
  */
-export function ActionPanel({
-  view,
-  wide,
-  onToggleWide,
-  reveal,
-}: {
-  view: ActionView;
-  wide: boolean;
-  onToggleWide: () => void;
-  reveal: string | null;
-}) {
+export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string | null }) {
   const dispatch = useDispatch();
   const away = view.kind === "tactical" && view.current !== null && view.selected !== view.current;
   const uncommitted = view.kind === "tactical" ? view.uncommitted : null;
   return (
-    <aside className="@container flex min-h-0 min-w-0 flex-1 flex-col max-[860px]:border-t max-[860px]:border-line">
+    <aside className="flex min-h-0 min-w-0 flex-1 flex-col">
       {view.past && (
         <div className="flex items-center justify-between gap-2.5 border-b border-green/25 bg-green/[.07] py-1.5 pr-2.5 pl-4 text-sm">
           <span>
@@ -145,16 +153,6 @@ export function ActionPanel({
         <span className="min-w-0 truncate text-sm text-muted">{view.subtitle}</span>
         <span className="ml-auto" />
         {view.badge && <Badge tone={view.badge.tone}>{view.badge.label}</Badge>}
-        <Button
-          tone="quiet"
-          size="icon"
-          aria-pressed={wide}
-          aria-label={wide ? "Make the panel narrow" : "Make the panel wide"}
-          title={wide ? "Narrow panel" : "Wide panel"}
-          onClick={onToggleWide}
-        >
-          {wide ? "⇥" : "⇤"}
-        </Button>
       </div>
       {view.tabs.length > 0 && (
         <StepTabs
@@ -195,7 +193,7 @@ export function ActionPanel({
           pill={view.task.pill}
           trail={view.task.trail}
           edit={view.task.edit}
-          lede={view.task.lede}
+          help={view.task.help}
           footer={view.task.footer}
           contentKey={view.contentKey}
           labelledBy={`step-tab-${view.selected}`}
@@ -208,6 +206,7 @@ export function ActionPanel({
           heading={view.heading}
           pill={view.pill}
           trail={view.trail}
+          help={view.help}
           footer={view.footer}
           contentKey={view.contentKey}
           reveal={reveal}

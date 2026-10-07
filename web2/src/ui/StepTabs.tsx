@@ -14,8 +14,6 @@ export type StepStatus =
 
 export interface StepTab {
   name: string;
-  /** Used when the panel is narrow. */
-  shortName?: string;
   status: StepStatus;
   caption: string;
 }
@@ -61,7 +59,7 @@ export function StepTabs({
   }
 
   return (
-    <div className="flex min-h-10 items-stretch gap-2 border-b border-line bg-surface px-1.5 max-[860px]:sticky max-[860px]:top-0 max-[860px]:z-5 max-[860px]:px-2">
+    <div className="flex min-h-10 items-stretch gap-2 border-b border-line bg-surface px-1.5">
       <nav
         ref={list}
         role="tablist"
@@ -95,11 +93,11 @@ export function StepTabs({
               title={`${tab.name}${tab.caption ? " · " + tab.caption : ""}`}
               data-state={tab.status}
               onClick={() => onSelect(index)}
-              className="flex min-w-0 flex-[1_1_0] items-center gap-[7px] border-b-[3px] border-transparent px-2.5 text-left text-sm whitespace-nowrap enabled:hover:bg-white/[.02] disabled:text-faint aria-selected:border-b-cyan aria-selected:bg-cyan/[.04] max-[860px]:flex-none @max-[640px]:justify-center @max-[640px]:gap-[5px] @max-[640px]:px-1 @max-[640px]:text-xs"
+              className="flex min-w-0 flex-[1_1_0] items-center gap-[7px] border-b-[3px] border-transparent px-2.5 text-left text-sm whitespace-nowrap enabled:hover:bg-white/[.02] disabled:text-faint aria-selected:border-b-cyan aria-selected:bg-cyan/[.04]"
             >
               <span
                 className={cx(
-                  "grid size-[22px] shrink-0 place-items-center rounded-full border text-xs @max-[640px]:size-[18px]",
+                  "grid size-[22px] shrink-0 place-items-center rounded-full border text-xs",
                   chip,
                 )}
               >
@@ -113,15 +111,10 @@ export function StepTabs({
                   index + 1
                 )}
               </span>
-              <span className="font-strong">
-                <span className={cx(tab.shortName && "@max-[640px]:hidden")}>{tab.name}</span>
-                {tab.shortName && (
-                  <span className="hidden capitalize @max-[640px]:inline">{tab.shortName}</span>
-                )}
-              </span>
+              <span className="font-strong">{tab.name}</span>
               <span
                 className={cx(
-                  "min-w-0 overflow-hidden text-xs text-ellipsis @max-[640px]:hidden",
+                  "min-w-0 overflow-hidden text-xs text-ellipsis",
                   review ? "text-red" : isCurrent ? "text-accent" : "text-muted",
                 )}
               >

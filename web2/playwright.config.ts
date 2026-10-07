@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// `npm run shots` writes screenshots of every example to shots/. They are for review, not assertions.
+// `npm run shots` writes screenshots of every example to shots/. They are for review.
+// The examples also assert that the open step needs no vertical scroll at 1920×1080.
 const port = process.env.WEB2_PORT ?? "3190";
 
 export default defineConfig({
