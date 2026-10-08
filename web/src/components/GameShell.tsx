@@ -937,6 +937,10 @@ export const GameShell: React.FC<GameShellProps> = ({
     : null;
   const submittedNonce = useRef<string | null>(null);
   const productionSubmitting = useRef(false);
+  // The server starts a new history generation for every batch it accepts. The queue's own
+  // batch must not look like a restored timeline, or only the first staged build is made.
+  const ownBatchGeneration = useRef(false);
+  const queueToken = useRef(0);
   const tacticalPlan = useRef<ExecutionPlan>(emptyMovementPlan());
   const lastMovementEdit = useRef(workspace.movementEditRevision);
   const [tacticalStep, setTacticalStep] = useState(0);
@@ -960,14 +964,36 @@ export const GameShell: React.FC<GameShellProps> = ({
   }, [workspace.movementEditRevision]);
 
   useEffect(() => {
-    if (historyBusy) setProductionQueue(null);
+    if (historyBusy) {
+      queueToken.current += 1;
+      ownBatchGeneration.current = false;
+      setProductionQueue(null);
+    }
   }, [historyBusy]);
   useEffect(() => {
+    if (ownBatchGeneration.current) {
+      ownBatchGeneration.current = false;
+      setProductionQueue((current) => (current ? { ...current, binding: queueBinding } : current));
+      return;
+    }
+    queueToken.current += 1;
     setProductionQueue((current) => (current?.binding === queueBinding ? current : null));
     productionSubmitting.current = false;
     submittedNonce.current = null;
     setProductionError(null);
   }, [queueBinding]);
+
+  // Payment and placement for a queued build go through batches of their own.
+  const submitBatchKeepingQueue: GameShellProps["onSubmitBasketBatch"] = onSubmitBasketBatch
+    ? (plan) => {
+        const queued = !workspace.draft && Boolean(productionQueue?.units.length);
+        if (queued) ownBatchGeneration.current = true;
+        return onSubmitBasketBatch(plan).catch((error: unknown) => {
+          if (queued) ownBatchGeneration.current = false;
+          throw error;
+        });
+      }
+    : undefined;
 
   // A build may open payment and placement decisions before the next production offer.
   // Keep the queue above the workflow renderer and resume only on a fresh legal offer.
@@ -1025,6 +1051,8 @@ export const GameShell: React.FC<GameShellProps> = ({
     productionSubmitting.current = true;
     // Submit a single authoritative build at a time. Its response includes the
     // next decision, so payment can safely interrupt before we resume the queue.
+    const token = queueToken.current;
+    ownBatchGeneration.current = Boolean(onSubmitBasketBatch) && !workspace.draft;
     const submit = onSubmitBasketBatch
       ? onSubmitBasketBatch({
           kind: "production",
@@ -1040,11 +1068,10 @@ export const GameShell: React.FC<GameShellProps> = ({
       : onSubmitChoice(option.id);
     void submit
       .then(() => {
-        if (currentQueueBinding.current !== productionQueue.binding) return;
+        if (queueToken.current !== token) return;
         productionSubmitting.current = false;
         setProductionQueue((current) =>
           current &&
-          current.binding === productionQueue.binding &&
           current.actor === choice.actor &&
           current.system === system
             ? { ...current, units: current.units.slice(1) }
@@ -1052,7 +1079,8 @@ export const GameShell: React.FC<GameShellProps> = ({
         );
       })
       .catch((error: unknown) => {
-        if (currentQueueBinding.current !== productionQueue.binding) return;
+        if (queueToken.current !== token) return;
+        ownBatchGeneration.current = false;
         productionSubmitting.current = false;
         setProductionError(
           error instanceof Error ? error.message : String(error),
@@ -1192,7 +1220,7 @@ export const GameShell: React.FC<GameShellProps> = ({
             events={events}
             onSubmit={onSubmitChoice}
             onSubmitMovementBatch={onSubmitMovementBatch}
-            onSubmitBasketBatch={onSubmitBasketBatch}
+            onSubmitBasketBatch={submitBatchKeepingQueue}
             lastError={lastError}
             selectedOptionId={selectedOptionId}
             selectedSystemId={selectedSystemId}
@@ -1226,6 +1254,7 @@ export const GameShell: React.FC<GameShellProps> = ({
                   : "";
               setProductionError(null);
               submittedNonce.current = null;
+              queueToken.current += 1;
               setProductionQueue({ binding: queueBinding, actor: choice.actor, system, units });
             }}
           />

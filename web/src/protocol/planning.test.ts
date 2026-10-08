@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   applyPlanningEnvelope,
   applyPlanningStatus,
+  applySecondaryStatus,
   initialPlanningState,
   planningChoice,
 } from "./planning.ts";
 import { decodeServerMessage } from "./decode.ts";
-import type { PlanningEnvelope, PlanningStatusMsg, PlanningPublication } from "./types.ts";
+import type {
+  PlanningEnvelope,
+  PlanningStatusMsg,
+  PlanningPublication,
+  SecondaryDraftStatus,
+} from "./types.ts";
 
 const publication: PlanningPublication = {
   position: {
@@ -205,5 +211,94 @@ describe("planning publications", () => {
         ),
       ).toThrow();
     }
+  });
+});
+
+describe("secondary draft", () => {
+  const secondary: SecondaryDraftStatus = {
+    card: "pok7technology",
+    played_by: "a",
+    window_open: false,
+    seats_before: null,
+    can_start: true,
+    has_draft: true,
+    identity: offer.identity,
+    ready: false,
+    application: null,
+  };
+  // The tactical half of the status says nothing about the secondary draft.
+  const round = (over: Partial<SecondaryDraftStatus> = {}): PlanningStatusMsg => ({
+    ...status,
+    available: false,
+    has_draft: false,
+    identity: null,
+    secondary: { ...secondary, ...over },
+  });
+
+  it("is its own slot: fed by the status's secondary part and its own publications", () => {
+    let state = applySecondaryStatus(initialPlanningState, null, round());
+    expect(state.availability?.available).toBe(true);
+    expect(state.availability?.identity).toEqual(offer.identity);
+    state = applyPlanningEnvelope(state, offer);
+    expect(planningChoice(state)?.nonce).toBe("planning:10:2:3");
+    // The same round's next status keeps the draft.
+    expect(applySecondaryStatus(state, secondary, round({ ready: true })).envelope).toBe(offer);
+  });
+
+  it("starts afresh for another strategic action, and ends with its window", () => {
+    const drafted = applyPlanningEnvelope(
+      applySecondaryStatus(initialPlanningState, null, round()),
+      offer,
+    );
+    expect(
+      applySecondaryStatus(drafted, secondary, round({ card: "pok8imperial", has_draft: false }))
+        .envelope,
+    ).toBeNull();
+    expect(applySecondaryStatus(drafted, secondary, { ...status, secondary: null })).toBe(
+      initialPlanningState,
+    );
+  });
+
+  it("offers no draft question while the server submits the draft", () => {
+    const state = applyPlanningEnvelope(
+      applySecondaryStatus(
+        initialPlanningState,
+        null,
+        round({ application: { applied: 0, total: 2, state: "applying", message: "" } }),
+      ),
+      offer,
+    );
+    expect(planningChoice(state)).toBeNull();
+  });
+
+  it("decodes secondary statuses, updates and results, and refuses damaged ones", () => {
+    const decoded = decodeServerMessage(round({ seats_before: 1, window_open: true }), "game");
+    expect(decoded.type === "planning_status" && decoded.secondary?.seats_before).toBe(1);
+    expect(
+      decodeServerMessage(
+        { type: "planning_update", protocol_version: 3, game_id: "game", draft: "secondary", envelope: offer },
+        "game",
+      ).type,
+    ).toBe("planning_update");
+    const complete = {
+      ...offer,
+      awaiting_answer: false,
+      update: { Stopped: { reason: "SecondaryComplete", last_safe_publication: null } },
+    };
+    expect(() =>
+      decodeServerMessage(
+        { type: "planning_update", protocol_version: 3, game_id: "game", draft: "secondary", envelope: complete },
+        "game",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      decodeServerMessage({ ...round(), secondary: { ...secondary, ready: "yes" } }, "game"),
+    ).toThrow();
+    expect(() =>
+      decodeServerMessage(
+        { type: "planning_result", protocol_version: 3, game_id: "game", draft: "strategic", identity: null, rejection: null },
+        "game",
+      ),
+    ).toThrow();
   });
 });

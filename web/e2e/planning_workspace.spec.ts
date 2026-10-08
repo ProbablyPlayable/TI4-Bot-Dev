@@ -98,7 +98,7 @@ test("an undelivered draft answer becomes retryable after reconnect to the uncha
   const trace = wires[b];
   await page.getByRole("button", { name: "Start tactical draft" }).click();
   const draft = page.getByTestId("draft-workspace");
-  const confirm = draft.getByTestId("submit-choice-button");
+  const confirm = draft.getByTestId("turn-bar-tactical");
   await expect(confirm).toBeEnabled();
   const offer = trace.envelopes().at(-1)!;
   trace.dropNextAnswer();
@@ -200,9 +200,9 @@ for (const staging of ["unsubmitted", "in-flight"] as const) {
     const otherDraft = otherTab.getByTestId("draft-workspace");
     await expect(otherDraft.getByTestId("tactical-movement-tray")).toBeVisible();
     await otherDraft.getByRole("button", { name: "Reset draft" }).last().click();
-    await expect(otherDraft.getByTestId("pending-choice-dialog")).toBeVisible();
     await choose(otherDraft, "tactical");
-    await otherDraft.getByTestId(`system-hex-${target}`).click();
+    await expect(otherDraft.getByTestId("system-activation-bar")).toBeVisible();
+    await otherDraft.getByTestId(`system-hex-${target}`).dispatchEvent("click");
     await otherDraft.getByTestId("confirm-activation-btn").click();
     await expect(otherDraft.getByTestId("tactical-movement-tray")).toBeVisible();
     await expect
@@ -218,6 +218,11 @@ for (const staging of ["unsubmitted", "in-flight"] as const) {
 }
 
 async function choose(scope: Locator, option: string) {
+  // The turn menu is a bar whose buttons submit at once; every other question is a list.
+  if (option === "tactical") {
+    await scope.getByTestId("turn-bar-tactical").click();
+    return;
+  }
   await scope.locator(`[data-testid="choice-option"][data-option-id="${option}"]`).click();
   await scope.getByTestId("submit-choice-button").click();
 }
@@ -335,7 +340,7 @@ async function beginDraft(
     seat,
     publication!.choice!.options.map((o) => o.id),
   );
-  await draft.getByTestId(`system-hex-${target}`).click();
+  await draft.getByTestId(`system-hex-${target}`).dispatchEvent("click");
   await draft.getByTestId("confirm-activation-btn").click();
   await expect(draft.getByTestId("tactical-movement-tray")).toBeVisible();
   const ship = draft
@@ -569,7 +574,7 @@ test("a manual two-player game exposes tactical drafting after strategy selectio
   await host.goto("/");
   await host.getByLabel("Players").selectOption("2");
   await host.getByLabel("Nickname").fill("Draft Host");
-  await host.getByLabel("Seed (advanced, optional)").fill("42");
+  await host.getByLabel("Seed (dev, optional)").fill("42");
   await host.getByTestId("create-game-button").click();
   await expect(host.getByTestId("ready-button")).toBeVisible();
   const gameUrl = host.url();
@@ -579,6 +584,8 @@ test("a manual two-player game exposes tactical drafting after strategy selectio
   await guest.goto(gameUrl);
   await guest.getByLabel("Nickname").fill("Draft Guest");
   await guest.getByRole("button", { name: "Join game", exact: true }).click();
+  // The host is shown the map picker first; the default map will do.
+  await host.getByTestId("map-picker-done").click();
   await host.getByTestId("ready-button").click();
   await guest.getByTestId("ready-button").click();
   await host.getByTestId("start-game-button").click();
@@ -625,7 +632,7 @@ test("a manual two-player game exposes tactical drafting after strategy selectio
   const draft = waiting.getByTestId("draft-workspace");
   await expect(draft).toBeVisible();
   await expect(
-    draft.locator('[data-testid="choice-option"][data-option-id="tactical"]'),
+    draft.getByTestId("turn-bar-tactical"),
   ).toBeVisible();
 });
 
@@ -659,7 +666,7 @@ test("reopening a recorded fleet preserves independent ships, cargo, and camera 
   await expect(draft.getByTestId(independentId.replace("rally-inc-", "rally-count-"))).toHaveText(
     "1",
   );
-  await expect(draft.getByTestId("cargo-capacity-gauge-" + origin)).toContainText("1 /");
+  await expect(draft.getByTestId("cargo-capacity-gauge-" + origin)).toContainText("1 loaded /");
   await expect(draft.locator('[data-testid="ti4-board-svg"] > g')).toHaveAttribute(
     "transform",
     camera!,
@@ -733,7 +740,7 @@ test("private tactical draft preserves staging, refreshes after live movement, s
     .click();
   await expect(carrier).toBeVisible();
   await expect(draft.getByTestId("fleet-supply-gauge")).toContainText("1 /");
-  await expect(draft.locator(`[data-testid^="cargo-capacity-gauge-"]`)).toContainText("1 /");
+  await expect(draft.locator(`[data-testid^="cargo-capacity-gauge-"]`)).toContainText("1 loaded /");
   await draft.getByTestId("close-movement-tray").click();
   await draft.getByTitle("Zoom In", { exact: true }).click();
   const camera = await draft.locator('[data-testid="ti4-board-svg"] > g').getAttribute("transform");
@@ -780,7 +787,7 @@ test("private tactical draft preserves staging, refreshes after live movement, s
     players[a].id,
     active.pending_choice!.choice.options.map((o) => o.id),
   );
-  await pages[a].getByTestId(`system-hex-${liveTarget.target}`).click();
+  await pages[a].getByTestId(`system-hex-${liveTarget.target}`).dispatchEvent("click");
   await pages[a].getByTestId("confirm-activation-btn").click();
   await expect(pages[a].getByTestId("tactical-movement-tray")).toBeVisible();
   await pages[a]
@@ -898,7 +905,7 @@ test("private tactical draft preserves staging, refreshes after live movement, s
   await expect(
     page
       .getByTestId("draft-workspace")
-      .locator('[data-testid="choice-option"][data-option-id="tactical"]'),
+      .getByTestId("turn-bar-tactical"),
   ).toBeVisible();
   await expect.poll(() => wires[b].envelopes().at(-1)?.progress.recorded_answers).toBe(0);
   for (const trace of [wires[a], spectatorWire])
@@ -954,7 +961,7 @@ test("socket replacement preserves unsubmitted activation, fleet, and cargo sele
     ).toHaveLength(answers);
   };
 
-  await draft.getByTestId(`system-hex-${target}`).click();
+  await draft.getByTestId(`system-hex-${target}`).dispatchEvent("click");
   const confirmActivation = draft.getByTestId("confirm-activation-btn");
   await reconnect(confirmActivation);
   await expect(draft.getByTestId("system-activation-bar")).toContainText(`(#${target})`);

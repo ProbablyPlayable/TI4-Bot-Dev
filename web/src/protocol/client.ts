@@ -20,13 +20,18 @@ import {
   initialPlanningState,
   applyPlanningEnvelope,
   applyPlanningStatus,
+  applySecondaryStatus,
   planningChoice,
   attemptKey,
   sameAttempt,
   PlanningRefreshError,
   type PlanningState,
 } from "./planning.ts";
-import type { AttemptIdentity } from "./types.ts";
+import type {
+  AttemptIdentity,
+  SecondaryDraftStatus,
+  SecondaryPlanningRequest,
+} from "./types.ts";
 
 export type ConnectionStatus =
   "connecting" | "connected" | "disconnected" | "error";
@@ -144,6 +149,9 @@ const SUBMISSION_TIMEOUT_MS = 10_000;
 
 export interface GameSessionState {
   planning: PlanningState;
+  /** The strategic action whose secondary this seat may draft, and that draft. */
+  secondaryStatus: SecondaryDraftStatus | null;
+  secondaryPlanning: PlanningState;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -166,6 +174,8 @@ type Listener = () => void;
 
 const initialState: GameSessionState = {
   planning: initialPlanningState,
+  secondaryStatus: null,
+  secondaryPlanning: initialPlanningState,
   status: "connecting",
   gameVersion: 0,
   snapshot: null,
@@ -240,8 +250,22 @@ export function reduceServerMessage(
 
   switch (message.type) {
     case "planning_status":
-      return { ...state, planning: applyPlanningStatus(state.planning, message) };
+      return {
+        ...state,
+        planning: applyPlanningStatus(state.planning, message),
+        secondaryStatus: message.secondary ?? null,
+        secondaryPlanning: applySecondaryStatus(
+          state.secondaryPlanning,
+          state.secondaryStatus,
+          message,
+        ),
+      };
     case "planning_update":
+      if (message.draft === "secondary")
+        return {
+          ...state,
+          secondaryPlanning: applyPlanningEnvelope(state.secondaryPlanning, message.envelope),
+        };
       return { ...state, planning: applyPlanningEnvelope(state.planning, message.envelope) };
     case "planning_result":
       return state;
@@ -343,6 +367,11 @@ export class GameSessionClient {
     reject: (error: Error) => void;
   } | null = null;
 
+  // One secondary-draft request at a time. Its result only acknowledges the
+  // request; the next publication or status shows what it changed.
+  private secondarySubmission: { resolve: () => void; reject: (error: Error) => void } | null =
+    null;
+
   constructor(private readonly options: GameSessionClientOptions) {}
 
   getState(): GameSessionState {
@@ -367,6 +396,73 @@ export class GameSessionClient {
     this.detachSocket();
     this.rejectSubmission("Submission stopped");
     this.rejectPlanning("Submission stopped");
+    this.settleSecondary("Submission stopped");
+  }
+
+  startSecondaryPlanning(): Promise<void> {
+    return this.sendSecondary({ action: "start" });
+  }
+  resetSecondaryPlanning(identity: AttemptIdentity): Promise<void> {
+    return this.sendSecondary({ action: "reset", identity });
+  }
+  setSecondaryReady(identity: AttemptIdentity, ready: boolean): Promise<void> {
+    return this.sendSecondary({ action: "set_ready", identity, ready });
+  }
+  submitSecondaryPlanningChoice(identity: AttemptIdentity, optionId: string): Promise<void> {
+    const choice = planningChoice(this.state.secondaryPlanning);
+    const envelope = this.state.secondaryPlanning.envelope;
+    if (!choice || !envelope || attemptKey(identity) !== attemptKey(envelope.identity))
+      return Promise.reject(new PlanningRefreshError("Draft refreshed; choose again."));
+    if (!choice.options.some((option) => option.id === optionId))
+      return Promise.reject(new Error("This draft selection is no longer available."));
+    return this.sendSecondary({ action: "answer", identity, option_id: optionId });
+  }
+  private sendSecondary(request: SecondaryPlanningRequest): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN)
+      return Promise.reject(new Error("Planning is not connected."));
+    if (this.secondarySubmission)
+      return Promise.reject(new Error("A draft submission is still pending."));
+    const promise = new Promise<void>((resolve, reject) => {
+      this.secondarySubmission = { resolve, reject };
+    });
+    // An answered offer is spent: hide it until the next publication replaces it.
+    this.setState({
+      ...this.state,
+      secondaryPlanning: {
+        ...this.state.secondaryPlanning,
+        busy: true,
+        error: null,
+        current: request.action === "set_ready" ? this.state.secondaryPlanning.current : false,
+      },
+    });
+    try {
+      this.socket.send(
+        JSON.stringify({
+          type: "secondary_planning",
+          protocol_version: PROTOCOL_VERSION,
+          game_id: this.options.gameId,
+          request,
+        } satisfies ClientMessage),
+      );
+    } catch (error) {
+      this.settleSecondary(String(error));
+    }
+    return promise;
+  }
+
+  private settleSecondary(error: string | null): void {
+    const pending = this.secondarySubmission;
+    this.secondarySubmission = null;
+    this.setState({
+      ...this.state,
+      secondaryPlanning: {
+        ...this.state.secondaryPlanning,
+        busy: false,
+        error: pending ? error : this.state.secondaryPlanning.error,
+      },
+    });
+    if (error) pending?.reject(new Error(error));
+    else pending?.resolve();
   }
 
   startPlanning(): Promise<void> {
@@ -849,9 +945,12 @@ export class GameSessionClient {
 
   private openSocket(): void {
     if (this.planningSubmission?.kind === "answer") this.planningSubmission.reconnecting = true;
+    this.settleSecondary("Connection lost before the draft request was acknowledged.");
     this.setState({
       ...this.state,
       planning: { ...this.state.planning, availability: null, current: false },
+      secondaryStatus: null,
+      secondaryPlanning: initialPlanningState,
     });
     const socket = new WebSocket(this.webSocketUrl());
     this.socket = socket;
@@ -946,6 +1045,24 @@ export class GameSessionClient {
   }
 
   private apply(message: ServerMessage): void {
+    if (message.type === "planning_result" && message.draft === "secondary") {
+      this.settleSecondary(
+        !message.rejection
+          ? null
+          : message.rejection === "replay_mismatch"
+            ? "This draft no longer fits the game. Review or reset it before marking it ready."
+            : message.rejection === "retired" || message.rejection === "not_waiting"
+              ? "The draft changed. Review it and try again."
+              : message.rejection === "unavailable"
+                ? "This secondary can no longer be drafted."
+                : `Draft request rejected: ${message.rejection}`,
+      );
+      return;
+    }
+    if (message.type === "planning_update" && message.draft === "secondary") {
+      this.setState(reduceServerMessage(this.state, message));
+      return;
+    }
     if (message.type === "planning_result") {
       const pending = this.planningSubmission;
       if (

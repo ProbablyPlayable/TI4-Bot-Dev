@@ -60,6 +60,7 @@ fn planning_updates_and_results_round_trip_without_a_live_game_version() {
         ServerMessage::PlanningUpdate(PlanningUpdateMsg {
             protocol_version: PROTOCOL_VERSION,
             game_id: "game_abc".into(),
+            draft: Default::default(),
             envelope: PlanningEnvelope {
                 publication_id: 1,
                 identity,
@@ -83,12 +84,14 @@ fn planning_updates_and_results_round_trip_without_a_live_game_version() {
         ServerMessage::PlanningResult(PlanningResultMsg {
             protocol_version: PROTOCOL_VERSION,
             game_id: "game_abc".into(),
+            draft: Default::default(),
             identity: Some(identity),
             rejection: Some(PlanningRejection::Retired),
         }),
         ServerMessage::PlanningResult(PlanningResultMsg {
             protocol_version: PROTOCOL_VERSION,
             game_id: "game_abc".into(),
+            draft: Default::default(),
             identity: None,
             rejection: None,
         }),

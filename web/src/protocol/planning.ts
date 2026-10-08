@@ -4,6 +4,7 @@ import type {
   PlanningEnvelope,
   PlanningPublication,
   PlanningStatusMsg,
+  SecondaryDraftStatus,
 } from "./types.ts";
 
 export function attemptKey(identity: AttemptIdentity): string {
@@ -115,6 +116,29 @@ export function applyPlanningEnvelope(
     current: update !== "Preparing",
     error: null,
   };
+}
+/**
+ * The seat's secondary draft follows the same rules as its tactical one, fed by the
+ * `secondary` part of each status. A new strategic action, or none, starts it afresh.
+ */
+export function applySecondaryStatus(
+  state: PlanningState,
+  previous: SecondaryDraftStatus | null,
+  status: PlanningStatusMsg,
+): PlanningState {
+  const secondary = status.secondary ?? null;
+  if (!secondary) return initialPlanningState;
+  const sameRound =
+    !!previous && previous.card === secondary.card && previous.played_by === secondary.played_by;
+  return applyPlanningStatus(sameRound ? state : initialPlanningState, {
+    ...status,
+    available: true,
+    can_start: secondary.can_start,
+    has_draft: secondary.has_draft,
+    identity: secondary.identity,
+    can_apply: false,
+    application: secondary.application,
+  });
 }
 /** A retired answer was not recorded; explicit pipelines may retry their remaining intent. */
 export class PlanningRefreshError extends Error {}

@@ -4109,3 +4109,20 @@ select:focus-visible,
   flex-wrap: wrap;
   justify-content: center;
 }
+
+/* A secondary draft marked ready: submitted by the server when the window arrives. */
+.draft-status__ready {
+  padding: 2px 7px;
+  border: 1px solid #6fbf8a66;
+  border-radius: 4px;
+  background: #6fbf8a1a;
+  color: #9fdcb4;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.workspace-switch__detail {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}

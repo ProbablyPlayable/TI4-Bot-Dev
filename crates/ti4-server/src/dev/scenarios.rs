@@ -403,10 +403,10 @@ fn build_research_scenario(
         .unclaimed_strategy_cards
         .push(StrategyCardId::new("leadership"));
 
+    // One ready Biotic skip (Sol's Spec Ops II needs a second green prerequisite)
+    // and one exhausted skip of any colour, whichever planets this map carries.
     let all_planets = ti4_content::galaxy::all_planets(content, POK);
-    let mut ready_assigned = false;
-    let mut exhausted_assigned = false;
-
+    let mut skips = Vec::new();
     for system_id in galaxy.system_ids() {
         if system_id == "01" {
             continue;
@@ -414,26 +414,32 @@ fn build_research_scenario(
         if let Some(tile) = ti4_content::galaxy::system(content, system_id, POK) {
             for planet in tile.planets() {
                 if let Some(rec) = all_planets.get(planet) {
-                    if !rec.tech_specialties().is_empty() {
-                        let pid = PlanetId::new(planet);
-                        config
-                            .state
-                            .system_mut(&SystemId::new(system_id))
-                            .set_control(pid.clone(), player.clone());
-                        if !ready_assigned {
-                            ready_assigned = true;
-                        } else if !exhausted_assigned {
-                            config.state.exhaust_planet(pid);
-                            exhausted_assigned = true;
-                            break;
-                        }
+                    let specialties = rec.tech_specialties();
+                    if !specialties.is_empty() {
+                        let biotic = specialties
+                            .iter()
+                            .any(|specialty| specialty.eq_ignore_ascii_case("biotic"));
+                        skips.push((system_id.to_owned(), PlanetId::new(planet), biotic));
                     }
                 }
             }
         }
-        if ready_assigned && exhausted_assigned {
-            break;
-        }
+    }
+    let ready = skips
+        .iter()
+        .position(|(_, _, biotic)| *biotic)
+        .ok_or("this map has no Biotic technology specialty")?;
+    let (system, planet, _) = skips.remove(ready);
+    config
+        .state
+        .system_mut(&SystemId::new(&system))
+        .set_control(planet, player.clone());
+    if let Some((system, planet, _)) = skips.into_iter().next() {
+        config
+            .state
+            .system_mut(&SystemId::new(&system))
+            .set_control(planet.clone(), player.clone());
+        config.state.exhaust_planet(planet);
     }
 
     Ok((config, lobby, player, token))

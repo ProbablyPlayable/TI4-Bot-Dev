@@ -51,6 +51,8 @@ const snapshot: InitialSnapshotMsg = {
 
 const state: GameSessionState = {
   planning: initialPlanningState,
+  secondaryStatus: null,
+  secondaryPlanning: initialPlanningState,
   status: "connected",
   gameVersion: 0,
   snapshot: null,
@@ -437,6 +439,85 @@ describe("GameSessionClient ingress lifecycle", () => {
       },
     };
   }
+  it("drafts a secondary in its own slot without disturbing the tactical draft", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const tactical = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: tactical });
+    const round = {
+      card: "pok7technology",
+      played_by: "player_b",
+      window_open: false,
+      seats_before: null,
+      can_start: true,
+      has_draft: false,
+      identity: null,
+      ready: false,
+      application: null,
+    };
+    const status = (secondary: object | null) =>
+      send({
+        type: "planning_status",
+        checkpoint_id: 10,
+        available: true,
+        can_start: true,
+        has_draft: true,
+        identity: tactical.identity,
+        secondary,
+      });
+    status(round);
+    expect(client.getState().secondaryStatus?.card).toBe("pok7technology");
+
+    const started = client.startSecondaryPlanning();
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      type: "secondary_planning",
+      request: { action: "start" },
+    });
+    await expect(client.startSecondaryPlanning()).rejects.toThrow(/still pending/);
+    // A tactical result is not this request's answer.
+    send({ type: "planning_result", identity: null, rejection: "unavailable" });
+    expect(client.getState().secondaryPlanning.busy).toBe(true);
+    send({ type: "planning_result", draft: "secondary", identity: null, rejection: null });
+    await started;
+
+    const offer = draftOffer(10, 1, 0);
+    status({ ...round, has_draft: true, identity: offer.identity });
+    send({ type: "planning_update", draft: "secondary", envelope: offer });
+    expect(client.getState().secondaryPlanning.envelope).toEqual(offer);
+    expect(client.getState().planning.envelope).toEqual(tactical);
+
+    const answered = client.submitSecondaryPlanningChoice(offer.identity, "move");
+    expect(JSON.parse(socket.sent.at(-1)!).request).toEqual({
+      action: "answer",
+      identity: offer.identity,
+      option_id: "move",
+    });
+    // The answered offer is spent until the next publication replaces it.
+    expect(client.getState().secondaryPlanning.current).toBe(false);
+    send({ type: "planning_result", draft: "secondary", identity: offer.identity, rejection: null });
+    await answered;
+
+    const ready = client.setSecondaryReady(offer.identity, true);
+    expect(JSON.parse(socket.sent.at(-1)!).request).toEqual({
+      action: "set_ready",
+      identity: offer.identity,
+      ready: true,
+    });
+    send({
+      type: "planning_result",
+      draft: "secondary",
+      identity: offer.identity,
+      rejection: "replay_mismatch",
+    });
+    await expect(ready).rejects.toThrow(/no longer fits/);
+    expect(client.getState().secondaryPlanning.error).toMatch(/no longer fits/);
+
+    // The window closes: the round and its draft are gone, the tactical draft is not.
+    status(null);
+    expect(client.getState().secondaryStatus).toBeNull();
+    expect(client.getState().secondaryPlanning.envelope).toBeNull();
+    expect(client.getState().planning.envelope).toEqual(tactical);
+  });
+
   it("reopens movement with an identity and accepts a replacement script shorter than the original", async () => {
     const { client, socket, send } = await connectedPlayer();
     const original = draftOffer(10, 5, 6);

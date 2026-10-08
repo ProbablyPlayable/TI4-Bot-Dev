@@ -676,6 +676,35 @@ impl GameSession {
         Ok(())
     }
 
+    /// One operation on a follower's secondary draft. Unlike a tactical draft it
+    /// is open to every follower at once, whoever the active player is, and
+    /// never touches the live pending decision.
+    pub fn secondary_planning(
+        &self,
+        player: &PlayerId,
+        request: &crate::protocol::client::SecondaryPlanningRequest,
+    ) -> Result<(), PlanningError> {
+        use crate::protocol::client::SecondaryPlanningRequest as Request;
+        let mut lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+            return Err(PlanningError::Unavailable);
+        }
+        if lock.seats.get(player) != Some(&SeatController::Human) {
+            return Err(PlanningError::UnknownSeat);
+        }
+        match request {
+            Request::Start {} => lock.planning.start_secondary(player),
+            Request::Reset { identity } => lock.planning.reset_secondary(player, *identity),
+            Request::Answer {
+                identity,
+                option_id,
+            } => lock.planning.submit_secondary(player, *identity, option_id),
+            Request::SetReady { identity, ready } => {
+                lock.planning.set_secondary_ready(player, *identity, *ready)
+            }
+        }
+    }
+
     pub fn planning_status(&self, player: &PlayerId) -> crate::protocol::server::PlanningStatusMsg {
         let lock = self.shared.lock().expect("shared lock");
         let available = !lock.stopped
@@ -708,6 +737,76 @@ impl GameSession {
                 .map(|runner| runner.identity()),
             can_apply,
             application: lock.planning.application(player),
+            secondary: (!lock.stopped
+                && !lock.finished
+                && lock.error.is_none()
+                && lock.replay_complete)
+                .then(|| {
+                    lock.planning.secondary_status(
+                        player,
+                        lock.seats.get(player) == Some(&SeatController::Human),
+                    )
+                })
+                .flatten(),
+        }
+    }
+
+    pub(crate) fn subscribe_secondary_planning(
+        &self,
+        player: &PlayerId,
+    ) -> Option<mpsc::Receiver<crate::planning::runner::PlanningEnvelope>> {
+        let lock = self.shared.lock().expect("shared lock");
+        if lock.stopped || !lock.replay_complete {
+            return None;
+        }
+        lock.planning
+            .secondary_runner(player)
+            .map(|runner| runner.subscribe())
+    }
+
+    pub(crate) fn secondary_attempt_is_current(
+        &self,
+        player: &PlayerId,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> bool {
+        let lock = self.shared.lock().expect("shared lock");
+        !lock.stopped
+            && lock
+                .planning
+                .secondary_runner(player)
+                .is_some_and(|runner| runner.is_current_attempt(identity))
+    }
+
+    /// As [`Self::recv_planning_timeout`], for the seat's secondary draft.
+    pub fn recv_secondary_planning_timeout(
+        &self,
+        player: &PlayerId,
+        timeout: std::time::Duration,
+    ) -> Result<crate::planning::runner::PlanningEnvelope, mpsc::RecvTimeoutError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            {
+                let lock = self.shared.lock().expect("shared lock");
+                if lock.stopped || lock.finished || lock.error.is_some() || !lock.replay_complete {
+                    return Err(mpsc::RecvTimeoutError::Disconnected);
+                }
+                let runner = lock
+                    .planning
+                    .secondary_runner(player)
+                    .ok_or(mpsc::RecvTimeoutError::Disconnected)?;
+                match runner.try_recv() {
+                    Ok(envelope) => return Ok(envelope),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        return Err(mpsc::RecvTimeoutError::Disconnected);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            std::thread::sleep(remaining.min(std::time::Duration::from_millis(5)));
         }
     }
 
@@ -808,7 +907,11 @@ impl GameSession {
         // The old speculative view must never be reused for a different cursor.
         config.replay_boundary_state = None;
         // A rewind or a batch starts a new worker; what each seat asked for survives it.
-        config.reaction_modes = self.shared.lock().expect("shared lock").reaction_modes_snapshot();
+        config.reaction_modes = self
+            .shared
+            .lock()
+            .expect("shared lock")
+            .reaction_modes_snapshot();
         config
     }
 

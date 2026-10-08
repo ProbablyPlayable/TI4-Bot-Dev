@@ -997,6 +997,16 @@ pub fn spawn_session_worker(config: SessionConfig) -> (Arc<Mutex<SessionShared>>
         if let Some(galaxy) = config.galaxy {
             game = game.with_galaxy(galaxy);
         }
+        // Followers may draft their secondary as soon as the card is certain to
+        // resolve. The step holds no session lock while its primary is asked.
+        let announced = worker_shared.clone();
+        game.on_strategic_action_chosen(move |primary, card| {
+            announced
+                .lock()
+                .expect("shared lock")
+                .planning
+                .announce_primary(primary, card);
+        });
         worker_shared
             .lock()
             .expect("shared lock")

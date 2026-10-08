@@ -32,6 +32,22 @@ export interface UseGameSessionReturn {
     identity: import("../protocol/types.ts").AttemptIdentity,
     optionId: string,
   ) => Promise<void>;
+  /** The strategic action whose secondary this seat may draft, and that draft. */
+  secondaryStatus: import("../protocol/types.ts").SecondaryDraftStatus | null;
+  secondaryPlanning: import("../protocol/planning.ts").PlanningState;
+  startSecondaryPlanning: () => Promise<void>;
+  resetSecondaryPlanning: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+  ) => Promise<void>;
+  submitSecondaryPlanningChoice: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    optionId: string,
+  ) => Promise<void>;
+  /** Ready: the server submits the draft when the live window reaches this seat. */
+  setSecondaryReady: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    ready: boolean,
+  ) => Promise<void>;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -87,6 +103,11 @@ export function useGameSession({
     applyPlanning: (identity, nonce, expectedVersion) =>
       client.applyPlanning(identity, nonce, expectedVersion),
     submitPlanningChoice: (identity, optionId) => client.submitPlanningChoice(identity, optionId),
+    startSecondaryPlanning: () => client.startSecondaryPlanning(),
+    resetSecondaryPlanning: (identity) => client.resetSecondaryPlanning(identity),
+    submitSecondaryPlanningChoice: (identity, optionId) =>
+      client.submitSecondaryPlanningChoice(identity, optionId),
+    setSecondaryReady: (identity, ready) => client.setSecondaryReady(identity, ready),
     submitChoice,
     setReactionMode: (card, mode) => client.setReactionMode(card, mode),
     changeHistory,

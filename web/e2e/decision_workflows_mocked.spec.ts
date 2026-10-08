@@ -324,7 +324,6 @@ test("draft landings continue through production, payment and placement using on
   });
   offer(0);
   const draft = await showDraft(page);
-  await draft.getByRole("button", { name: /Land infantry on Bereg/ }).click();
   await draft.getByRole("button", { name: "Confirm landings" }).click();
   await expect(draft.getByTestId("production-builder-drawer")).toBeVisible();
   await draft.getByTestId("produce-unit-btn-build|infantry|2").click();
@@ -338,6 +337,48 @@ test("draft landings continue through production, payment and placement using on
   expect(
     messages.filter((m) => m.type === "submit_planning_choice").map((m) => m.option_id),
   ).toEqual(["commit|0|bereg", "build|infantry|2", "trade_good", "place|bereg", "done_producing"]);
+  expect(messages.some((m) => m.type === "submit_choice")).toBe(false);
+});
+
+test("a draft shows the planner's own ability question and records the answer privately", async ({
+  page,
+}) => {
+  const { socket } = await openMockedGame(page, { ...initial, pending_choice: null });
+  const envelope = movementDraft();
+  const ability = "technology:sol:sdn:SYSTEM_ACTIVATED:after";
+  Object.assign(envelope, {
+    update: {
+      SafeOffer: {
+        position: movementSnapshot.view,
+        events: [],
+        choice: {
+          ...movementSnapshot.pending_choice!.choice,
+          prompt: "after SYSTEM_ACTIVATED",
+          context: {
+            ...movementSnapshot.pending_choice!.choice.context!,
+            source: { Reaction: "SYSTEM_ACTIVATED" },
+            subtype: "reaction_after_SYSTEM_ACTIVATED",
+            optional: true,
+          },
+          options: [
+            { id: ability, kind: "ability", label: "Scanlink Drone Network" },
+            { id: "decline", kind: "decline", label: "Decline" },
+          ],
+        },
+      },
+    },
+  });
+  const messages: ClientMessage[] = [];
+  socket.onMessage((raw) => messages.push(JSON.parse(String(raw)) as ClientMessage));
+  deliverDraft(socket, envelope);
+  const draft = await showDraft(page);
+  await expect(draft).toContainText("Scanlink Drone Network");
+  // The ordinary reaction prompt, with its way out.
+  await expect(draft.getByRole("button", { name: /^Pass/ })).toBeVisible();
+  await draft.getByRole("button", { name: "Use Scanlink Drone Network" }).click();
+  await expect
+    .poll(() => messages.filter((m) => m.type === "submit_planning_choice").map((m) => m.option_id))
+    .toEqual([ability]);
   expect(messages.some((m) => m.type === "submit_choice")).toBe(false);
 });
 

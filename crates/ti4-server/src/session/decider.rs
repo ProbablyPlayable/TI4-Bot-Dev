@@ -66,6 +66,7 @@ impl Decider for RemoteHumanDecider {
                 submitted_option_id: None,
                 reply_tx: None,
             });
+            shared.planning.begin_secondary_application(choice);
             if let Some(option) = shared.planning.application_option(choice) {
                 let (reply_tx, _reply_rx) = mpsc::channel();
                 let pending = shared.pending_decision.as_mut().expect("pending decision");

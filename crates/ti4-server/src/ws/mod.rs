@@ -15,7 +15,7 @@ use crate::protocol::PROTOCOL_VERSION;
 use crate::protocol::client::ClientMessage;
 use crate::protocol::error::ErrorKind;
 use crate::protocol::server::{
-    ActionRejectedMsg, PlanningRejection, PlanningResultMsg, PlanningUpdateMsg, PongMsg,
+    ActionRejectedMsg, DraftKind, PlanningRejection, PlanningResultMsg, PlanningUpdateMsg, PongMsg,
     ProtocolErrorMsg, ServerMessage,
 };
 use crate::protocol::status::{RejectionReason, ViewerRole};
@@ -92,8 +92,13 @@ async fn handle_socket(
                 }) else {
                     continue;
                 };
-                if !session_for_pump.planning_attempt_is_current(&player, update.envelope.identity)
-                {
+                let current = match update.draft {
+                    DraftKind::Tactical => session_for_pump
+                        .planning_attempt_is_current(&player, update.envelope.identity),
+                    DraftKind::Secondary => session_for_pump
+                        .secondary_attempt_is_current(&player, update.envelope.identity),
+                };
+                if !current {
                     continue;
                 }
             }
@@ -285,7 +290,34 @@ async fn handle_socket(
                     .send(ServerMessage::PlanningResult(PlanningResultMsg {
                         protocol_version: PROTOCOL_VERSION,
                         game_id: game_id.clone(),
+                        draft: DraftKind::Tactical,
                         identity: answer.map(|(identity, _)| identity),
+                        rejection,
+                    }))
+                    .await;
+            }
+            ClientMessage::SecondaryPlanning {
+                game_id: message_game_id,
+                request,
+                ..
+            } => {
+                let rejection = if message_game_id != game_id {
+                    Some(PlanningRejection::WrongGame)
+                } else if let (Some(ViewerRole::Player(player)), Some(token)) =
+                    (&current_role, &current_token)
+                {
+                    registry
+                        .player_secondary_planning(&game_id, token, player, &session, &request)
+                        .err()
+                } else {
+                    Some(PlanningRejection::Unauthorized)
+                };
+                let _ = outbound_tx
+                    .send(ServerMessage::PlanningResult(PlanningResultMsg {
+                        protocol_version: PROTOCOL_VERSION,
+                        game_id: game_id.clone(),
+                        draft: DraftKind::Secondary,
+                        identity: request.identity(),
                         rejection,
                     }))
                     .await;
@@ -371,6 +403,7 @@ async fn handle_socket(
                 tokio::spawn(async move {
                     let mut check = tokio::time::interval(Duration::from_millis(50));
                     let mut planning = None;
+                    let mut secondary_planning = None;
                     let mut last_planning_status = None;
                     loop {
                         tokio::select! {
@@ -394,14 +427,33 @@ async fn handle_socket(
                             if planning.is_none() {
                                 planning = session_for_updates.subscribe_planning(player);
                             }
-                            if let Some(receiver) = &mut planning {
+                            if secondary_planning.is_none() {
+                                secondary_planning =
+                                    session_for_updates.subscribe_secondary_planning(player);
+                            }
+                            for (draft, subscription) in [
+                                (DraftKind::Tactical, &mut planning),
+                                (DraftKind::Secondary, &mut secondary_planning),
+                            ] {
+                                let Some(receiver) = subscription else {
+                                    continue;
+                                };
                                 loop {
                                     match receiver.try_recv() {
                                         Ok(envelope) => {
-                                            if !session_for_updates.planning_attempt_is_current(
-                                                player,
-                                                envelope.identity,
-                                            ) {
+                                            let current = match draft {
+                                                DraftKind::Tactical => session_for_updates
+                                                    .planning_attempt_is_current(
+                                                        player,
+                                                        envelope.identity,
+                                                    ),
+                                                DraftKind::Secondary => session_for_updates
+                                                    .secondary_attempt_is_current(
+                                                        player,
+                                                        envelope.identity,
+                                                    ),
+                                            };
+                                            if !current {
                                                 continue;
                                             }
                                             if tx_clone
@@ -409,6 +461,7 @@ async fn handle_socket(
                                                     PlanningUpdateMsg {
                                                         protocol_version: PROTOCOL_VERSION,
                                                         game_id: game_for_updates.clone(),
+                                                        draft,
                                                         envelope,
                                                     },
                                                 ))
@@ -420,7 +473,7 @@ async fn handle_socket(
                                         }
                                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                            planning = None;
+                                            *subscription = None;
                                             break;
                                         }
                                     }

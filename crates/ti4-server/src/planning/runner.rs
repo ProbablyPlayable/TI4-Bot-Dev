@@ -21,7 +21,7 @@ use ti4_engine::decision_context::{CONTEXT_VERSION, DecisionSource};
 use ti4_engine::game::Game;
 use ti4_engine::observation::ExecutionObservation;
 use ti4_engine::preview::{Outcome, Quantity};
-use ti4_model::id::PlayerId;
+use ti4_model::id::{PlayerId, StrategyCardId};
 use ti4_model::state::GameState;
 
 use super::{DecisionRecording, RecordedDecision, RecordingDecider};
@@ -30,6 +30,21 @@ use crate::protocol::status::ViewerRole;
 use crate::protocol::view::GameView;
 
 pub const ASSUMPTION: &str = "Other players take no optional reactions in this hypothetical turn.";
+pub const SECONDARY_ASSUMPTION: &str =
+    "The primary ability and earlier players' secondaries may not have resolved yet.";
+
+/// What a disposable attempt previews. The scope picks the engine preparation
+/// and the audited offers; the gate, script and lifecycle are shared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanScope {
+    /// The planner's next tactical action.
+    Tactical,
+    /// The planner's secondary of `card`, played by `primary`.
+    Secondary {
+        primary: PlayerId,
+        card: StrategyCardId,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerPlan {
@@ -109,6 +124,7 @@ pub enum StopReason {
     ReplayMismatch,
     StepLimit,
     MovementComplete,
+    SecondaryComplete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +188,7 @@ enum Input {
 }
 
 struct Shared {
+    scope: PlanScope,
     publication_id: u64,
     plan: PlayerPlan,
     generation: u64,
@@ -212,7 +229,12 @@ impl Shared {
             editing_movement: self.plan.editing_movement,
             movement_edit_revision: self.plan.movement_edit_revision,
             awaiting_answer: self.pending.is_some(),
-            assumptions: vec![ASSUMPTION.to_owned()],
+            assumptions: match self.scope {
+                PlanScope::Tactical => vec![ASSUMPTION.to_owned()],
+                PlanScope::Secondary { .. } => {
+                    vec![ASSUMPTION.to_owned(), SECONDARY_ASSUMPTION.to_owned()]
+                }
+            },
             progress: self.progress.clone(),
             recorded_request_ids: self.plan.recorded_request_ids.clone(),
             recorded_decisions: self.plan.recorded_decisions.clone(),
@@ -261,8 +283,20 @@ impl PlanningRunner {
         plan: PlayerPlan,
         step_bound: usize,
     ) -> Self {
+        Self::start_scoped(checkpoint, player, PlanScope::Tactical, plan, step_bound)
+    }
+
+    /// As [`Self::start`], previewing whatever `scope` names.
+    pub fn start_scoped(
+        checkpoint: &Game<'static>,
+        player: PlayerId,
+        scope: PlanScope,
+        plan: PlayerPlan,
+        step_bound: usize,
+    ) -> Self {
         let (output_tx, output) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
+            scope,
             publication_id: 0,
             plan,
             generation: 1,
@@ -416,14 +450,47 @@ impl PlanningRunner {
                 PlanningUpdate::Preparing
                     | PlanningUpdate::Failed(_)
                     | PlanningUpdate::Stopped {
-                        reason: StopReason::ReplayMismatch | StopReason::KnowledgeChanged,
+                        reason: StopReason::ReplayMismatch,
                         ..
                     }
             )
+            // A followed secondary may end in a draw. Its recorded prefix still
+            // matched in full, and only those answers are ever replayed live.
+            || (shared.scope == PlanScope::Tactical
+                && matches!(
+                    latest.update,
+                    PlanningUpdate::Stopped {
+                        reason: StopReason::KnowledgeChanged,
+                        ..
+                    }
+                ))
         {
             return None;
         }
         Some(shared.plan.clone())
+    }
+
+    /// The validated plan once a rebuilt attempt has finished replaying, waiting
+    /// up to `timeout` for it. A refresh restarts the worker, and its replay is
+    /// what says whether the retained answers still fit the newer position.
+    pub(crate) fn settled_plan(&self, timeout: Duration) -> Option<PlayerPlan> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let (identity, settled) = {
+                let shared = self.shared.lock().expect("planning lock");
+                (
+                    shared.identity(),
+                    shared.retired || shared.terminal || shared.pending.is_some(),
+                )
+            };
+            if settled {
+                return self.validated_plan(identity);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Replay the whole retained script on a fresh hypothetical turn. Answers
@@ -523,6 +590,7 @@ impl Drop for PlanningRunner {
 
 struct Gate {
     shared: Arc<Mutex<Shared>>,
+    scope: PlanScope,
     generation: u64,
     player: PlayerId,
     observation: ExecutionObservation,
@@ -556,12 +624,23 @@ impl Gate {
         &self,
         state: &GameState,
         choice: Option<&Choice>,
-        events: &[String],
+        // Never published, and no boundary of their own: dice and draws latch
+        // uncertainty, combat and new identities fail the knowledge check, and
+        // another seat's question stops the preview.
+        _events: &[String],
     ) -> Result<SafePublication, StopReason> {
         if choice.is_some_and(|choice| choice.player != self.player) {
             return Err(StopReason::OtherPlayerRequired);
         }
-        let enabled_options = choice.map(audit_offer).transpose()?.unwrap_or_default();
+        let enabled_options = choice
+            .map(|choice| match &self.scope {
+                PlanScope::Tactical => audit_offer(choice),
+                PlanScope::Secondary { primary, card } => {
+                    audit_secondary_offer(choice, primary, card)
+                }
+            })
+            .transpose()?
+            .unwrap_or_default();
         let viewer = ViewerRole::Player(self.player.clone());
         let projected_choice =
             project_pending_choice(&viewer, choice.map(|choice| (choice, "planning"))).map(
@@ -575,13 +654,12 @@ impl Gate {
                     choice
                 },
             );
-        audit_events(events)?;
         let publication = SafePublication {
             position: project_game_view_full(state, &viewer, &[], projected_choice.as_ref(), &[]),
             choice: projected_choice,
             events: Vec::new(),
         };
-        validate_knowledge(&self.baseline, &publication, &self.player)?;
+        validate_knowledge(&self.baseline, &publication, &self.player, &self.scope)?;
         Ok(publication)
     }
 }
@@ -825,43 +903,16 @@ fn spawn(
         let mut game = make_game();
         let observation = ExecutionObservation::default();
         game.bind_observation(observation.clone());
-        let reaction_observation = observation.clone();
         let planner = player.clone();
-        let planner_faction = ti4_engine::promissory::faction_name(&game.state, &player);
-        game.timing.set_participation(Arc::new(move |ability| {
-            if ability.owner != planner && ability.optional {
-                return false;
-            }
-            // No mandatory timing effects have been audited for this first slice.
-            // Do not evaluate even their conditions to find out whether they apply.
-            if !ability.optional {
-                reaction_observation.unsupported_participation();
-                return false;
-            }
-            // These standing slots check the planner's own hand and public event
-            // guards in reactions::playable_now. Their effects are never selected:
-            // the resulting reaction offer is outside the tactical allowlist.
-            let relation = match ability.relation {
-                ti4_engine::timing::Relation::When => "when",
-                ti4_engine::timing::Relation::After => "after",
-            };
-            let reaction = ability.id
-                == format!(
-                    "reaction:{planner_faction}:{}:{relation}",
-                    ability.event_type
-                );
-            // I48S's condition reads only public leader readiness and public units.
-            // It is registered for every seat, even those without the agent.
-            let agent = ability.event_type == "SYSTEM_ACTIVATED"
-                && relation == "after"
-                && ability.id
-                    == format!("leader:{planner_faction}:l1z1xagent:SYSTEM_ACTIVATED:after");
-            if !reaction && !agent {
-                reaction_observation.unsupported_participation();
-                return false;
-            }
-            true
-        }));
+        // One structural rule, no per-ability list: other seats take no optional
+        // reactions and their conditions are never read. The planner's own
+        // abilities and every mandatory one run on the disposable fork. What may
+        // be shown is decided only by the publication gate: a question outside
+        // the audited offers, new knowledge or a random outcome stops the preview.
+        game.timing
+            .set_participation(Arc::new(move |ability| {
+                ability.owner == planner || !ability.optional
+            }));
         let aftermath_observation = observation.clone();
         game.on_aftermath(move |state, _content, _sources| {
             let (Some(system), Some(player)) = (&state.active_system, &state.active) else {
@@ -880,10 +931,14 @@ fn spawn(
                 aftermath_observation.unsupported_segment();
             }
         });
-        let generation = shared.lock().expect("planning lock").generation;
+        let (generation, scope) = {
+            let shared = shared.lock().expect("planning lock");
+            (shared.generation, shared.scope.clone())
+        };
         let baseline = project_game_view(&game.state, &ViewerRole::Player(player.clone()));
         let gate = Arc::new(Gate {
             shared: shared.clone(),
+            scope,
             generation,
             player: player.clone(),
             observation,
@@ -930,7 +985,13 @@ fn spawn(
 }
 
 fn run(mut game: Game<'static>, player: PlayerId, gate: &Gate, step_bound: usize) {
-    if let Err(error) = game.prepare_hypothetical_turn(&player) {
+    let prepared = match &gate.scope {
+        PlanScope::Tactical => game.prepare_hypothetical_turn(&player),
+        PlanScope::Secondary { primary, card } => {
+            game.prepare_hypothetical_secondary(&player, primary, card)
+        }
+    };
+    if let Err(error) = prepared {
         tracing::debug!(?error, "planning preparation failed");
         let mut shared = gate.shared.lock().expect("planning lock");
         if gate.check(&mut shared) {
@@ -966,9 +1027,16 @@ fn run(mut game: Game<'static>, player: PlayerId, gate: &Gate, step_bound: usize
                 return;
             }
         };
+        let complete = match &gate.scope {
+            PlanScope::Tactical => ("TACTICAL_ACTION_COMPLETE", StopReason::MovementComplete),
+            PlanScope::Secondary { .. } => (
+                ti4_engine::game::SECONDARY_PREVIEW_COMPLETE,
+                StopReason::SecondaryComplete,
+            ),
+        };
         let movement_complete = game.events[event_cursor..]
             .iter()
-            .any(|event| event == "TACTICAL_ACTION_COMPLETE");
+            .any(|event| event == complete.0);
         event_cursor = game.events.len();
         shared.progress.completed_steps += 1;
         shared.progress.nested_answers_since_checkpoint = 0;
@@ -979,7 +1047,7 @@ fn run(mut game: Game<'static>, player: PlayerId, gate: &Gate, step_bound: usize
         shared.last_safe = Some(publication.clone());
         shared.publish(PlanningUpdate::SafeStep(publication));
         if movement_complete {
-            shared.stop(StopReason::MovementComplete);
+            shared.stop(complete.1);
             return;
         }
     }
@@ -1012,6 +1080,23 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
     {
         return Err(StopReason::Uncertainty);
     }
+    // The planner's own abilities, cards and reaction windows: whatever asks
+    // outside the core rules. It is the question the live game would send this
+    // seat, built by the same code from the same position, so it is shown as
+    // offered. Combat and invasion windows stay outside the slice.
+    if context.version == CONTEXT_VERSION
+        && context.actor == choice.player
+        && context.phase == ti4_model::state::Phase::Action
+        && !matches!(context.source, DecisionSource::Rule(_))
+        && !context.space_battle
+        && context.invasion_seq.is_none()
+    {
+        return Ok(choice
+            .options
+            .iter()
+            .map(|option| option.id.clone())
+            .collect());
+    }
     if context.version != CONTEXT_VERSION
         || context.actor != choice.player
         || context.phase != ti4_model::state::Phase::Action
@@ -1021,15 +1106,10 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
     {
         return Err(StopReason::UnsupportedOffer);
     }
-    let rule = match &context.source {
-        DecisionSource::Rule(rule) => rule.as_str(),
-        DecisionSource::Content(id)
-            if id == "aida" && context.subtype == "exhaust_for_production_discount" =>
-        {
-            "aida"
-        }
-        _ => return Err(StopReason::UnsupportedOffer),
+    let DecisionSource::Rule(rule) = &context.source else {
+        return Err(StopReason::UnsupportedOffer);
     };
+    let rule = rule.as_str();
     // Constraints are admitted only for the producer that owns their semantics.
     use ti4_engine::decision_context::ConstraintKind;
     if context.outstanding.iter().any(|constraint| {
@@ -1072,10 +1152,6 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
             }
             ("68", "place_unit") => option.kind == ti4_engine::production::PLACE_KIND,
             ("34.3/75.2/75.3", "pay_resources") => option.kind == ti4_engine::production::PAY_KIND,
-            ("aida", "exhaust_for_production_discount") => {
-                (option.kind == "production_discount" && option.id == "exhaust")
-                    || (option.kind == "decline" && option.id == "decline")
-            }
             ("tactical action", "mid_action_pause") => {
                 option.id == ti4_engine::game::CONTINUE_ACTION_ID
                     && option.kind == ti4_engine::game::CONTINUE_ACTION_KIND
@@ -1145,7 +1221,6 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
                     "capacity_excess_after",
                 ],
                 "pay_resources" => &["worth", "owed", "kind", "source"],
-                "exhaust_for_production_discount" => &["technology", "discount_offered"],
                 "mid_action_pause" => &[],
                 _ => return Err(StopReason::UnsupportedOffer),
             };
@@ -1170,16 +1245,39 @@ fn audit_offer(choice: &Choice) -> Result<Vec<String>, StopReason> {
     Ok(enabled)
 }
 
+/// The secondary slice: one follower resolving one secondary to its end.
+///
+/// The window question must be the one for this card and this primary player.
+/// Every other question asked of the follower inside the preview window is the
+/// question the live game would send that seat, built by the same code from the
+/// same position, so it is shown as offered. What an answer leads to is judged
+/// elsewhere: dice and draws latch uncertainty, and validate_knowledge stops on
+/// anything newly learned (Politics and Imperial end at their draw).
+fn audit_secondary_offer(
+    choice: &Choice,
+    primary: &PlayerId,
+    card: &StrategyCardId,
+) -> Result<Vec<String>, StopReason> {
+    let detail = |key: &str| choice.details.get(key).and_then(serde_json::Value::as_str);
+    if detail("kind") == Some("strategy_secondary")
+        && (detail("card") != Some(card.as_str()) || detail("played_by") != Some(primary.as_str()))
+    {
+        return Err(StopReason::UnsupportedOffer);
+    }
+    Ok(choice
+        .options
+        .iter()
+        .map(|option| option.id.clone())
+        .collect())
+}
+
 fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason> {
     // A movement preview currently contains only public fleet/capacity numbers
     // or the fixed rift warning. Do not admit a new chance label or quantity
     // just because it was attached to an otherwise familiar move option.
     let permitted = match option.preview.as_ref() {
         None => {
-            matches!(
-                subtype,
-                "action_menu" | "exhaust_for_production_discount" | "mid_action_pause"
-            ) || matches!(
+            matches!(subtype, "action_menu" | "mid_action_pause") || matches!(
                 option.id.as_str(),
                 "done_moving" | "done_loading" | "done_committing" | "done_producing"
             )
@@ -1226,41 +1324,15 @@ fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason>
     }
 }
 
-fn audit_events(events: &[String]) -> Result<(), StopReason> {
-    events
-        .iter()
-        .map(|event| {
-            if matches!(
-                event.as_str(),
-                "TURN_BEGAN"
-                    | "TACTICAL_ACTION_BEGAN"
-                    | "SHIP_MOVED"
-                    | "SYSTEM_ACTIVATED"
-                    | "TACTICAL_ACTION_COMPLETE"
-                    | "INVASION_BEGAN"
-                    | "INVASION_RESOLVED"
-                    | "UNITS_COMMITTED"
-                    | "PLANET_CONTROL_GAINED"
-                    | "PRODUCTION_USED"
-                    | "PRODUCTION_RESOLVED"
-                    | "ACTION_COMPLETED"
-                    | "TURN_PASSED"
-                    | "TURN_CLOSING"
-            ) || event.starts_with("SYSTEM_ACTIVATED:")
-            {
-                Ok(())
-            } else {
-                Err(StopReason::UnsupportedSegment)
-            }
-        })
-        .collect()
-}
-
 fn validate_knowledge(
     baseline: &GameView,
     publication: &SafePublication,
     actor: &PlayerId,
+    scope: &PlanScope,
 ) -> Result<(), StopReason> {
+    // Researching is the planner's own public, deterministic choice from an
+    // audited offer. Nobody else's technologies may change in a preview.
+    let may_research = matches!(scope, PlanScope::Secondary { .. });
     let view = &publication.position;
     // Public movement and token costs may change. Newly learned identities may
     // not. Counts use multisets so duplicating a known card is also rejected.
@@ -1280,7 +1352,8 @@ fn validate_knowledge(
                 &known.scored_secret_objectives,
             )
             || !contained(&player.relics, &known.relics)
-            || !player.technologies.is_subset(&known.technologies)
+            || (!player.technologies.is_subset(&known.technologies)
+                && !(may_research && &player.id == actor))
             || player.action_cards_count > known.action_cards_count
             || player.secret_objectives_count > known.secret_objectives_count
             || (&player.id != actor
@@ -1337,6 +1410,7 @@ mod tests {
     fn gate(state: &GameState) -> (Arc<Gate>, mpsc::Receiver<PlanningEnvelope>) {
         let (output, receiver) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
+            scope: PlanScope::Tactical,
             publication_id: 0,
             plan: PlayerPlan::new(1),
             generation: 1,
@@ -1359,6 +1433,7 @@ mod tests {
         (
             Arc::new(Gate {
                 shared,
+                scope: PlanScope::Tactical,
                 generation: 1,
                 player: PlayerId::new("b"),
                 observation: ExecutionObservation::default(),

@@ -1,4 +1,4 @@
-# Project notes
+# web: rules for agents
 
 ## UI work
 

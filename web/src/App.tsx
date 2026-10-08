@@ -18,6 +18,8 @@ import { ObjectivesModal } from "./components/ObjectivesModal.tsx";
 import { WorkspaceContext, useWorkspace } from "./components/WorkspaceContext.tsx";
 import { attemptKey, planningChoice, sameAttempt } from "./protocol/planning.ts";
 import { ApplyDraftDialog } from "./components/ApplyDraftDialog.tsx";
+import { SecondaryDraftStrip } from "./components/SecondaryDraftStrip.tsx";
+import { describeSecondaryDraft } from "./presentation/secondaryDraft.ts";
 import type { UseGameSessionReturn } from "./hooks/useGameSession.ts";
 import type { AttemptIdentity, PendingChoiceDto, RecordedDecisionDto } from "./protocol/types.ts";
 import { resolveMapTargetSelection } from "./presentation/planetSelection.ts";
@@ -245,7 +247,7 @@ const GameViewContainer: React.FC<{
   onLeave?: () => void;
 }> = ({ gameId, lobby, viewer }) => {
   const session = useGameSession({ gameId, viewer });
-  const [mode, setMode] = useState<"live" | "draft">("live");
+  const [mode, setMode] = useState<"live" | "draft" | "secondary">("live");
   const [requestError, setRequestError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
     identity: AttemptIdentity;
@@ -272,6 +274,13 @@ const GameViewContainer: React.FC<{
     session.status === "connected" &&
     session.pendingChoice?.context?.subtype === "action_menu";
   const hasDraft = planning.availability?.has_draft || !!planning.envelope;
+  // A follower's secondary draft: its own slot, open while the card's window is.
+  const secondary = viewer.role === "player" ? session.secondaryStatus : null;
+  const secondaryPlanning = session.secondaryPlanning;
+  const secondaryView = secondary ? describeSecondaryDraft(secondary, secondaryPlanning) : null;
+  useEffect(() => {
+    if (!secondary && mode === "secondary") setMode("live");
+  }, [secondary, mode]);
   const attention =
     !applying &&
     viewer.role === "player" &&
@@ -284,28 +293,28 @@ const GameViewContainer: React.FC<{
   };
   const chrome = (
     <nav
-      className={`workspace-switch${hasDraft || mode === "draft" ? " workspace-switch--segmented" : ""}`}
+      className={`workspace-switch${hasDraft || mode !== "live" || secondaryView ? " workspace-switch--segmented" : ""}`}
       aria-label="Game workspace"
     >
+      {(hasDraft || mode !== "live" || secondaryView) && (
+        <button
+          type="button"
+          aria-pressed={mode === "live"}
+          className={`button ${attention ? "workspace-attention" : ""}`}
+          onClick={() => setMode("live")}
+        >
+          Live{attention && <span> · Your decision</span>}
+        </button>
+      )}
       {hasDraft || mode === "draft" ? (
-        <>
-          <button
-            type="button"
-            aria-pressed={mode === "live"}
-            className={`button ${attention ? "workspace-attention" : ""}`}
-            onClick={() => setMode("live")}
-          >
-            Live{attention && <span> · Your decision</span>}
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === "draft"}
-            className="button"
-            onClick={() => setMode("draft")}
-          >
-            Draft
-          </button>
-        </>
+        <button
+          type="button"
+          aria-pressed={mode === "draft"}
+          className="button"
+          onClick={() => setMode("draft")}
+        >
+          Draft
+        </button>
       ) : (
         viewer.role === "player" && (
           <button
@@ -320,6 +329,33 @@ const GameViewContainer: React.FC<{
             Start tactical draft
           </button>
         )
+      )}
+      {secondary && secondaryView && (
+        <button
+          type="button"
+          aria-pressed={mode === "secondary"}
+          className="button"
+          data-testid="secondary-draft-tab"
+          disabled={!secondary.has_draft && !secondary.can_start}
+          title={`Draft your ${secondaryView.cardName} secondary while you wait`}
+          onClick={() => {
+            setMode("secondary");
+            if (!secondary.has_draft && !secondaryPlanning.busy)
+              request(session.startSecondaryPlanning());
+          }}
+        >
+          {secondaryView.cardName} secondary
+          <span className="workspace-switch__detail">
+            {" · "}
+            {secondaryView.submitting
+              ? secondaryView.state
+              : secondaryView.ready
+                ? "Ready"
+                : secondary.has_draft
+                  ? "Drafting"
+                  : "Draft now"}
+          </span>
+        </button>
       )}
       {hasDraft &&
         (application ? (
@@ -418,6 +454,7 @@ const GameViewContainer: React.FC<{
               UnsupportedParticipation: "Unsupported boundary",
               UnsupportedSegment: "Unsupported boundary",
               StepLimit: "Preview step limit reached",
+              SecondaryComplete: "Complete",
             }[update.Stopped.reason]
           : typeof update === "object" && "Failed" in update
             ? "Preview failed"
@@ -517,6 +554,50 @@ const GameViewContainer: React.FC<{
     </section>
   );
   const refreshKey = identity ? `${identity.checkpoint_id}:${identity.generation_id}` : "";
+  const secondaryChoice = planningChoice(secondaryPlanning);
+  const secondaryIdentity = secondaryPlanning.envelope?.identity;
+  const secondarySession: UseGameSessionReturn = {
+    ...session,
+    snapshot:
+      secondaryPlanning.publication && session.snapshot
+        ? {
+            ...session.snapshot,
+            view: {
+              ...secondaryPlanning.publication.position,
+              board: {
+                ...secondaryPlanning.publication.position.board,
+                map_tiles: session.snapshot.view.board.map_tiles,
+              },
+            },
+            state: {},
+            pending_choice: null,
+            events: [],
+          }
+        : null,
+    pendingChoice: secondaryChoice,
+    turnStatus: null,
+    events: [],
+    history: { cursor: 0, redo_count: 0 },
+    lastError: secondaryPlanning.error,
+    submitChoice: (optionId) =>
+      secondaryIdentity
+        ? session.submitSecondaryPlanningChoice(secondaryIdentity, optionId)
+        : Promise.reject(new Error("Draft is preparing.")),
+  };
+  const secondaryStrip = secondaryView && (
+    <SecondaryDraftStrip
+      view={secondaryView}
+      assumptions={secondaryPlanning.envelope?.assumptions ?? []}
+      error={requestError || secondaryPlanning.error}
+      onReady={(ready) =>
+        secondary?.identity && request(session.setSecondaryReady(secondary.identity, ready))
+      }
+      onReset={() =>
+        secondary?.identity && request(session.resetSecondaryPlanning(secondary.identity))
+      }
+      onLive={attention ? () => setMode("live") : undefined}
+    />
+  );
   const draftChrome = (
     <>
       {chrome}
@@ -577,6 +658,37 @@ const GameViewContainer: React.FC<{
               session={draftSession}
               chrome={chrome}
               statusStrip={statusStrip}
+              draft
+            />
+          </div>
+        </WorkspaceContext.Provider>
+      )}
+      {secondaryView && mode === "secondary" && (
+        <WorkspaceContext.Provider
+          value={{
+            active: true,
+            actionable: !!secondaryChoice,
+            draft: true,
+            refreshKey: secondaryIdentity
+              ? `secondary:${secondaryIdentity.checkpoint_id}:${secondaryIdentity.generation_id}`
+              : "secondary",
+            chrome: (
+              <>
+                {chrome}
+                {secondaryStrip}
+              </>
+            ),
+          }}
+        >
+          <div data-testid="secondary-workspace">
+            <GameWorkspace
+              key={`secondary:${secondary?.card}:${secondaryPlanning.resetEpoch}`}
+              gameId={gameId}
+              lobby={lobby}
+              viewer={viewer}
+              session={secondarySession}
+              chrome={chrome}
+              statusStrip={secondaryStrip}
               draft
             />
           </div>

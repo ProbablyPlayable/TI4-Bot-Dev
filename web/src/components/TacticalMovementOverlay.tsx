@@ -359,6 +359,8 @@ export const TacticalMovementOverlay: React.FC<TacticalMovementOverlayProps> = (
   const inventory = new Map<string, { available: number; selected: number; keys: string[] }>();
   const reserve = (identity: string, key: string, available: number) => {
     const entry = inventory.get(identity) ?? { available, selected: 0, keys: [] };
+    // A variant may be capped below the physical count (one Gravity Drive ship).
+    entry.available = Math.max(entry.available, available);
     entry.selected += stagedMoves[key] ?? 0;
     entry.keys.push(key);
     inventory.set(identity, entry);

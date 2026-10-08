@@ -43,6 +43,35 @@ function isAttempt(value: unknown): boolean {
   );
 }
 
+function isDraftKind(value: unknown): boolean {
+  return value === undefined || value === "tactical" || value === "secondary";
+}
+
+function isDraftApplication(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.applied) &&
+    isNonNegativeInteger(value.total) &&
+    value.applied <= value.total &&
+    ["applying", "waiting_for_player", "needs_decision", "applied"].includes(String(value.state)) &&
+    typeof value.message === "string"
+  );
+}
+
+function isSecondaryDraftStatus(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.card === "string" &&
+    typeof value.played_by === "string" &&
+    [value.window_open, value.can_start, value.has_draft, value.ready].every(
+      (flag) => typeof flag === "boolean",
+    ) &&
+    (value.seats_before === null || isNonNegativeInteger(value.seats_before)) &&
+    (value.identity === null || isAttempt(value.identity)) &&
+    (value.application === null || isDraftApplication(value.application))
+  );
+}
+
 function isPlanningPublication(value: unknown): boolean {
   if (
     !isRecord(value) ||
@@ -266,12 +295,14 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
             !["applying", "waiting_for_player", "needs_decision", "applied"].includes(
               String(value.application.state),
             ) ||
-            typeof value.application.message !== "string"))
+            typeof value.application.message !== "string")) ||
+        (value.secondary != null && !isSecondaryDraftStatus(value.secondary))
       )
         fail("invalid planning status");
       return value as unknown as ServerMessage;
     case "planning_result":
       if (
+        !isDraftKind(value.draft) ||
         (value.identity !== null && !isAttempt(value.identity)) ||
         (value.rejection !== null &&
           ![
@@ -293,6 +324,7 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
     case "planning_update": {
       const e = value.envelope;
       if (
+        !isDraftKind(value.draft) ||
         !isRecord(e) ||
         !isNonNegativeInteger(e.publication_id) ||
         !isAttempt(e.identity) ||
@@ -348,6 +380,7 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
             "ReplayMismatch",
             "StepLimit",
             "MovementComplete",
+            "SecondaryComplete",
           ].includes(String(stopped.reason)) ||
           (stopped.last_safe_publication !== null &&
             !isPlanningPublication(stopped.last_safe_publication))

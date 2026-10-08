@@ -353,19 +353,22 @@ async fn websocket_full_lifecycle_and_rejections() {
             choice.choice.options[0].id.clone(),
         )
     } else {
-        // Wait for choice broadcast
-        let reply = ws_stream
-            .next()
-            .await
-            .expect("receive choice")
-            .expect("ws ok");
-        let msg: ServerMessage = serde_json::from_str(&reply.to_text().unwrap()).unwrap();
-        match msg {
-            ServerMessage::PendingChoice(p) => {
-                (p.nonce, p.game_version, p.choice.options[0].id.clone())
+        // Wait for the choice broadcast; planning status and log entries may come first.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let reply = ws_stream
+                    .next()
+                    .await
+                    .expect("receive choice")
+                    .expect("ws ok");
+                let msg: ServerMessage = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+                if let ServerMessage::PendingChoice(p) = msg {
+                    break (p.nonce, p.game_version, p.choice.options[0].id.clone());
+                }
             }
-            other => panic!("Expected PendingChoice, got {other:?}"),
-        }
+        })
+        .await
+        .expect("pending choice")
     };
 
     // A connection is bound to its first authorized viewer and cannot collect another seat feed.
@@ -782,7 +785,17 @@ async fn running_takeover_closes_old_subscription_and_refuses_old_choices() {
         registry.take_over_player(&game, &host, "New Host"),
         Err(ti4_server::session::registry::LobbyError::TakeoverUnavailable)
     ));
-    tokio::time::sleep(Duration::from_millis(55)).await;
+    // The seat goes idle while the rest of the handshake arrives: the opening
+    // log entry and state follow the planning status in no fixed order. Read
+    // them now so that only frames sent after revocation remain.
+    let idle = tokio::time::sleep(Duration::from_millis(55));
+    tokio::pin!(idle);
+    loop {
+        tokio::select! {
+            () = &mut idle => break,
+            frame = socket.next() => assert!(matches!(frame, Some(Ok(Message::Text(_))))),
+        }
+    }
     let response: serde_json::Value = client
         .post(format!("http://{addr}/api/games/{game}/lobby/join"))
         .json(&serde_json::json!({"kind":"takeover", "player_id":host, "nickname":"New Host"}))
@@ -825,7 +838,7 @@ async fn running_takeover_closes_old_subscription_and_refuses_old_choices() {
     let closed = tokio::time::timeout(Duration::from_secs(2), socket.next())
         .await
         .unwrap();
-    assert!(!matches!(closed, Some(Ok(Message::Text(_)))));
+    assert!(!matches!(closed, Some(Ok(Message::Text(_)))), "{closed:?}");
     let (mut resumed, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     resumed
         .send(Message::Text(

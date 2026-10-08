@@ -60,6 +60,13 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
+    /// Draft this seat's secondary of the strategy card being resolved, on its own
+    /// disposable fork and independently of any tactical draft.
+    SecondaryPlanning {
+        protocol_version: u16,
+        game_id: String,
+        request: SecondaryPlanningRequest,
+    },
     /// Set how this connection's own seat wants one action card handled in reaction windows.
     ///
     /// The seat is the connection's, never named by the message, so a player can only change
@@ -78,9 +85,47 @@ pub enum ClientMessage {
     },
 }
 
+/// One operation on the connection's own secondary draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SecondaryPlanningRequest {
+    Start {},
+    Reset {
+        identity: crate::planning::runner::AttemptIdentity,
+    },
+    Answer {
+        identity: crate::planning::runner::AttemptIdentity,
+        option_id: String,
+    },
+    /// Ready: submit the draft for this seat when the live window reaches it.
+    SetReady {
+        identity: crate::planning::runner::AttemptIdentity,
+        ready: bool,
+    },
+}
+
+impl SecondaryPlanningRequest {
+    #[must_use]
+    pub const fn identity(&self) -> Option<crate::planning::runner::AttemptIdentity> {
+        match self {
+            Self::Start {} => None,
+            Self::Reset { identity }
+            | Self::Answer { identity, .. }
+            | Self::SetReady { identity, .. } => Some(*identity),
+        }
+    }
+}
+
 impl std::fmt::Debug for ClientMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::SecondaryPlanning {
+                game_id, request, ..
+            } => f
+                .debug_struct("SecondaryPlanning")
+                .field("game_id", game_id)
+                .field("request", request)
+                .finish(),
             Self::ApplyPlanning {
                 game_id,
                 identity,
@@ -205,6 +250,9 @@ impl ClientMessage {
             }
             | Self::SubmitPlanningChoice {
                 protocol_version, ..
+            }
+            | Self::SecondaryPlanning {
+                protocol_version, ..
             } => *protocol_version,
         }
     }
@@ -215,6 +263,14 @@ impl ClientMessage {
             Self::ApplyPlanning { game_id, nonce, .. } => {
                 bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
                 bounded(nonce, MAX_NONCE_BYTES, "nonce")?;
+            }
+            Self::SecondaryPlanning {
+                game_id, request, ..
+            } => {
+                bounded(game_id, MAX_GAME_ID_BYTES, "game_id")?;
+                if let SecondaryPlanningRequest::Answer { option_id, .. } = request {
+                    bounded(option_id, MAX_OPTION_ID_BYTES, "option_id")?;
+                }
             }
             Self::StartPlanning { game_id, .. }
             | Self::ResetPlanning { game_id, .. }
@@ -350,6 +406,63 @@ mod tests {
         assert!(serde_json::from_value::<ClientMessage>(serde_json::json!({
             "type": "start_planning", "protocol_version": 1, "game_id": "game", "seat": "someone_else"
         })).is_err());
+    }
+
+    #[test]
+    fn secondary_planning_messages_round_trip_and_validate_bounds() {
+        let identity = crate::planning::runner::AttemptIdentity {
+            checkpoint_id: 12,
+            plan_revision: 3,
+            generation_id: 2,
+        };
+        for request in [
+            SecondaryPlanningRequest::Start {},
+            SecondaryPlanningRequest::Reset { identity },
+            SecondaryPlanningRequest::Answer {
+                identity,
+                option_id: "yes".into(),
+            },
+            SecondaryPlanningRequest::SetReady {
+                identity,
+                ready: true,
+            },
+        ] {
+            let message = ClientMessage::SecondaryPlanning {
+                protocol_version: 1,
+                game_id: "game".into(),
+                request: request.clone(),
+            };
+            let encoded = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                message
+            );
+            assert_eq!(message.validate_bounds(), Ok(()));
+            assert_eq!(
+                request.identity().is_none(),
+                request == SecondaryPlanningRequest::Start {}
+            );
+        }
+        assert_eq!(
+            ClientMessage::SecondaryPlanning {
+                protocol_version: 1,
+                game_id: "game".into(),
+                request: SecondaryPlanningRequest::Answer {
+                    identity,
+                    option_id: String::new(),
+                },
+            }
+            .validate_bounds(),
+            Err("option_id")
+        );
+        // The seat is the connection's: a request cannot name another.
+        assert!(
+            serde_json::from_value::<ClientMessage>(serde_json::json!({
+                "type": "secondary_planning", "protocol_version": 1, "game_id": "game",
+                "request": {"action": "start", "seat": "someone_else"}
+            }))
+            .is_err()
+        );
     }
 
     #[test]

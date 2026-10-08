@@ -1581,6 +1581,42 @@ pub struct PlanningStatusMsg {
     pub identity: Option<crate::planning::runner::AttemptIdentity>,
     pub can_apply: bool,
     pub application: Option<DraftApplication>,
+    /// The strategic action whose secondary this seat may draft, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<SecondaryDraftStatus>,
+}
+
+/// Which of a seat's two independent drafts a planning message is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftKind {
+    #[default]
+    Tactical,
+    Secondary,
+}
+
+impl DraftKind {
+    fn is_tactical(&self) -> bool {
+        *self == Self::Tactical
+    }
+}
+
+/// A follower's private view of the secondary they may draft while they wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecondaryDraftStatus {
+    pub card: String,
+    pub played_by: PlayerId,
+    /// False while the primary ability is still resolving.
+    pub window_open: bool,
+    /// Followers the live window asks before this seat, once it is open.
+    pub seats_before: Option<usize>,
+    pub can_start: bool,
+    pub has_draft: bool,
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    /// The draft is submitted for the seat when the live window reaches it.
+    pub ready: bool,
+    pub application: Option<DraftApplication>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1607,6 +1643,8 @@ pub struct DraftApplication {
 pub struct PlanningUpdateMsg {
     pub protocol_version: u16,
     pub game_id: String,
+    #[serde(default, skip_serializing_if = "DraftKind::is_tactical")]
+    pub draft: DraftKind,
     pub envelope: crate::planning::runner::PlanningEnvelope,
 }
 
@@ -1631,6 +1669,8 @@ pub enum PlanningRejection {
 pub struct PlanningResultMsg {
     pub protocol_version: u16,
     pub game_id: String,
+    #[serde(default, skip_serializing_if = "DraftKind::is_tactical")]
+    pub draft: DraftKind,
     /// None identifies a start request; Some identifies an answer, reset, or apply request.
     pub identity: Option<crate::planning::runner::AttemptIdentity>,
     /// None means accepted by the controller. Application progress is seat-private status.

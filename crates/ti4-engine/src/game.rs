@@ -120,6 +120,8 @@ pub enum RunError {
 /// OP-08: carry on with a tactical action after a pause to negotiate.
 pub const CONTINUE_ACTION_ID: &str = "continue_action";
 pub const CONTINUE_ACTION_KIND: &str = "continue_action";
+/// Emitted when a [`StrategySecondaryWindow::preview`] window closes on a planning fork.
+pub const SECONDARY_PREVIEW_COMPLETE: &str = "STRATEGY_SECONDARY_PREVIEW_COMPLETE";
 /// OP-08: the explicit end of an action-phase turn.
 pub const END_TURN_ID: &str = "end_turn";
 pub const END_TURN_KIND: &str = "end_turn";
@@ -977,6 +979,8 @@ pub struct Game<'a> {
     /// Observe the automatic handoff after movement, before it runs any rules.
     aftermath_observer:
         Option<std::sync::Arc<dyn Fn(&GameState, &ContentStore, SourceSet) + Send + Sync>>,
+    /// Told which card a strategic action will resolve, before its primary runs.
+    strategic_observer: Option<std::sync::Arc<dyn Fn(&PlayerId, &StrategyCardId) + Send + Sync>>,
 }
 
 impl<'a> Game<'a> {
@@ -1078,6 +1082,7 @@ impl<'a> Game<'a> {
             prepared_turn_seq: None,
             blocked: None,
             aftermath_observer: None,
+            strategic_observer: None,
         }
     }
 
@@ -1131,6 +1136,7 @@ impl<'a> Game<'a> {
             prepared_turn_seq: self.prepared_turn_seq,
             blocked: self.blocked.clone(),
             aftermath_observer: None,
+            strategic_observer: None,
         }
     }
 
@@ -1176,6 +1182,7 @@ impl<'a> Game<'a> {
             prepared_turn_seq,
             blocked,
             aftermath_observer: _,
+            strategic_observer: _,
         } = self.fork();
         let timing = timing.into_worker();
         move || Self {
@@ -1214,6 +1221,7 @@ impl<'a> Game<'a> {
             prepared_turn_seq,
             blocked,
             aftermath_observer: None,
+            strategic_observer: None,
         }
     }
 
@@ -1227,17 +1235,75 @@ impl<'a> Game<'a> {
     /// Rejects a finished game, a phase other than action, an unknown or passed player, a
     /// blocked driver, or exhausted sequence counters. An error leaves the copy unchanged.
     pub fn prepare_hypothetical_turn(&mut self, player: &PlayerId) -> Result<(), GameError> {
-        if self.state.finished || self.state.phase != Phase::Action {
-            return Err(GameError::InvalidHypotheticalTurn(
-                "the game must be in an unfinished action phase",
-            ));
-        }
         let Some(seat) = self.state.player(player) else {
             return Err(GameError::InvalidHypotheticalTurn("unknown player"));
         };
         if seat.passed {
             return Err(GameError::InvalidHypotheticalTurn(
                 "the player has already passed",
+            ));
+        }
+        self.reset_for_hypothetical(player)
+    }
+
+    /// Offer `follower` the secondary of `card`, played by `primary`, on a disposable
+    /// [`Game::fork`].
+    ///
+    /// Like [`Game::prepare_hypothetical_turn`], this discards the copy's continuation and keeps
+    /// its position. It then opens a one-follower [`StrategySecondaryWindow::preview`], so the
+    /// next ordinary [`Game::step`] asks that seat the usual secondary question and resolves the
+    /// usual effect. No real window has to be open: the same call previews a secondary while the
+    /// primary is still resolving, and while earlier followers are still deciding. `primary`
+    /// stays the active player, as it is when the live window reaches the follower; a follower
+    /// who has passed may still follow (LRR 82.1).
+    ///
+    /// # Errors
+    /// Rejects what [`Game::prepare_hypothetical_turn`] rejects (a passed follower aside), an
+    /// unknown seat, and a follower who is the primary player. An error leaves the copy unchanged.
+    pub fn prepare_hypothetical_secondary(
+        &mut self,
+        follower: &PlayerId,
+        primary: &PlayerId,
+        card: &StrategyCardId,
+    ) -> Result<(), GameError> {
+        if self.state.player(follower).is_none() || self.state.player(primary).is_none() {
+            return Err(GameError::InvalidHypotheticalTurn("unknown player"));
+        }
+        if follower == primary {
+            return Err(GameError::InvalidHypotheticalTurn(
+                "the primary player does not follow their own card",
+            ));
+        }
+        self.reset_for_hypothetical(primary)?;
+        self.secondary = Some(StrategySecondaryWindow::preview(
+            primary.clone(),
+            card.clone(),
+            follower.clone(),
+        ));
+        Ok(())
+    }
+
+    /// The strategic action whose secondaries are still to be offered: who played which card,
+    /// and the followers not yet recorded, in resolution order. Covers a window deferred behind
+    /// a free tactical action too.
+    #[must_use]
+    pub fn open_secondary(&self) -> Option<(&PlayerId, &StrategyCardId, &[PlayerId])> {
+        self.secondary
+            .as_ref()
+            .or(self.secondary_after_tactical.as_ref())
+            .map(|window| {
+                (
+                    window.primary_player(),
+                    window.card(),
+                    window.unresolved_followers(),
+                )
+            })
+    }
+
+    fn reset_for_hypothetical(&mut self, player: &PlayerId) -> Result<(), GameError> {
+        if self.state.finished || self.state.phase != Phase::Action {
+            return Err(GameError::InvalidHypotheticalTurn(
+                "the game must be in an unfinished action phase",
             ));
         }
         if let Some(error) = &self.blocked {
@@ -1329,6 +1395,16 @@ impl<'a> Game<'a> {
         observer: impl Fn(&GameState, &ContentStore, SourceSet) + Send + Sync + 'static,
     ) {
         self.aftermath_observer = Some(std::sync::Arc::new(observer));
+    }
+
+    /// Learn which card a strategic action resolves as soon as it is certain to resolve: after
+    /// the "would perform a strategic action" window (so not for one Coup d'Etat cancelled) and
+    /// before the primary asks anything. Like [`Game::on_aftermath`], this binding is not forked.
+    pub fn on_strategic_action_chosen(
+        &mut self,
+        observer: impl Fn(&PlayerId, &StrategyCardId) + Send + Sync + 'static,
+    ) {
+        self.strategic_observer = Some(std::sync::Arc::new(observer));
     }
 
     /// Give the game its map, which is what makes a tactical action possible.
@@ -2397,6 +2473,9 @@ impl<'a> Game<'a> {
                     self.emit(&format!("STRATEGIC_ACTION_CANCELLED:{card}"));
                     self.advance_turn()?;
                     return Ok(());
+                }
+                if let Some(observer) = &self.strategic_observer {
+                    observer(&active, window.card());
                 }
                 let outcome = crate::strategy_cards::primary(
                     &mut self.state,
@@ -4511,7 +4590,14 @@ impl<'a> Game<'a> {
             self.sources,
         );
         let Some(choice) = choice else {
-            self.secondary = None;
+            if self
+                .secondary
+                .take()
+                .is_some_and(|window| window.is_preview())
+            {
+                self.emit(SECONDARY_PREVIEW_COMPLETE);
+                return self.result(false, None);
+            }
             self.complete_leader_strategy();
             self.emit("STRATEGIC_ACTION_COMPLETE");
             if let Err(error) = self.finish_action() {
@@ -4606,7 +4692,15 @@ impl<'a> Game<'a> {
             self.resolve_faction_strategy(&follower, &card);
         }
         if complete {
-            self.secondary = None;
+            if self
+                .secondary
+                .take()
+                .is_some_and(|window| window.is_preview())
+            {
+                // A planning fork previews one seat's secondary. It must not finish the action.
+                self.emit(SECONDARY_PREVIEW_COMPLETE);
+                return self.result(true, None);
+            }
             self.complete_leader_strategy();
             self.emit("STRATEGIC_ACTION_COMPLETE");
             if let Err(error) = self.finish_action() {
@@ -7071,6 +7165,108 @@ mod tests {
             1,
             "only the affordable follower was asked; the other was ineligible"
         );
+    }
+
+    #[test]
+    fn a_secondary_preview_asks_one_follower_and_never_finishes_the_action() {
+        let players = [PlayerId::new("a"), PlayerId::new("b"), PlayerId::new("c")];
+        let state = start_game(ContentStore::embedded(), &players, POK, None).unwrap();
+        let mut game = Game::with_table(
+            state,
+            ContentStore::embedded(),
+            Table::with_default(Box::new(AlwaysDecline)),
+        );
+        while game.state.phase == Phase::Strategy {
+            assert!(game.step().error.is_none());
+        }
+        let primary = game.state.active.clone().unwrap();
+        let followers: Vec<PlayerId> = players
+            .iter()
+            .filter(|player| **player != primary)
+            .cloned()
+            .collect();
+        // Leadership: only the first follower can afford the 52.3 purchase.
+        game.state.player_mut(&followers[0]).unwrap().trade_goods = 3;
+        let chosen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = chosen.clone();
+        game.on_strategic_action_chosen(move |player, card| {
+            seen.lock().unwrap().push((player.clone(), card.clone()));
+        });
+        // The card is announced before the primary resolves: preview from the earlier position.
+        let before_primary = game.fork();
+        let untouched = before_primary.state.clone();
+        assert!(game.open_secondary().is_none());
+
+        assert!(game.step().error.is_none());
+        let announced = chosen.lock().unwrap().clone();
+        assert_eq!(announced.len(), 1, "one strategic action, one announcement");
+        let (announced_player, card) = announced[0].clone();
+        assert_eq!(announced_player, primary);
+        let (window_primary, window_card, unresolved) = game.open_secondary().unwrap();
+        assert_eq!((window_primary, window_card), (&primary, &card));
+        assert_eq!(unresolved.len(), 2);
+
+        let mut preview = before_primary.fork();
+        preview
+            .prepare_hypothetical_secondary(&followers[0], &primary, &card)
+            .unwrap();
+        let offered = preview.legal_options().unwrap();
+        assert_eq!(offered.player, followers[0]);
+        assert_eq!(offered.details["kind"], "strategy_secondary");
+        let step = preview.step();
+        assert!(step.error.is_none() && step.resolved_choice);
+        assert_eq!(
+            preview.events.last().map(String::as_str),
+            Some(SECONDARY_PREVIEW_COMPLETE)
+        );
+        assert!(preview.open_secondary().is_none());
+        assert_eq!(preview.state.active, Some(primary.clone()));
+        assert!(
+            !preview
+                .events
+                .iter()
+                .any(|event| event == "STRATEGIC_ACTION_COMPLETE")
+        );
+        assert!(
+            preview
+                .state
+                .player(&primary)
+                .unwrap()
+                .exhausted_strategy_cards
+                .is_empty(),
+            "a preview exhausts nobody's card"
+        );
+
+        // A follower with nothing to decide closes the preview without a question.
+        let mut skipped = before_primary.fork();
+        skipped
+            .prepare_hypothetical_secondary(&followers[1], &primary, &card)
+            .unwrap();
+        let asked = skipped.table.log.len();
+        let step = skipped.step();
+        assert!(step.error.is_none() && !step.resolved_choice);
+        assert_eq!(skipped.table.log.len(), asked);
+        assert_eq!(
+            skipped.events.last().map(String::as_str),
+            Some(SECONDARY_PREVIEW_COMPLETE)
+        );
+        assert_eq!(skipped.state.active, Some(primary.clone()));
+
+        let mut rejected = before_primary.fork();
+        for (follower, from) in [
+            (primary.clone(), primary.clone()),
+            (PlayerId::new("nobody"), primary.clone()),
+            (followers[0].clone(), PlayerId::new("nobody")),
+        ] {
+            assert!(
+                rejected
+                    .prepare_hypothetical_secondary(&follower, &from, &card)
+                    .is_err()
+            );
+            assert!(rejected.state.identical(&untouched));
+            assert!(rejected.open_secondary().is_none());
+        }
+        assert!(before_primary.state.identical(&untouched));
     }
 
     #[test]

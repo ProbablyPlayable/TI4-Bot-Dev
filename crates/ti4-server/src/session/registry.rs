@@ -2357,6 +2357,37 @@ impl GameRegistry {
         )
     }
 
+    /// A follower's secondary draft shares the takeover/history gate too.
+    pub fn player_secondary_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        request: &crate::protocol::client::SecondaryPlanningRequest,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        use crate::protocol::server::PlanningRejection as Rejection;
+        let gate = self.game_gate(game_id);
+        let _reservation = gate.lock().expect("game gate lock");
+        if self
+            .authenticate_player_session(game_id, credential)
+            .ok()
+            .as_ref()
+            != Some(player)
+        {
+            return Err(Rejection::Unauthorized);
+        }
+        if self
+            .get_game(game_id)
+            .is_none_or(|current| !std::ptr::eq(Arc::as_ptr(&current), session))
+        {
+            return Err(Rejection::Unavailable);
+        }
+        session
+            .secondary_planning(player, request)
+            .map_err(planning_rejection)
+    }
+
     fn player_planning_request(
         &self,
         game_id: &str,
@@ -2368,8 +2399,6 @@ impl GameRegistry {
         apply: Option<(crate::planning::runner::AttemptIdentity, &str, u64)>,
         edit: Option<crate::planning::runner::AttemptIdentity>,
     ) -> Result<(), crate::protocol::server::PlanningRejection> {
-        use super::PlanningError;
-        use crate::planning::runner::SubmissionError;
         use crate::protocol::server::PlanningRejection as Rejection;
         let gate = self.game_gate(game_id);
         let _reservation = gate.lock().expect("game gate lock");
@@ -2398,17 +2427,7 @@ impl GameRegistry {
             }
             _ => session.start_planning(player),
         };
-        result.map_err(|error| match error {
-            PlanningError::Unavailable => Rejection::Unavailable,
-            PlanningError::UnknownSeat => Rejection::UnknownSeat,
-            PlanningError::ActivePlayer => Rejection::ActivePlayer,
-            PlanningError::NotStarted => Rejection::NotStarted,
-            PlanningError::NoActionOpportunity => Rejection::NoActionOpportunity,
-            PlanningError::ReplayMismatch => Rejection::ReplayMismatch,
-            PlanningError::Submission(SubmissionError::Retired) => Rejection::Retired,
-            PlanningError::Submission(SubmissionError::NotWaiting) => Rejection::NotWaiting,
-            PlanningError::Submission(SubmissionError::UnknownOption) => Rejection::UnknownOption,
-        })
+        result.map_err(planning_rejection)
     }
 
     /// Bind a private HTTP snapshot to the current credential under the same
@@ -3621,4 +3640,21 @@ fn legacy_running_lobby(init: &GameInitRecord) -> LobbyState {
         replay_boundary_state: None,
         reaction_modes: BTreeMap::new(),
     })
+}
+
+fn planning_rejection(error: super::PlanningError) -> crate::protocol::server::PlanningRejection {
+    use super::PlanningError;
+    use crate::planning::runner::SubmissionError;
+    use crate::protocol::server::PlanningRejection as Rejection;
+    match error {
+        PlanningError::Unavailable => Rejection::Unavailable,
+        PlanningError::UnknownSeat => Rejection::UnknownSeat,
+        PlanningError::ActivePlayer => Rejection::ActivePlayer,
+        PlanningError::NotStarted => Rejection::NotStarted,
+        PlanningError::NoActionOpportunity => Rejection::NoActionOpportunity,
+        PlanningError::ReplayMismatch => Rejection::ReplayMismatch,
+        PlanningError::Submission(SubmissionError::Retired) => Rejection::Retired,
+        PlanningError::Submission(SubmissionError::NotWaiting) => Rejection::NotWaiting,
+        PlanningError::Submission(SubmissionError::UnknownOption) => Rejection::UnknownOption,
+    }
 }

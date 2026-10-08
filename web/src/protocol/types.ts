@@ -591,7 +591,8 @@ export type PlanningStopReason =
   | "KnowledgeChanged"
   | "ReplayMismatch"
   | "StepLimit"
-  | "MovementComplete";
+  | "MovementComplete"
+  | "SecondaryComplete";
 export type PlanningUpdate =
   | "Preparing"
   | { SafeOffer: PlanningPublication }
@@ -643,11 +644,35 @@ export interface PlanningStatusMsg {
   identity: AttemptIdentity | null;
   can_apply?: boolean;
   application?: DraftApplication | null;
+  /** The strategic action whose secondary this seat may draft while it waits. */
+  secondary?: SecondaryDraftStatus | null;
 }
+/** A seat holds two independent drafts; absent means tactical. */
+export type DraftKind = "tactical" | "secondary";
+export interface SecondaryDraftStatus {
+  card: string;
+  played_by: string;
+  /** False while the primary ability is still resolving. */
+  window_open: boolean;
+  /** Followers the live window asks before this seat, once it is open. */
+  seats_before: number | null;
+  can_start: boolean;
+  has_draft: boolean;
+  identity: AttemptIdentity | null;
+  /** The draft is submitted for the seat when the live window reaches it. */
+  ready: boolean;
+  application: DraftApplication | null;
+}
+export type SecondaryPlanningRequest =
+  | { action: "start" }
+  | { action: "reset"; identity: AttemptIdentity }
+  | { action: "answer"; identity: AttemptIdentity; option_id: string }
+  | { action: "set_ready"; identity: AttemptIdentity; ready: boolean };
 export interface PlanningUpdateMsg {
   type: "planning_update";
   protocol_version: number;
   game_id: string;
+  draft?: DraftKind;
   envelope: PlanningEnvelope;
 }
 export type PlanningRejection =
@@ -666,6 +691,7 @@ export interface PlanningResultMsg {
   type: "planning_result";
   protocol_version: number;
   game_id: string;
+  draft?: DraftKind;
   identity: AttemptIdentity | null;
   rejection: PlanningRejection | null;
 }
@@ -687,6 +713,12 @@ export type ServerMessage =
 
 export type ClientMessage =
   | { type: "start_planning"; protocol_version: number; game_id: string }
+  | {
+      type: "secondary_planning";
+      protocol_version: number;
+      game_id: string;
+      request: SecondaryPlanningRequest;
+    }
   | { type: "reset_planning"; protocol_version: number; game_id: string; identity: AttemptIdentity }
   | {
       type: "edit_planning_movement";

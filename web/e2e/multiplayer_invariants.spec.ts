@@ -128,15 +128,15 @@ test.describe("Multiplayer Online Flow & Invariant Suite", () => {
     await expect(pageP1.locator('[data-testid="system-hex-18"]')).toBeVisible();
     await expect(pageP1.locator('button[title="Zoom In"]')).toBeVisible();
 
-    // Verify Event Log toggle and entries have timestamps while inspecting
+    // Verify the Event Log opens and is populated while inspecting
     const eventLogToggle = pageP1.locator('[data-testid="event-log-toggle"]');
     await eventLogToggle.click();
     const logList = pageP1.locator('[data-testid="event-log-list"]');
     await expect(logList).toBeVisible();
-    const firstEntry = pageP1.locator('[data-testid="event-log-entry"]').first();
-    await expect(firstEntry).toBeVisible();
-    const entryText = await firstEntry.innerText();
-    expect(entryText).toMatch(/\d{2}:\d{2}:\d{2}/);
+    // Nothing has been decided yet: the log holds the opening marker, which carries no time.
+    await expect(pageP1.locator('[data-testid="event-log-entry"]').first()).toContainText(
+      "Game initialized",
+    );
     // Close event log drawer
     await eventLogToggle.click();
     await expect(logList).toHaveCount(0);
@@ -298,10 +298,8 @@ test.describe("Multiplayer Online Flow & Invariant Suite", () => {
         (await gameSnapshot(request, gameId, players[index].session)).pending_choice,
       ).toBeFalsy();
     }
-    await expect(actionPage.getByTestId("pending-choice-dialog")).toBeVisible();
-    await actionPage.locator('[data-testid="choice-option"][data-option-id="tactical"]').click();
-    await expect(actionPage.getByTestId("submit-choice-button")).toBeEnabled();
-    await actionPage.getByTestId("submit-choice-button").click();
+    // The turn menu is a bar whose buttons submit at once.
+    await actionPage.getByTestId("turn-bar-tactical").click();
     await expect
       .poll(
         async () => {

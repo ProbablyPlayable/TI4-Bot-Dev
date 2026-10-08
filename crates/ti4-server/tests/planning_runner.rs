@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ti4_content::{ContentStore, galaxy::all_systems};
 use ti4_engine::choice::{
-    AlwaysDecline, Choice, ChoiceOption, Decider, IllegalChoice, Scripted, Table,
+    AlwaysDecline, Scripted, Table,
 };
 use ti4_engine::fixtures::{
     a_system_where, game, hub_with_centre, hub_with_outer, put, put_on_planet,
@@ -553,26 +553,82 @@ fn opponent_optional_conditions_are_never_consulted_and_live_timing_still_consul
     assert_eq!(transcripts[0], transcripts[1]);
 }
 
+/// Mandatory effects run on the fork whoever owns them. One that hands the
+/// planner a hidden card stops the preview without publishing which card.
 #[test]
-fn mandatory_opponent_participation_stops_before_private_conditions() {
-    let (mut live, _, _) = checkpoint(false, false);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counted = calls.clone();
-    live.timing.register([Ability::new(
-        "private_mandatory",
-        PlayerId::new("a"),
-        "TURN_BEGAN",
-        Relation::When,
-        Arc::new(|_, _| panic!("must not run")),
-    )
-    .with_condition(Arc::new(move |_, _| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        true
-    }))]);
-    let transcript = collect(&runner(&live), &[]);
-    assert_eq!(reason(&transcript), StopReason::UnsupportedParticipation);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert_eq!(transcript.len(), 1);
+fn a_mandatory_effect_that_reveals_a_hidden_card_stops_identically_for_either_card() {
+    let mut transcripts = Vec::new();
+    for card in ["flank_speed", "sabotage"] {
+        let (mut live, _, _) = checkpoint(false, false);
+        live.state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards = vec![ActionCardId::new(card)];
+        live.timing.register([Ability::stateful(
+            "private_mandatory",
+            PlayerId::new("a"),
+            "TURN_BEGAN",
+            Relation::When,
+            Arc::new(|_, _, context| {
+                let taken = std::mem::take(
+                    &mut context
+                        .state
+                        .player_mut(&PlayerId::new("a"))
+                        .unwrap()
+                        .action_cards,
+                );
+                context
+                    .state
+                    .player_mut(&PlayerId::new("b"))
+                    .unwrap()
+                    .action_cards
+                    .extend(taken);
+                Ok(())
+            }),
+        )]);
+        let transcript = collect(&runner(&live), &[]);
+        assert_eq!(reason(&transcript), StopReason::KnowledgeChanged);
+        let text = serde_json::to_string(&transcript).unwrap();
+        assert!(!text.contains(card), "{text}");
+        transcripts.push(serde_json::to_value(transcript).unwrap());
+    }
+    assert_eq!(transcripts[0], transcripts[1]);
+}
+
+/// A mandatory effect may read what the planner cannot see as long as nothing
+/// the planner is shown depends on it.
+#[test]
+fn a_mandatory_effect_reading_an_opponents_hand_leaves_the_transcript_unchanged() {
+    let mut transcripts = Vec::new();
+    for card in ["flank_speed", "sabotage"] {
+        let (mut live, destination, origin) = checkpoint(false, false);
+        live.state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards = vec![ActionCardId::new(card)];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        live.timing.register([Ability::stateful(
+            "private_mandatory",
+            PlayerId::new("a"),
+            "TURN_BEGAN",
+            Relation::When,
+            Arc::new(move |_, _, context| {
+                let hand = &context
+                    .state
+                    .player(&PlayerId::new("a"))
+                    .unwrap()
+                    .action_cards;
+                counted.fetch_add(hand.len(), Ordering::SeqCst);
+                Ok(())
+            }),
+        )]);
+        let transcript = collect(&runner(&live), &answers(&destination, &origin, false));
+        assert_eq!(reason(&transcript), StopReason::MovementComplete);
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        transcripts.push(serde_json::to_value(transcript).unwrap());
+    }
+    assert_eq!(transcripts[0], transcripts[1]);
 }
 
 #[test]
@@ -672,68 +728,76 @@ fn scanlink_checkpoint() -> (Game<'static>, SystemId) {
     (live, origin)
 }
 
-struct RefuseScanlink {
-    initial: Scripted,
-}
-
-impl Decider for RefuseScanlink {
-    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
-        if choice
-            .context
-            .as_ref()
-            .is_some_and(|context| context.subtype == "scanlink_explore")
-        {
-            return Err(IllegalChoice::DeciderFailed {
-                player: choice.player.clone(),
-                prompt: choice.prompt.clone(),
-                reason: "private diagnostic".into(),
-            });
-        }
-        self.initial.choose(choice)
-    }
-}
-
+/// The planner's own technology asks its ordinary question in a draft.
+/// Declining goes on; exploring draws a card, which ends the preview there
+/// without showing what was drawn.
 #[test]
-fn rejected_nested_offer_is_private_and_a_caught_error_cannot_accept_the_step() {
+fn the_planners_own_ability_is_offered_and_its_hidden_outcome_is_never_shown() {
     let (live, target) = scanlink_checkpoint();
     let runner = runner(&live);
-    let transcript = collect(&runner, &["tactical".into(), target.to_string()]);
-    assert_eq!(reason(&transcript), StopReason::UnsupportedOffer);
-    assert_eq!(transcript.last().unwrap().progress.completed_steps, 1);
-    assert_eq!(
-        transcript
-            .last()
-            .unwrap()
-            .progress
-            .nested_answers_since_checkpoint,
-        1
+    let declined = collect(
+        &runner,
+        &[
+            "tactical".into(),
+            target.to_string(),
+            "decline".into(),
+            "done_moving".into(),
+        ],
     );
-    assert_eq!(runner.plan().recorded_decisions.len(), 2);
+    assert_eq!(reason(&declined), StopReason::MovementComplete);
     assert!(
-        !serde_json::to_string(&transcript)
+        serde_json::to_string(&declined)
             .unwrap()
             .contains("scanlink_explore")
     );
-    assert!(
-        !serde_json::to_string(&transcript)
-            .unwrap()
-            .contains("private diagnostic")
-    );
-    let mut normal = live.fork();
-    normal
-        .prepare_hypothetical_turn(&PlayerId::new("b"))
+    assert_eq!(runner.plan().recorded_decisions.len(), 4);
+
+    // The one planet the fixture garrisons.
+    let planet = live
+        .state
+        .system_state(&target)
+        .planet_units
+        .iter()
+        .find(|(_, units)| !units.is_empty())
+        .map(|(planet, _)| planet.to_string())
         .unwrap();
-    normal.table = Table::with_default(Box::new(RefuseScanlink {
-        initial: Scripted::new(["tactical".into(), target.to_string()]),
-    }));
-    assert!(normal.step().error.is_none());
-    // offer_scanlink catches the decider error and returns None. The normal
-    // engine reports success, but the planning latch has already stopped it.
-    assert!(normal.step().error.is_none());
+    let mut transcripts = Vec::new();
+    for reverse in [false, true] {
+        let (mut live, target) = scanlink_checkpoint();
+        if reverse {
+            for deck in live.state.exploration_decks.values_mut() {
+                deck.reverse();
+            }
+        }
+        let cards: Vec<String> = live
+            .state
+            .exploration_decks
+            .values()
+            .flatten()
+            .map(ToString::to_string)
+            .collect();
+        let explored = collect(
+            &crate::runner(&live),
+            &["tactical".into(), target.to_string(), planet.to_string()],
+        );
+        assert!(matches!(
+            reason(&explored),
+            StopReason::Uncertainty | StopReason::KnowledgeChanged
+        ));
+        let text = serde_json::to_string(&explored).unwrap();
+        assert!(cards.iter().all(|card| !text.contains(&format!("\"{card}\""))));
+        transcripts.push(
+            explored
+                .into_iter()
+                .map(|envelope| serde_json::to_value(envelope.update).unwrap())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(transcripts[0], transcripts[1]);
 }
 
 #[test]
-fn replay_does_not_supply_an_answer_to_an_unaudited_nested_offer() {
+fn replay_supplies_the_recorded_answer_to_the_planners_own_ability() {
     let (live, target) = scanlink_checkpoint();
     let mut normal = live.fork();
     normal
@@ -761,11 +825,11 @@ fn replay_does_not_supply_an_answer_to_an_unaudited_nested_offer() {
         recorded_request_ids: vec![],
     };
     let runner = PlanningRunner::start(&live, PlayerId::new("b"), plan, 16);
-    let transcript = collect(&runner, &[]);
-    assert_eq!(reason(&transcript), StopReason::UnsupportedOffer);
-    assert_eq!(transcript.last().unwrap().progress.replayed, 2);
-    assert_eq!(transcript.last().unwrap().progress.remaining, 1);
-    assert_eq!(runner.plan().recorded_decisions, retained);
+    // The recorded answer to the planner's own ability is replayed like any other.
+    let transcript = collect(&runner, &["done_moving".into()]);
+    assert_eq!(reason(&transcript), StopReason::MovementComplete);
+    assert_eq!(runner.plan().recorded_decisions.len(), 4);
+    assert_eq!(runner.plan().recorded_decisions[..3], retained[..]);
 }
 
 #[test]
@@ -833,21 +897,36 @@ fn other_player_question_stops_without_publishing_their_options() {
     );
 }
 
+/// The planner's own optional abilities are offered at their window, as in
+/// live play. Declining leaves the effect unrun; accepting runs it on the fork.
 #[test]
-fn unknown_optional_eligibility_is_excluded_before_it_can_inspect_a_hand() {
-    let (mut live, _, _) = checkpoint(false, false);
-    live.timing.register([Ability::new(
-        "inspect_and_restore",
-        PlayerId::new("b"),
-        "TURN_BEGAN",
-        Relation::When,
-        Arc::new(|_, _| Ok(())),
-    )
-    .with_optional(true)
-    .with_condition(Arc::new(|_, _| panic!("unaudited inspection must not run")))]);
-    let transcript = collect(&runner(&live), &[]);
-    assert_eq!(reason(&transcript), StopReason::UnsupportedParticipation);
-    assert_eq!(transcript.len(), 1);
+fn the_planners_own_optional_ability_can_be_declined_or_used_in_a_draft() {
+    for accept in [false, true] {
+        let (mut live, destination, origin) = checkpoint(false, false);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counted = ran.clone();
+        live.timing.register([Ability::new(
+            "inspect_and_restore",
+            PlayerId::new("b"),
+            "TURN_BEGAN",
+            Relation::When,
+            Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .with_optional(true)
+        .with_condition(Arc::new(|_, _| true))]);
+        let mut script = vec![if accept {
+            "inspect_and_restore".to_owned()
+        } else {
+            "decline".to_owned()
+        }];
+        script.extend(answers(&destination, &origin, false));
+        let transcript = collect(&runner(&live), &script);
+        assert_eq!(reason(&transcript), StopReason::MovementComplete);
+        assert_eq!(ran.load(Ordering::SeqCst), usize::from(accept));
+    }
 }
 
 #[test]
@@ -1454,3 +1533,4 @@ fn engine_failure_is_sanitized_and_uncertainty_takes_precedence_over_failure() {
         );
     }
 }
+
