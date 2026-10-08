@@ -1,5 +1,5 @@
 import type { ToolbarView, Workspace } from "../../model";
-import { Button, Menu, cx } from "../../ui";
+import { Button, Menu } from "../../ui";
 import { useDispatch } from "../context";
 
 export const REFERENCES = [
@@ -35,7 +35,7 @@ export function Toolbar({
   return (
     <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 py-1.5">
       <div className="flex min-w-0 flex-col text-xs leading-[1.3] text-muted">
-        <span className="">
+        <span>
           Round {view.round} · {view.phase}
         </span>
         <strong className="truncate text-sm font-semibold text-text">
@@ -54,7 +54,7 @@ export function Toolbar({
             {tab("history", `History · ${view.past.label}`)}
             <button
               type="button"
-              className={cx("rounded-[5px] px-2 text-sm text-muted hover:text-text")}
+              className="rounded-[5px] px-2 text-sm text-muted hover:text-text"
               aria-label="Close history view"
               title="Close history view"
               onClick={() => dispatch({ type: "closeHistory" })}

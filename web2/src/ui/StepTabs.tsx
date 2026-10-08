@@ -37,13 +37,15 @@ export function StepTabs({
   onSelect,
   panelId = "step-panel",
 }: StepTabsProps) {
-  const list = useRef<HTMLElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const reached = tabs
     .map((tab, index) => (tab.status === "future" ? -1 : index))
     .filter((index) => index >= 0);
 
   function onKeyDown(event: KeyboardEvent) {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || !reached.length) return;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || !reached.length) {
+      return;
+    }
     event.preventDefault();
     const at = reached.indexOf(selected);
     const next =
@@ -60,7 +62,7 @@ export function StepTabs({
 
   return (
     <div className="flex min-h-10 items-stretch gap-2 border-b border-line bg-surface px-1.5">
-      <nav
+      <div
         ref={list}
         role="tablist"
         aria-label={label}
@@ -123,7 +125,7 @@ export function StepTabs({
             </button>
           );
         })}
-      </nav>
+      </div>
     </div>
   );
 }

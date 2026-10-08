@@ -1,40 +1,6 @@
 import { Button, Select } from "../ui";
 import { examples } from "./data";
-
-const GROUPS: [string, [string, string][]][] = [
-  [
-    "Private draft",
-    [
-      ["draft-combat", "Draft · Space combat boundary"],
-      ["draft-start", "Draft · Choose activation"],
-      ["draft-movement", "Draft · Choose movement"],
-      ["draft-rift", "Draft · Gravity rift boundary"],
-      ["draft-invasion", "Draft · Choose landings"],
-      ["draft-production", "Draft · Choose production"],
-      ["draft-review", "Draft · Changed selection"],
-      ["draft-cannon", "Draft · Space cannon boundary"],
-    ],
-  ],
-  [
-    "Game shell",
-    [
-      ["live-picker", "Live · Choose an action"],
-      ["live-strategic", "Live · Strategic action (your primary)"],
-      ["live-secondary", "Live · Draft a secondary in seat order"],
-      ["live-component", "Live · Component action"],
-    ],
-  ],
-  [
-    "Live action",
-    [
-      ["live-combat", "Live · Space combat decisions"],
-      ["live-combat-full", "Live · Space combat, every ship type"],
-      ["live-invasion", "Live · Waiting in ground combat"],
-      ["summary", "Live · Completed action"],
-    ],
-  ],
-];
-export const EXAMPLE_IDS = GROUPS.flatMap(([, items]) => items.map(([id]) => id));
+import { EXAMPLE_GROUPS, EXAMPLE_IDS } from "./exampleList";
 
 export interface DemoControls {
   example: string;
@@ -59,7 +25,7 @@ export function DemoBar({ demo }: { demo: DemoControls }) {
         value={demo.example}
         onChange={(event) => demo.loadExample(event.target.value)}
       >
-        {GROUPS.map(([label, items]) => (
+        {EXAMPLE_GROUPS.map(([label, items]) => (
           <optgroup key={label} label={label}>
             {items.map(([id, name]) => (
               <option key={id} value={id}>

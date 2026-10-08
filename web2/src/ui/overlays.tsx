@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { cx } from "./cx";
 import { Button, CloseButton } from "./Button";
 import type { IconName } from "./Icon";
@@ -21,14 +21,17 @@ export function Menu({
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     const close = (event: Event) => {
       if (
         event instanceof KeyboardEvent
           ? event.key === "Escape"
           : !root.current?.contains(event.target as Node)
-      )
+      ) {
         setOpen(false);
+      }
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", close);
@@ -81,21 +84,31 @@ export function Hint({ label, children }: { label: string; children: ReactNode }
   const [open, setOpen] = useState<"peek" | "pinned" | null>(null);
   const root = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const [, place] = useReducer((count: number) => count + 1, 0);
   useEffect(() => {
-    if (open !== "pinned") return;
+    if (!open) {
+      return;
+    }
+    // Esc closes the text however it was opened. A click outside closes a pinned text.
     const close = (event: Event) => {
       if (
         event instanceof KeyboardEvent
           ? event.key === "Escape"
-          : !root.current?.contains(event.target as Node)
-      )
+          : open === "pinned" && !root.current?.contains(event.target as Node)
+      ) {
         setOpen(null);
+      }
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", close);
+    // The text follows its button when a parent scrolls or the window changes.
+    document.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
     return () => {
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("keydown", close);
+      document.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
     };
   }, [open]);
   const peek = () => setOpen((now) => now ?? "peek");
@@ -104,6 +117,7 @@ export function Hint({ label, children }: { label: string; children: ReactNode }
   const rect = open ? button.current?.getBoundingClientRect() : undefined;
   const width = 340;
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: hover only shows the text early; the button inside is the control
     <span ref={root} className="relative inline-flex" onMouseEnter={peek} onMouseLeave={unpeek}>
       <button
         ref={button}
@@ -165,9 +179,15 @@ export function Dialog({
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
+    if (!dialog) {
+      return;
+    }
+    if (open && !dialog.open) {
+      dialog.showModal();
+    }
+    if (!open && dialog.open) {
+      dialog.close();
+    }
   }, [open]);
   return (
     <dialog
@@ -227,8 +247,11 @@ export function Drawer({
 /** Shows the latest message for a short time. A new `id` shows it again. */
 export function Toast({ message }: { message: { id: number; text: string } | null }) {
   const [visible, setVisible] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new id shows the message again; the object may be new for every view
   useEffect(() => {
-    if (!message) return setVisible(false);
+    if (!message) {
+      return setVisible(false);
+    }
     setVisible(true);
     const timer = setTimeout(() => setVisible(false), 3500);
     return () => clearTimeout(timer);

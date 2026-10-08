@@ -1,15 +1,15 @@
-import { memo, useMemo, type KeyboardEvent, type RefObject } from "react";
+import { useMemo, type KeyboardEvent, type RefObject } from "react";
 import type {
   BoardView,
   PlanetMarkView,
-  PlanetTaskView,
+  BoardTaskView,
   RouteView,
   SystemId,
   TileView,
 } from "../../model";
 import { plural } from "../../model";
 import { cx } from "../../ui";
-import { SeatShape, useDispatch, useSeats } from "../context";
+import { SeatShape, TECH_COLOR, useDispatch, useSeats } from "../context";
 import { useLink } from "../link";
 import { HEX_R, hexCenter, hexPoints, routePath } from "./hex";
 
@@ -21,10 +21,9 @@ const ANOMALY_LABEL = {
   nebula: "Nebula",
   rift: "Gravity rift",
 };
-const TECH_COLOR = { B: "#7fb2f0", G: "#8dd2b0", Y: "#e6c15c", R: "#f3a098" };
 
 function AnomalyGlyph({ kind }: { kind: keyof typeof ANOMALY_LABEL }) {
-  if (kind === "rift")
+  if (kind === "rift") {
     return (
       <>
         <circle r="12" fill="none" stroke="#b79cf0" strokeWidth="1.2" strokeDasharray="3 3" />
@@ -32,7 +31,8 @@ function AnomalyGlyph({ kind }: { kind: keyof typeof ANOMALY_LABEL }) {
         <circle r="2" fill="#b79cf0" />
       </>
     );
-  if (kind === "asteroid")
+  }
+  if (kind === "asteroid") {
     return (
       <path
         d="m-11-3 5-5 6 2 1 6-5 4-6-2Zm14 1 5-2 4 4-3 5-5-1Zm-6 9 4 1 1 4-4 2-3-3Z"
@@ -41,7 +41,8 @@ function AnomalyGlyph({ kind }: { kind: keyof typeof ANOMALY_LABEL }) {
         strokeWidth=".8"
       />
     );
-  if (kind === "supernova")
+  }
+  if (kind === "supernova") {
     return (
       <>
         <circle r="7" fill="#f2a65a" fillOpacity=".85" />
@@ -53,6 +54,7 @@ function AnomalyGlyph({ kind }: { kind: keyof typeof ANOMALY_LABEL }) {
         />
       </>
     );
+  }
   return (
     <>
       <circle cx="-6" cy="1" r="8" fill="#c583c9" fillOpacity=".28" />
@@ -63,7 +65,9 @@ function AnomalyGlyph({ kind }: { kind: keyof typeof ANOMALY_LABEL }) {
 }
 
 const pressOnKey = (event: KeyboardEvent<SVGGElement>) => {
-  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   event.currentTarget.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -82,13 +86,14 @@ function Planet({
   y: number;
   r: number;
   view: MapViewId;
-  task: PlanetTaskView | null;
+  task: BoardTaskView | null;
 }) {
   const dispatch = useDispatch();
   const seats = useSeats();
   const { linked, props } = useLink([`pl:${planet.id}`]);
-  const payable = !!task?.interactive && planet.id in task.values;
-  const chosen = !!task?.chosen[planet.id];
+  const onPlanets = task?.target === "planet" ? task : null;
+  const payable = !!onPlanets?.interactive && planet.id in onPlanets.values;
+  const chosen = !!onPlanets?.chosen[planet.id];
   const color = planet.owner ? seats[planet.owner].color : undefined;
   const text = (body: React.ReactNode, size = 10, fill?: string) => (
     <text x={x} y={y + size * 0.35} fontSize={size} style={fill ? { fill } : undefined}>
@@ -126,19 +131,20 @@ function Planet({
           : planet.owner && (
               <SeatShape symbol={seats[planet.owner].symbol} x={x} y={y} size={11} color={color} />
             );
-  const button = payable
-    ? {
-        role: "button",
-        tabIndex: 0,
-        "aria-pressed": chosen,
-        "aria-label": `${task.verb} ${planet.name}, ${task.values[planet.id]} ${task.unit}, ${planet.resources} resources / ${planet.influence} influence`,
-        onKeyDown: pressOnKey,
-        onClick: (event: React.MouseEvent) => {
-          event.stopPropagation();
-          dispatch({ type: "togglePlanet", planet: planet.id });
-        },
-      }
-    : {};
+  const button =
+    onPlanets && payable
+      ? {
+          role: "button",
+          tabIndex: 0,
+          "aria-pressed": chosen,
+          "aria-label": `${onPlanets.verb} ${planet.name}, ${onPlanets.values[planet.id]} ${onPlanets.unit}, ${planet.resources} resources / ${planet.influence} influence`,
+          onKeyDown: pressOnKey,
+          onClick: (event: React.MouseEvent) => {
+            event.stopPropagation();
+            dispatch({ type: "togglePlanet", planet: planet.id });
+          },
+        }
+      : {};
   // A planet that the task can use is larger than the others.
   const radius = payable ? r + 1.5 : r;
   return (
@@ -147,7 +153,8 @@ function Planet({
         "planet",
         !planet.owner && "free",
         payable && "payable",
-        chosen && (payable ? (task.kind === "pay" ? "chosen" : "chosen picked") : "exhausted"),
+        chosen &&
+          (payable ? (onPlanets?.kind === "pay" ? "chosen" : "chosen picked") : "exhausted"),
         linked && "linked",
       )}
       style={color ? ({ "--seat": color } as React.CSSProperties) : undefined}
@@ -176,7 +183,7 @@ interface TileProps {
   inspected: boolean;
   targeting: boolean;
   view: MapViewId;
-  task: PlanetTaskView | null;
+  task: BoardTaskView | null;
 }
 
 /** Vertical centre of the planets, the wormhole and the anomaly in a tile. */
@@ -186,7 +193,7 @@ const BODY_Y = -5;
  * One system. It shows what matters for play: planets, wormhole, anomaly, command token and fleets.
  * The name is flavor: it is in the tooltip and in the inspector, not on the tile.
  */
-const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
+function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
   const dispatch = useDispatch();
   const seats = useSeats();
   const { linked, props } = useLink([`sys:${tile.id}`]);
@@ -198,6 +205,9 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
   const gap = slots > 3 ? 19 : 25;
   const slotX = (index: number) => x + (index - (slots - 1) / 2) * gap;
   const planetR = slots > 2 ? 10 : 11.5;
+  // A task that asks for a system: a click on a system that can be chosen chooses it.
+  const target = task?.target === "system" && task.interactive && tile.id in task.values;
+  const chosen = target && !!task.chosen[tile.id];
   return (
     <g
       className={cx(
@@ -207,13 +217,22 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
         active && "active",
         (tile.anomaly === "asteroid" || tile.anomaly === "supernova") && "blocked",
         linked && "linked",
+        target && "target",
+        chosen && "chosen",
       )}
       style={tile.home ? ({ "--seat": seats[tile.home].color } as React.CSSProperties) : undefined}
       role="button"
       tabIndex={0}
-      aria-label={`${targeting && !tile.commandToken ? "Activate" : "Inspect"} ${label}`}
+      aria-pressed={target ? chosen : undefined}
+      aria-label={`${target ? task.verb : targeting && !tile.commandToken ? "Activate" : "Inspect"} ${label}`}
       onKeyDown={pressOnKey}
-      onClick={() => dispatch({ type: "inspectSystem", system: tile.id })}
+      onClick={() =>
+        dispatch(
+          target
+            ? { type: "toggleSystem", system: tile.id }
+            : { type: "inspectSystem", system: tile.id },
+        )
+      }
       {...props}
     >
       <title>
@@ -284,7 +303,7 @@ const Tile = memo(function Tile({ tile, active, inspected, targeting, view, task
       )}
     </g>
   );
-});
+}
 
 function Route({ route, tiles }: { route: RouteView; tiles: Record<SystemId, TileView> }) {
   const { linked } = useLink([`rt:${route.id}`]);
@@ -317,7 +336,9 @@ export function GalaxyMap({
       role="group"
       aria-label="Galaxy board"
       // While the player chooses planets, everything else on the board is dimmed.
-      data-tasking={view.planetTask?.interactive ? "" : undefined}
+      data-tasking={view.task?.interactive && view.task.target === "planet" ? "" : undefined}
+      // While the player chooses a system, the systems that cannot be chosen are dimmed.
+      data-targeting={view.task?.interactive && view.task.target === "system" ? "" : undefined}
     >
       <defs>
         <marker
@@ -340,7 +361,7 @@ export function GalaxyMap({
           inspected={tile.id === view.inspected}
           targeting={view.targeting}
           view={mapView}
-          task={view.planetTask}
+          task={view.task}
         />
       ))}
       {view.wormholes.map((pair) => (

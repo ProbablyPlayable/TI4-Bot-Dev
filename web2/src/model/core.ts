@@ -58,7 +58,6 @@ export interface CounterView {
   id: string;
   value: number;
   max: number;
-  step?: number;
   label: string;
 }
 

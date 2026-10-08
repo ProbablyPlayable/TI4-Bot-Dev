@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import type { GameSession, Intent } from "../../model";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { shortcuts, type GameSession, type Intent } from "../../model";
 import { Badge, Button, Dialog, InlineNote, LiveRegion, Toast } from "../../ui";
 import { ActionPanel } from "../action/ActionPanel";
 import { Board } from "../board/Board";
@@ -7,6 +7,7 @@ import { GameProvider } from "../context";
 import { LinkProvider } from "../link";
 import { PlayerTable } from "../players/PlayerTable";
 import { ReferenceDrawer } from "./Reference";
+import { OVERLAY, keyIsFree } from "./shortcuts";
 import { Toolbar } from "./Toolbar";
 
 const ACCENT = {
@@ -29,15 +30,60 @@ export function GameShell({ session }: { session: GameSession }) {
 
   const dispatch = useCallback(
     (intent: Intent) => {
-      if (intent.type === "openApply") return setApplyOpen(true);
-      if (intent.type === "inspectLogEntry") setDrawer(null);
+      if (intent.type === "openApply") {
+        return setApplyOpen(true);
+      }
+      if (intent.type === "openReference") {
+        return setDrawer(intent.sheet);
+      }
+      if (intent.type === "inspectLogEntry") {
+        setDrawer(null);
+      }
       session.dispatch(intent);
     },
     [session],
   );
   useEffect(() => {
-    if (!view.apply) setApplyOpen(false);
+    if (!view.apply) {
+      setApplyOpen(false);
+    }
   }, [view.apply]);
+
+  // Shortcut keys of the open action. Esc closes an open reference sheet first.
+  const keys = useRef({ view: view.action, drawer, dispatch });
+  keys.current = { view: view.action, drawer, dispatch };
+  useEffect(() => {
+    // Focus that Tab moved belongs to the keyboard; focus that a click left behind does not.
+    let focusByKeyboard = false;
+    const onPointer = () => (focusByKeyboard = false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Tab") {
+        focusByKeyboard = true;
+      }
+      const now = keys.current;
+      // Esc closes one thing: an open dialog, menu or rule text goes first.
+      if (event.key === "Escape" && now.drawer && !document.querySelector(OVERLAY)) {
+        return setDrawer(null);
+      }
+      if (!keyIsFree(event, focusByKeyboard)) {
+        return;
+      }
+      const intent = shortcuts(now.view).get(event.key.toLowerCase());
+      if (!intent) {
+        return;
+      }
+      // The key is used: the control that has focus must not act on it too.
+      event.preventDefault();
+      event.stopPropagation();
+      now.dispatch(intent);
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, []);
 
   return (
     <GameProvider seats={view.seats} dispatch={dispatch}>

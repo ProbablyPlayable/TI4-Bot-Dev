@@ -12,6 +12,7 @@ import type {
   Tone,
   UnitType,
 } from "./core";
+import type { TechColor } from "./board";
 import type { Intent } from "./intents";
 
 export type StepStatus =
@@ -38,6 +39,8 @@ export interface ActionButtonView {
   disabled?: boolean;
   pressed?: boolean;
   arrow?: boolean;
+  /** Shortcut key: a letter, a digit, "Enter" or "Escape". The shell listens for it and the button shows it. */
+  key?: string;
   intent: Intent;
 }
 
@@ -45,6 +48,8 @@ export interface FooterView {
   note: string;
   error: boolean;
   actions: ActionButtonView[];
+  /** The open payment, as one line: what pays and the total. Its controls are on the board. */
+  payment?: PaymentView;
 }
 
 // ---- Dice ---------------------------------------------------------------------------------------
@@ -92,6 +97,8 @@ export interface BattleTableView {
   owed: { hits: number; seat: SeatId } | null;
   sides: BattleSideView[];
   notes: string[];
+  /** A rule of this roll. It is behind "?". */
+  hint?: string;
 }
 
 export interface OddsView {
@@ -116,7 +123,15 @@ export interface OutcomeView {
 }
 
 export type BattleOfferView =
-  | { kind: "note"; tone: "accent" | "success"; alert?: boolean; strong: string; text: string }
+  | {
+      kind: "note";
+      tone: "accent" | "success";
+      alert?: boolean;
+      strong: string;
+      text?: string;
+      /** The rule behind the note. It is behind "?". */
+      hint?: string;
+    }
   | { kind: "offer"; eyebrow: string; title: string; text: string; actions: ActionButtonView[] };
 
 export interface BattleRecordView {
@@ -143,6 +158,8 @@ export interface ActivationView {
   systems: { id: SystemId; label: string }[];
   /** Recorded: the active system. */
   active: { system: SystemId; name: string } | null;
+  /** The tactic pool of the acting player, before and after the token of this activation. */
+  tacticPool: [now: number, after: number];
   draft: boolean;
 }
 
@@ -224,10 +241,11 @@ export interface InvasionPlanetView {
   facts: { label?: string; strong?: string; text?: string }[];
   result: { text: string; failed: boolean } | null;
   outcome: OutcomeView | null;
-  projection: { note: string } | { odds: OddsView } | null;
+  /** What ground combat will roll with the staged forces, with the simulated odds in its headers. */
+  projection: { note: string } | { table: BattleTableView; odds: OddsView } | null;
   offers: BattleOfferView[];
   records: BattleRecordView[];
-  /** A table that shows what will roll, where the draft stops. */
+  /** A table that shows what will roll before ground combat, where the draft stops. */
   preview: BattleTableView | null;
 }
 
@@ -250,8 +268,13 @@ export interface PaymentView {
   editable: boolean;
   /** What pays now, for example "Jord 4 + Lodor 1". Empty when nothing is chosen. */
   summary: string;
-  /** Trade goods are not on the board, so they have a control in the panel. */
-  goods: { id: string; label: string; checked: boolean } | null;
+  /**
+   * Trade goods are not on the board, so they have a counter in the panel. `rest` is the count
+   * that pays exactly what the planets leave; null when the trade goods cannot do that.
+   */
+  goods: { id: string; value: number; max: number; rest: number | null } | null;
+  /** Auto-pay and "Clear payment". They change the staged payment on the map; nothing is sent. */
+  actions: ActionButtonView[];
 }
 
 export interface ProductionView {
@@ -303,15 +326,95 @@ export interface RowView {
   order?: number;
   title: Rich;
   subtitle?: string;
+  /** A pool of command tokens: how many it has now, and how many after the staged change. */
+  tokens?: { now: number; after: number; /** The fleet pool: its tokens point up. */ up?: boolean };
   /** Rule text, shown on hover or click. */
   hint?: string;
   link?: LinkToken[];
   control?: RowControlView;
 }
 
+/** One choice of a menu. The whole row is the control. */
+export interface MenuRowView {
+  /** Shown on the first row of a group only. */
+  group?: string;
+  /** Shortcut key: a letter or a digit. */
+  key: string;
+  title: string;
+  /** Game state of this choice: a count, or the reason why it is not allowed. */
+  state?: string;
+  /** Rule text, shown on hover or click. */
+  hint?: string;
+  /** The printed text of a card, shown under the title. For a list that has the room for it. */
+  text?: string;
+  /** The staged choice of a list where the player chooses one row. */
+  selected?: boolean;
+  disabled: boolean;
+  intent: Intent;
+}
+
+/** One seat of a strategy card. Only the row of the viewer can be open. */
+export interface SeatRowView {
+  /** "P" for the primary, then the place in the seat order. */
+  order: string;
+  seat: SeatId;
+  name: string;
+  you: boolean;
+  status: { tone: PillView["tone"]; sign: string; label: string };
+  /** What the seat did, or what its draft will do. */
+  text?: string;
+  /** The editor of the viewer, in place under the row. */
+  open?: BlockView[];
+}
+
+/** One technology of the tree. The cell is the control. */
+export interface TechCellView {
+  id: string;
+  name: string;
+  /** The prerequisites, one for each symbol. `missing` is the reason why it cannot be researched. */
+  needs: { color: TechColor; missing: boolean }[];
+  /** The colour of the technology, for a cell that is not in a colour column. */
+  color?: TechColor;
+  state: "owned" | "open" | "closed";
+  selected: boolean;
+  /** The printed text, shown on hover. */
+  text: string;
+  intent: Intent;
+}
+
+export interface TechColumnView {
+  color: TechColor;
+  /** What the viewer has of this colour: "Blue 2 · +1 Arnor". */
+  label: string;
+  cells: TechCellView[];
+}
+
 export type BlockView =
   | { kind: "note"; tone: "accent" | "success" | "quiet"; strong?: string; text: string }
-  | { kind: "card"; title: string; aside?: string; bad?: boolean; rows: RowView[] }
+  | { kind: "menu"; title?: string; rows: MenuRowView[] }
+  /** The card or ability that asks for the decision, as printed. It is on top of the decision. */
+  | { kind: "source"; name: string; type: string; text: string }
+  | { kind: "gauges"; gauges: GaugeView[] }
+  /** The technology tree: one column for each colour, and a band for the unit upgrades. */
+  | {
+      kind: "techs";
+      title: string;
+      /** The chosen technologies with their price. Empty when nothing is chosen. */
+      chosen: string[];
+      aside?: string;
+      columns: TechColumnView[];
+      /** Rows under the columns: the unit upgrades, and the faction technologies if there are any. */
+      bands: { label: string; cells: TechCellView[] }[];
+    }
+  /** The seat order of a strategy card: the primary, then the secondaries, with what each did. */
+  | { kind: "seats"; rows: SeatRowView[] }
+  | {
+      kind: "card";
+      title: string;
+      aside?: string;
+      bad?: boolean;
+      rows: RowView[];
+    }
   | { kind: "payment"; payment: PaymentView }
   | {
       kind: "draft";
@@ -322,6 +425,18 @@ export type BlockView =
       hint?: string;
       blocks: BlockView[];
     };
+
+/**
+ * A reaction window: the viewer may play a card now, or pass. It sits on top of the open action,
+ * which shows what happened. The main button of the footer is Pass, or Play for a staged card.
+ */
+export interface InterruptView {
+  /** The trigger, in game values: "Reaction · After Blair plays Mining Initiative". */
+  eyebrow: string;
+  link: LinkToken[];
+  blocks: BlockView[];
+  actions: ActionButtonView[];
+}
 
 // ---- The panel ----------------------------------------------------------------------------------
 
@@ -336,6 +451,10 @@ interface PanelFrame {
   current: number | null;
   /** Key of the content, to keep scroll position while the same content is open. */
   contentKey: string;
+  /** A reaction window of the viewer, on top of the content. Null in any other state. */
+  interrupt: InterruptView | null;
+  /** What the viewer can still do after their action, before they end the turn. Empty in any other state. */
+  closing: BlockView[];
 }
 
 export interface TacticalActionView extends PanelFrame {

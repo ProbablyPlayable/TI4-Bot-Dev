@@ -41,7 +41,18 @@ export interface PlayerRowView {
   leaders: string;
 }
 
+/** The open task lets the viewer choose a player. The player table is the picker. */
+export interface PlayerPickView {
+  /** "Choose", for the label of a row. */
+  verb: string;
+  /** The seats in the choice. A reason says why a seat cannot be chosen. */
+  seats: Record<SeatId, { reason: string | null; note?: string }>;
+  /** One seat, or several when the task allows it. */
+  chosen: SeatId[];
+}
+
 export interface PlayerTableView {
+  pick: PlayerPickView | null;
   rows: PlayerRowView[];
   freeCards: { number: number; name: string; tradeGoods: number }[];
 }
@@ -65,7 +76,10 @@ export interface ReferenceView {
   objectives: ListSectionView[];
   technology: ListSectionView[];
   cards: ListSectionView[];
-  log: { round: number; label: string; entries: LogEntryView[] }[];
+  /** The viewer's cards that are played in a reaction window, with the offer setting of each. */
+  offerCards: { card: string; text: string; never: boolean }[];
+  /** `current` is the round in play: the log shows it open. */
+  log: { round: number; label: string; current: boolean; entries: LogEntryView[] }[];
 }
 
 export interface ApplyView {

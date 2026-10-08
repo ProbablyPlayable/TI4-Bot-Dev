@@ -11,14 +11,18 @@ export function useCamera(
   galaxy: RefObject<HTMLDivElement | null>,
   tiles: TileView[],
 ) {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the tiles are a new array for every view; the frame changes only with their number
   const box = useMemo(() => boardFrame(tiles), [tiles.length]);
   const camera = useRef({ x: 0, y: 0, k: 1 });
   const dragged = useRef(false);
 
   const scale = useCallback(() => {
     const element = svg.current;
-    if (!element?.clientWidth) return 1;
-    const [, , w, h] = element.getAttribute("viewBox")!.split(" ").map(Number);
+    const viewBox = element?.getAttribute("viewBox");
+    if (!element?.clientWidth || !viewBox) {
+      return 1;
+    }
+    const [, , w, h] = viewBox.split(" ").map(Number);
     return Math.max(w / element.clientWidth, h / element.clientHeight);
   }, [svg]);
 
@@ -31,7 +35,9 @@ export function useCamera(
       `${(box.cx + x - w / 2).toFixed(1)} ${(box.cy + y - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`,
     );
     // Small text is hidden when the board is far away. It comes back when the player goes nearer.
-    if (svg.current?.clientWidth) galaxy.current?.classList.toggle("far", 1 / scale() < 1.05);
+    if (svg.current?.clientWidth) {
+      galaxy.current?.classList.toggle("far", 1 / scale() < 1.05);
+    }
   }, [box, svg, galaxy, scale]);
 
   const zoom = useCallback(
@@ -45,7 +51,9 @@ export function useCamera(
   /** Frames the given systems, or the whole board. */
   const fit = useCallback(
     (ids?: string[]) => {
-      const area = ids ? frame(tiles.filter((tile) => ids.includes(tile.id))) : box;
+      // No system to frame: the whole board.
+      const picked = ids ? tiles.filter((tile) => ids.includes(tile.id)) : [];
+      const area = picked.length ? frame(picked) : box;
       camera.current = {
         x: area.cx - box.cx,
         y: area.cy - box.cy,
@@ -67,11 +75,13 @@ export function useCamera(
 
   useEffect(() => {
     const element = svg.current;
-    if (!element) return;
+    if (!element) {
+      return;
+    }
     let drag: { x: number; y: number; cx: number; cy: number; scale: number } | null = null;
     const down = (event: PointerEvent) => {
       dragged.current = false;
-      if (event.button === 0)
+      if (event.button === 0) {
         drag = {
           x: event.clientX,
           y: event.clientY,
@@ -79,12 +89,17 @@ export function useCamera(
           cy: camera.current.y,
           scale: scale(),
         };
+      }
     };
     const move = (event: PointerEvent) => {
-      if (!drag) return;
+      if (!drag) {
+        return;
+      }
       const dx = event.clientX - drag.x;
       const dy = event.clientY - drag.y;
-      if (!dragged.current && Math.hypot(dx, dy) < 5) return;
+      if (!dragged.current && Math.hypot(dx, dy) < 5) {
+        return;
+      }
       dragged.current = true;
       camera.current.x = drag.cx - dx * drag.scale;
       camera.current.y = drag.cy - dy * drag.scale;
@@ -96,7 +111,9 @@ export function useCamera(
       element.classList.remove("dragging");
     };
     const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey) return;
+      if (!event.ctrlKey) {
+        return;
+      }
       event.preventDefault();
       zoom(event.deltaY < 0 ? 1.15 : 1 / 1.15);
     };

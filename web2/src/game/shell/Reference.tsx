@@ -27,7 +27,11 @@ function Sections({ sections }: { sections: ListSectionView[] }) {
 function Log({ log }: { log: ReferenceView["log"] }) {
   const dispatch = useDispatch();
   const seats = useSeats();
-  const [open, setOpen] = useState<Record<string, boolean>>({ r3: true });
+  const [open, setOpen] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      log.filter((round) => round.current).map((round) => ["r" + round.round, true]),
+    ),
+  );
   const toggle = (id: string) => setOpen((now) => ({ ...now, [id]: !now[id] }));
   return (
     <>
@@ -96,6 +100,39 @@ function Log({ log }: { log: ReferenceView["log"] }) {
   );
 }
 
+/** The cards that are played in a reaction window. The setting belongs to the card. */
+function OfferCards({ cards }: { cards: ReferenceView["offerCards"] }) {
+  const dispatch = useDispatch();
+  if (!cards.length) {
+    return null;
+  }
+  return (
+    <div>
+      <h3 className="mt-3.5 text-muted">
+        <Eyebrow>Reaction cards · offer</Eyebrow>
+      </h3>
+      {cards.map((item) => (
+        <div key={item.card} className="mt-2 flex items-start justify-between gap-3">
+          <span>
+            <strong>{item.card}</strong>
+            <span className="block text-xs text-muted">{item.text}</span>
+          </span>
+          <Button
+            size="sm"
+            tone="quiet"
+            active={item.never}
+            aria-pressed={item.never}
+            aria-label={`Never offer ${item.card}`}
+            onClick={() => dispatch({ type: "setCardOffer", card: item.card, never: !item.never })}
+          >
+            {item.never ? "Never offered" : "Offered"}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function playerSections(row: PlayerRowView): ListSectionView[] {
   return [
     { title: "Faction abilities", rows: row.abilities.map((text) => [text]) },
@@ -138,16 +175,18 @@ export function ReferenceDrawer({
     ? players.find((row) => row.seat === id.slice(7))
     : undefined;
   const seat = useSeat(player?.seat ?? "");
-  if (player)
+  if (player) {
     return (
       <Drawer title={`${seat.name} · ${seat.faction}`} onClose={onClose}>
         <Sections sections={playerSections(player)} />
       </Drawer>
     );
+  }
   const key = id as keyof typeof TITLES;
   return (
     <Drawer title={TITLES[key]} onClose={onClose}>
       {key === "log" ? <Log log={view.log} /> : <Sections sections={view[key]} />}
+      {key === "cards" && <OfferCards cards={view.offerCards} />}
     </Drawer>
   );
 }

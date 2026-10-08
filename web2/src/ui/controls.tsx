@@ -4,13 +4,12 @@ import { cx } from "./cx";
 export interface CounterProps {
   value: number;
   max: number;
-  step?: number;
   /** Names the thing counted, for assistive technology: "Carrier from Jord". */
   label: string;
   onChange: (value: number) => void;
 }
 
-export function Counter({ value, max, step = 1, label, onChange }: CounterProps) {
+export function Counter({ value, max, label, onChange }: CounterProps) {
   const button =
     "size-7 text-lg text-muted enabled:hover:bg-raised enabled:hover:text-text disabled:opacity-30";
   return (
@@ -20,7 +19,7 @@ export function Counter({ value, max, step = 1, label, onChange }: CounterProps)
         className={button}
         aria-label={`Remove ${label}`}
         disabled={value <= 0}
-        onClick={() => onChange(Math.max(0, value - step))}
+        onClick={() => onChange(value - 1)}
       >
         −
       </button>
@@ -32,7 +31,7 @@ export function Counter({ value, max, step = 1, label, onChange }: CounterProps)
         className={button}
         aria-label={`Add ${label}`}
         disabled={value >= max}
-        onClick={() => onChange(Math.min(max, value + step))}
+        onClick={() => onChange(value + 1)}
       >
         +
       </button>
@@ -78,7 +77,9 @@ export function Segmented<T extends string>({
 
 /** Pill-shaped tabs for the rolls of one battle. */
 export function ChipTabs<T extends string>({ label, options, value, onChange }: SegmentedProps<T>) {
-  if (options.length < 2) return null;
+  if (options.length < 2) {
+    return null;
+  }
   return (
     <div role="group" aria-label={label} className="flex flex-wrap gap-1">
       {options.map((option) => (

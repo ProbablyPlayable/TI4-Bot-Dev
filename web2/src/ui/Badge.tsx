@@ -61,6 +61,20 @@ export function Pill({
   );
 }
 
+const KEY_LABELS: Record<string, string> = { Enter: "↵", Escape: "Esc" };
+
+/** The shortcut key of a control. It takes the colour of the control it is in. */
+export function Kbd({ children }: { children: string }) {
+  return (
+    <kbd
+      aria-hidden
+      className="rounded-[3px] border border-current/40 px-1 font-sans text-2xs leading-[1.45] font-bold opacity-80"
+    >
+      {KEY_LABELS[children] ?? children.toUpperCase()}
+    </kbd>
+  );
+}
+
 export function Eyebrow({ className, ...rest }: HTMLAttributes<HTMLSpanElement>) {
   return (
     <span className={cx("text-xs font-bold tracking-[.08em] uppercase", className)} {...rest} />

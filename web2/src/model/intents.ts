@@ -1,4 +1,4 @@
-import type { PlanetId, SystemId, UnitType } from "./core";
+import type { PlanetId, SeatId, SystemId, UnitType } from "./core";
 
 /**
  * Everything a player can ask for. The data source decides what an intent does: the mock engine
@@ -27,34 +27,52 @@ export type Intent =
   | { type: "removeLine"; key: string }
   | { type: "setPlacement"; unit: UnitType; place: string }
   | { type: "chooseRoute"; line: string; index: number }
-  | { type: "setPayment"; source: string; on: boolean }
+  | { type: "setPayment"; source: string; value: number }
+  /** Stages a suggested payment on the map, or clears the staged payment. */
+  | { type: "payment"; action: "auto" | "reset" }
   // Board
   | { type: "inspectSystem"; system: SystemId }
   | { type: "closeInspector" }
   | { type: "expandOrigin"; system: SystemId }
   | { type: "findSystem"; query: string }
   | { type: "togglePlanet"; planet: PlanetId }
+  | { type: "toggleSystem"; system: SystemId }
   // Battles
   | {
       type: "battle";
-      action:
-        | "roll"
-        | "announceRetreat"
-        | "assignHits"
-        | "resetHits"
-        | "passReaction"
-        | "playReaction"
-        | "retreat";
+      action: "roll" | "announceRetreat" | "assignHits" | "resetHits" | "retreat";
     }
-  | { type: "playCard"; card: string }
   | { type: "stageHit"; unit: UnitType; kind: "sustain" | "destroy" | "destroy-damaged" }
-  | { type: "pickRetreat"; destination: string }
   // Other actions
-  | { type: "pickAction"; action: "tactical" | "strategic" | "component"; system?: SystemId }
+  | {
+      type: "pickAction";
+      action: "tactical" | "strategic" | "component";
+      system?: SystemId;
+      /** The strategy card (its number) or the action card (its name). */
+      card?: string;
+    }
+  /** The second step of a choice that has one row in the picker: which action card. */
+  | { type: "pickGroup"; group: "actionCards" }
   | { type: "backToPicker" }
+  | { type: "pass" }
+  | { type: "endTurn" }
   | { type: "flow"; action: "resolve" | "ready" | "change" | "play" }
   | { type: "flowCount"; key: string; value: number }
-  | { type: "flowTarget"; planet: PlanetId }
+  // Decisions: the staged choice. The main button of the footer sends it.
+  | { type: "pickSeat"; seat: SeatId }
+  /** `group` names the list when a screen has more than one. */
+  | { type: "chooseOption"; option: string; group?: string }
+  | { type: "pickTech"; tech: string }
+  | { type: "clearChoice" }
+  /** "Change" on a chosen thing: clears that part of the action, so it is open again. */
+  | { type: "clearPart"; part: string }
+  // Reaction windows: a card is staged, then played; or the viewer passes.
+  | { type: "stageReaction"; card: string }
+  | { type: "reaction"; action: "pass" | "play" }
+  /** The viewer never wants an offer for this card, or wants it again. */
+  | { type: "setCardOffer"; card: string; never: boolean }
+  /** Opens a reference sheet. The shell answers this one itself. */
+  | { type: "openReference"; sheet: "cards" }
   | { type: "inspectLogEntry"; id: string }
   /** Lets another seat act. Only the demo offers this. */
   | { type: "simulate" };

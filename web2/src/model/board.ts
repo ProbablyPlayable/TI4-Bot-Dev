@@ -1,3 +1,4 @@
+import type { PaymentView } from "./action";
 import type { Force, PlanetId, SeatId, SystemId } from "./core";
 
 export type Anomaly = "asteroid" | "supernova" | "nebula" | "rift";
@@ -44,15 +45,21 @@ export interface RouteView {
   staged: boolean;
 }
 
-/** What the open task lets the player choose on planets. It is drawn over any map view. */
-export interface PlanetTaskView {
+/**
+ * What the open task lets the player choose on the board: planets or systems.
+ * It is drawn over any map view. The keys of `values` are the things that can be chosen.
+ */
+export interface BoardTaskView {
+  target: "planet" | "system";
   kind: "pay" | "pick";
   /** False when the choices are only shown, for example a recorded payment. */
   interactive: boolean;
-  values: Record<PlanetId, number>;
-  chosen: Record<PlanetId, boolean>;
+  values: Record<PlanetId | SystemId, number>;
+  chosen: Record<PlanetId | SystemId, boolean>;
   verb: string;
   unit: string;
+  /** A payment that is open: the board has its state and its controls, where the player chooses. */
+  payment?: PaymentView;
 }
 
 export interface InspectorRowView {
@@ -83,7 +90,7 @@ export interface BoardView {
   inspected: SystemId | null;
   /** A click on a system chooses the activation target. */
   targeting: boolean;
-  planetTask: PlanetTaskView | null;
+  task: BoardTaskView | null;
   inspector: InspectorView | null;
   /** The systems of the open task, for "Fit task". */
   taskSystems: SystemId[];

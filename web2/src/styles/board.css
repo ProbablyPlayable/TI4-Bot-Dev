@@ -155,6 +155,24 @@
   opacity: 0.28;
 }
 
+/* A system that the open task can use, and the chosen one. The other systems are dimmed. */
+.galaxy .system.target > .hex {
+  stroke: var(--color-text);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 5px var(--color-text));
+}
+
+.galaxy .system.target.chosen > .hex {
+  fill: color-mix(in srgb, var(--color-gold) 22%, #131c28);
+  stroke: var(--color-gold);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 6px var(--color-gold));
+}
+
+.galaxy svg[data-targeting] .system:not(.target) {
+  opacity: 0.3;
+}
+
 .galaxy .planet.exhausted circle {
   fill-opacity: 0.35;
   stroke-dasharray: 2 2;

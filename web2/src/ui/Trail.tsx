@@ -17,9 +17,11 @@ const TRAIL: Record<TrailStatus, string> = {
 
 /** The substeps of a step, in order. */
 export function Trail({ items }: { items: TrailItem[] }) {
-  if (!items.length) return null;
+  if (!items.length) {
+    return null;
+  }
   return (
-    <div className="flex flex-wrap items-center gap-[5px]" aria-label="Substeps">
+    <div role="group" className="flex flex-wrap items-center gap-[5px]" aria-label="Substeps">
       {items.map((item) => (
         <span
           key={item.label}
@@ -37,8 +39,9 @@ export function Trail({ items }: { items: TrailItem[] }) {
 /** One die. Without a roll it is a slot for a die that is not rolled yet. */
 export function Die({ roll, hit }: { roll?: number; hit?: boolean }) {
   const base = "inline-grid size-6 place-items-center rounded-[5px] border text-xs tabular-nums";
-  if (roll === undefined)
+  if (roll === undefined) {
     return <span aria-hidden="true" className={cx(base, "border-dashed border-line")} />;
+  }
   return (
     <span
       role="img"

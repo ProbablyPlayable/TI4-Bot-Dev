@@ -3,33 +3,74 @@ import type {
   BoardView,
   InspectorRowView,
   InspectorView,
-  PlanetTaskView,
+  BoardTaskView,
   TechColor,
   TileView,
   UnitType,
 } from "../../model";
 import { plural } from "../../model";
-import { ANOMALY, LINES, MAP, PAY, SCRIPTED, STEPS, TECH, U } from "../data";
+import { ANOMALY, LINES, MAP, PAY, RETREATS, SCRIPTED, STEPS, TECH, U } from "../data";
 import { E } from "../loose";
-import { sysLabel, type State, type World } from "../world";
-import { countsForce, isTactical, mapStep, stepCaption, toForce } from "./shared";
+import { strategyEditor } from "../strategy";
+import { decisionShape, sysLabel, type State, type World } from "../world";
+import {
+  countsForce,
+  isTactical,
+  mapStep,
+  productionPayment,
+  stepCaption,
+  toForce,
+} from "./shared";
 
-function planetTask(world: World, state: State): PlanetTaskView | null {
-  if (world.mode === "history") return null;
+function boardTask(world: World, state: State): BoardTaskView | null {
+  if (world.mode === "history") {
+    return null;
+  }
+  if (decisionShape(state) === "system") {
+    return {
+      target: "system",
+      kind: "pick",
+      interactive: true,
+      values: Object.fromEntries(
+        Object.keys(MAP)
+          .filter((id) => MAP[id].token)
+          .map((id) => [id, 0]),
+      ),
+      chosen: state.flow.chosen ? { [state.flow.chosen]: true } : {},
+      verb: "Choose",
+      unit: "system",
+    };
+  }
   const values = (key: "res" | "inf") =>
     Object.fromEntries(
       PAY.filter((source) => source.system).map((source) => [source.id, source[key]!]),
     );
   if (isTactical(state)) {
-    if (mapStep(state) === 4)
+    // A retreat: the destination is a system, so the board is where it is chosen.
+    const battle = state.mode === "live" ? E.activeBattle(state) : null;
+    if (battle?.stage === "retreat" && E.controls(state, battle.side)) {
       return {
+        target: "system",
+        kind: "pick",
+        interactive: true,
+        values: Object.fromEntries(RETREATS[battle.side as "att"].map((id) => [id, 0])),
+        chosen: battle.pick ? { [battle.pick]: true } : {},
+        verb: "Retreat to",
+        unit: "system",
+      };
+    }
+    if (mapStep(state) === 4) {
+      return {
+        payment: productionPayment(state) ?? undefined,
         values: values("res"),
         chosen: state.edit.value.pay,
         interactive: true,
         verb: "Exhaust",
         unit: "resource",
         kind: "pay",
+        target: "planet",
       };
+    }
     return state.done[4]
       ? {
           values: {},
@@ -38,20 +79,15 @@ function planetTask(world: World, state: State): PlanetTaskView | null {
           verb: "",
           unit: "",
           kind: "pay",
+          target: "planet",
         }
       : null;
   }
   const flow = state.flow;
-  if (state.kind === "strategic" && E.flowEditing(state) && flow.mine.buy)
-    return {
-      values: values("inf"),
-      chosen: flow.mine.pay,
-      interactive: true,
-      verb: "Exhaust",
-      unit: "influence",
-      kind: "pay",
-    };
-  if (state.kind === "component" && flow.stage === "target")
+  if (state.kind === "strategic") {
+    return E.flowEditing(state) ? strategyEditor(state, world.table.seats).task : null;
+  }
+  if (E.own() && state.kind === "component" && flow.stage === "target") {
     return {
       values: values("res"),
       chosen: flow.target ? { [flow.target]: true } : {},
@@ -59,13 +95,17 @@ function planetTask(world: World, state: State): PlanetTaskView | null {
       verb: "Choose",
       unit: "resource",
       kind: "pick",
+      target: "planet",
     };
+  }
   return null;
 }
 
 function inspector(world: World, state: State): InspectorView | null {
   const id: string | null = state.inspect;
-  if (!id) return null;
+  if (!id) {
+    return null;
+  }
   const system = MAP[id];
   const draft = state.mode === "draft";
   const partner =
@@ -140,14 +180,19 @@ function inspector(world: World, state: State): InspectorView | null {
     .filter(Boolean)
     .join(" · ");
   const space: InspectorRowView[] = [];
-  if (E.size(state.fleet) || carrying)
+  if (E.size(state.fleet) || carrying) {
     space.push({
       seat: "sol",
       force: toForce(state.fleet),
       notes: carrying ? [{ text: `Carrying ${carrying}`, tone: "muted" }] : [],
     });
-  if (E.size(state.enemyFleet)) space.push({ seat: "hacan", force: toForce(state.enemyFleet) });
-  if (!space.length) space.push({ label: "In space", text: "No ships" });
+  }
+  if (E.size(state.enemyFleet)) {
+    space.push({ seat: "hacan", force: toForce(state.enemyFleet) });
+  }
+  if (!space.length) {
+    space.push({ label: "In space", text: "No ships" });
+  }
   const planets = state.planets.map((planet: any): InspectorRowView => {
     const plan = draft && state.done[3] ? E.landed(state, planet.id) : {};
     const structures = planet.structures
@@ -166,12 +211,14 @@ function inspector(world: World, state: State): InspectorView | null {
 }
 
 function latestResult(world: World, state: State): string {
-  if (world.mode === "history")
+  if (world.mode === "history") {
     return "Board: the result of this action (demo). The real board stays on the present state.";
+  }
   if (isTactical(state)) {
     const last = [4, 3, 2, 1, 0].find((step) => state.done[step] && !state.skipped[step]);
-    if (last !== undefined)
+    if (last !== undefined) {
       return `Jamie · ${STEPS[last]} · ${stepCaption(state, last, "done")}${state.mode === "draft" ? " (draft)" : ""}`;
+    }
   }
   return "Blair gained 3 trade goods with Mining Initiative.";
 }
@@ -301,6 +348,33 @@ export function selectBoard(world: World, state: State): BoardView {
     ]),
   ];
 
+  // A table with fewer seats: the other factions are not in the game, so the board is neutral there.
+  const seats = world.table.seats;
+  const plays = (seat: string | null | undefined) => !seat || seats.includes(seat);
+  const inspected = inspector(world, state);
+  if (seats.length < 8) {
+    for (const tile of tiles) {
+      tile.fleets = tile.fleets.filter((fleet) => plays(fleet.seat));
+      tile.control = tile.fleets.length > 1 ? "contested" : (tile.fleets[0]?.seat ?? null);
+      if (!plays(tile.home)) {
+        tile.home = null;
+      }
+      for (const planet of tile.planets) {
+        if (!plays(planet.owner)) {
+          Object.assign(planet, { owner: null, groundForces: 0 });
+        }
+      }
+    }
+    if (inspected) {
+      inspected.rows = inspected.rows.filter((row) => plays(row.seat));
+      for (const row of inspected.rows) {
+        if (row.planet && !plays(row.planet.owner)) {
+          Object.assign(row, { notes: [] }).planet!.owner = null;
+        }
+      }
+    }
+  }
+
   return {
     tiles,
     wormholes,
@@ -312,8 +386,8 @@ export function selectBoard(world: World, state: State): BoardView {
     activeSystem: active,
     inspected: state.inspect,
     targeting: step === 0,
-    planetTask: planetTask(world, state),
-    inspector: inspector(world, state),
+    task: boardTask(world, state),
+    inspector: inspected,
     taskSystems,
     fitKey: `${world.fit}`,
     latestResult: latestResult(world, state),

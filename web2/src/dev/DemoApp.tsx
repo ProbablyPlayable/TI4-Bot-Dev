@@ -16,8 +16,11 @@ export function DemoApp() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     params.set("example", demo.example);
-    if (demo.viewer === "sol") params.delete("viewer");
-    else params.set("viewer", demo.viewer);
+    if (demo.viewer === "sol") {
+      params.delete("viewer");
+    } else {
+      params.set("viewer", demo.viewer);
+    }
     history.replaceState(null, "", `?${params}`);
   }, [demo.example, demo.viewer]);
   return (

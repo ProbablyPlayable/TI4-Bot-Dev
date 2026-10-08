@@ -62,6 +62,11 @@
 @layer base {
   :root {
     --accent: var(--color-gold);
+    /* Technology colours: the tree and the board use the same four. */
+    --tech-b: #6fb1f0;
+    --tech-g: #7fcf8f;
+    --tech-y: #e6cf6a;
+    --tech-r: #ee8a80;
     color-scheme: dark;
     font-synthesis: none;
   }

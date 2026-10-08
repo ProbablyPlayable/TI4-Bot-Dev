@@ -2,18 +2,13 @@ import { useEffect, useState } from "react";
 import type { CombatView, InvasionPlanetView, InvasionView } from "../../model";
 import { unitName } from "../../model";
 import { Card, CardBody, CardHeading, Counter, Gauge, Gauges, InlineNote, ListRow } from "../../ui";
-import {
-  BattleOffers,
-  BattleRecords,
-  BattleTable,
-  OddsCard,
-  OutcomeCard,
-} from "../combat/BattleTable";
+import { BattleOffers, BattleRecords, BattleTable, OutcomeCard } from "../combat/BattleTable";
 import { OwnerLabel, useDispatch } from "../context";
 
 /** Which roll is in view. It goes back to the latest roll when the battle moves on. */
 function useRecordTab(revision: string) {
   const [selected, setSelected] = useState<Record<string, string>>({});
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new revision is the trigger
   useEffect(() => setSelected({}), [revision]);
   return [
     selected,
@@ -32,7 +27,9 @@ export function Skipped({ step, reason }: { step: string; reason: string }) {
 /** Step 3: odds before the roll, then one table for each roll, and the decisions of the open round. */
 export function SpaceCombatStep({ view }: { view: CombatView }) {
   const [selected, select] = useRecordTab(view.revision);
-  if (view.skipped) return <Skipped step="Space combat" reason={view.skipped} />;
+  if (view.skipped) {
+    return <Skipped step="Space combat" reason={view.skipped} />;
+  }
   return (
     <>
       {view.outcome && <OutcomeCard view={view.outcome} />}
@@ -99,7 +96,7 @@ function Planet({
         )}
         {planet.projection &&
           ("odds" in planet.projection ? (
-            <OddsCard view={planet.projection.odds} />
+            <BattleTable view={planet.projection.table} odds={planet.projection.odds} />
           ) : (
             <InlineNote tone="quiet">{planet.projection.note}</InlineNote>
           ))}
@@ -122,7 +119,9 @@ function Planet({
 /** Step 4: one card for each planet: who holds it, what lands, and every roll there. */
 export function InvasionStep({ view }: { view: InvasionView }) {
   const [selected, select] = useRecordTab(view.revision);
-  if (view.skipped) return <Skipped step="Invasion" reason={view.skipped} />;
+  if (view.skipped) {
+    return <Skipped step="Invasion" reason={view.skipped} />;
+  }
   return (
     <>
       {view.planets.map((planet) => (

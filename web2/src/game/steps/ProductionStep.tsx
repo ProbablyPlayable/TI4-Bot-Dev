@@ -18,7 +18,9 @@ import { PaymentList } from "./PaymentList";
 /** Step 5: build a cart, pay, and place. Limits are gauges, so an over-limit build is visible at once. */
 export function ProductionStep({ view }: { view: ProductionView }) {
   const dispatch = useDispatch();
-  if (view.skipped) return <Skipped step="Production" reason={view.skipped} />;
+  if (view.skipped) {
+    return <Skipped step="Production" reason={view.skipped} />;
+  }
   return (
     <>
       <Card>
@@ -62,7 +64,8 @@ export function ProductionStep({ view }: { view: ProductionView }) {
           <Gauge key={gauge.label} {...gauge} />
         ))}
       </Gauges>
-      <PaymentList view={view.payment} />
+      {/* An open payment is on the board and in the footer. */}
+      {!view.payment.editable && <PaymentList view={view.payment} />}
       {view.done && (
         <InlineNote tone="success" strong={view.done.strong}>
           {view.done.text}

@@ -33,17 +33,24 @@ export function createMockStore(start?: { example?: string; viewer?: string }): 
     update(change) {
       change(store.world);
       store.version++;
-      listeners.forEach((listener) => listener());
+      for (const listener of listeners) {
+        listener();
+      }
     },
   };
-  if (start?.example && examples[start.example]) loadExample(store.world, start.example);
-  if (start?.viewer && start.viewer !== "sol") setViewer(store.world, start.viewer);
+  if (start?.example && examples[start.example]) {
+    loadExample(store.world, start.example);
+  }
+  if (start?.viewer && start.viewer !== "sol") {
+    setViewer(store.world, start.viewer);
+  }
   return store;
 }
 
 /** The mock implementation of `GameSession`, plus the controls of the demo bar. */
 export function useMockSession(store: MockStore) {
   const version = useSyncExternalStore(store.subscribe, () => store.version);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the world changes in place; the version says when
   return useMemo(() => {
     const world = store.world;
     const session: GameSession = {

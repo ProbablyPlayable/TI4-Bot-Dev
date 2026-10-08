@@ -154,6 +154,7 @@ export function BattleTable({ view, odds }: { view: BattleTableView; odds?: Odds
         <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-b border-line bg-white/[.016] px-3 py-1.5 text-sm">
           <strong>{view.label}</strong>
           <span className="text-muted">{view.score}</span>
+          {view.hint && <Hint label={`Rules: ${view.label}`}>{view.hint}</Hint>}
           {odds && (
             <span className="inline-flex items-center gap-2 text-muted">
               Avg {odds.rounds} rounds{draw > 0 ? ` · ${draw}% both destroyed` : ""}
@@ -196,48 +197,6 @@ export function BattleTable({ view, odds }: { view: BattleTableView; odds?: Odds
   );
 }
 
-export function OddsCard({ view }: { view: OddsView }) {
-  const seats = useSeats();
-  const attacker = seats[view.attacker].faction;
-  const defender = seats[view.defender].faction;
-  const draw = 100 - view.attackerWins - view.defenderWins;
-  const spread = "flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-muted";
-  return (
-    <div className="rounded-lg border border-line px-3.5 py-2.5 text-xs">
-      <div className={spread}>
-        <Eyebrow>{view.kind === "space" ? "Combat odds" : "Projected odds"}</Eyebrow>
-        <span>
-          Simulated · {view.rollouts} rollouts · {view.caveat}
-        </span>
-      </div>
-      <div className="my-[5px] flex items-center gap-2.5 text-md tabular-nums">
-        <strong>{view.attackerWins}%</strong>
-        <div
-          className="flex h-2 flex-1 overflow-hidden rounded-full bg-line"
-          role="img"
-          aria-label={`${attacker} wins ${view.attackerWins}%, ${defender} wins ${view.defenderWins}%`}
-        >
-          <i className="bg-cyan" style={{ width: `${view.attackerWins}%` }} />
-          <i className="bg-faint" style={{ width: `${draw}%` }} />
-          <i className="bg-orange" style={{ width: `${view.defenderWins}%` }} />
-        </div>
-        <strong>{view.defenderWins}%</strong>
-      </div>
-      <div className={spread}>
-        <span>
-          {attacker} · ~{view.attackerLeft} survivors
-        </span>
-        <span>
-          Avg {view.rounds} rounds{draw > 0 ? ` · ${draw}% both destroyed` : ""}
-        </span>
-        <span>
-          {defender} · ~{view.defenderLeft} survivors
-        </span>
-      </div>
-    </div>
-  );
-}
-
 export function OutcomeCard({ view }: { view: OutcomeView }) {
   const seats = useSeats();
   return (
@@ -277,6 +236,7 @@ export function BattleOffers({ offers }: { offers: BattleOfferView[] }) {
             }
           >
             {offer.text}
+            {offer.hint && <Hint label={`Rules: ${offer.strong}`}>{offer.hint}</Hint>}
           </InlineNote>
         ) : (
           <Offer
@@ -310,7 +270,9 @@ export function BattleRecords({
   onSelect: (key: string) => void;
   offers?: BattleOfferView[];
 }) {
-  if (!records.length) return offers?.length ? <BattleOffers offers={offers} /> : null;
+  if (!records.length) {
+    return offers?.length ? <BattleOffers offers={offers} /> : null;
+  }
   const latest = records[records.length - 1];
   const record = records.find((item) => item.key === selected) ?? latest;
   return (

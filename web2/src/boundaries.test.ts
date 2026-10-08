@@ -25,11 +25,13 @@ const files = (dir: string): string[] =>
 
 it.each(Object.keys(ALLOWED))("%s imports only its allowed layers", (layer) => {
   const bad: string[] = [];
-  for (const file of files(join(root, layer)))
+  for (const file of files(join(root, layer))) {
     for (const [, target] of readFileSync(file, "utf8").matchAll(/from "(\.[^"]+)"/g)) {
       const to = relative(root, resolve(dirname(file), target)).split("/")[0];
-      if (to !== layer && !ALLOWED[layer].includes(to))
+      if (to !== layer && !ALLOWED[layer].includes(to)) {
         bad.push(`${relative(root, file)} -> ${target}`);
+      }
     }
+  }
   expect(bad).toEqual([]);
 });

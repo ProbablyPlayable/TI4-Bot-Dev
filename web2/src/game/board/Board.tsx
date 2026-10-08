@@ -1,9 +1,10 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BoardView, InspectorView } from "../../model";
 import { forceText } from "../../model";
-import { Button, CloseButton, Segmented } from "../../ui";
+import { Button, CloseButton, Hint, Segmented } from "../../ui";
 import { OwnerLabel, useDispatch } from "../context";
 import { GalaxyMap, type MapViewId } from "./GalaxyMap";
+import { PaymentBar } from "./PaymentBar";
 import { useCamera } from "./useCamera";
 
 const MAP_VIEWS: { id: MapViewId; label: string; legend: string }[] = [
@@ -104,8 +105,10 @@ export function Board({
   const svg = useRef<SVGSVGElement>(null);
   const galaxy = useRef<HTMLDivElement>(null);
   const camera = useCamera(svg, galaxy, view.tiles);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the board is framed again only when the data source asks for it
   useLayoutEffect(() => camera.fitFor(view.taskSystems), [view.fitKey]);
   const tool = "h-7 rounded-sm border border-line bg-surface text-base";
+  const payment = view.task?.interactive ? view.task.payment : undefined;
   return (
     <section
       aria-label="Galaxy board"
@@ -119,16 +122,19 @@ export function Board({
           onChange={setMapView}
           className="pointer-events-auto bg-surface"
         />
-      </div>
-      {!view.inspector && (
-        <span className="absolute bottom-3 left-3 z-2 flex max-w-[42%] flex-wrap gap-x-3 gap-y-0.5 text-xs text-faint">
-          <span>{MAP_VIEWS.find((item) => item.id === mapView)!.legend}</span>
-          <span>▼ your command token</span>
-          <span>α β wormholes</span>
-          <span>inner ring: ships of one player · red dashed: contested</span>
+        <span className="pointer-events-auto">
+          <Hint label="Map legend">
+            {MAP_VIEWS.find((item) => item.id === mapView)!.legend} · ▼ your command token · α β
+            wormholes · inner ring: ships of one player · red dashed: contested
+          </Hint>
         </span>
-      )}
-      <div aria-label="Map zoom" className="absolute top-2 right-2.5 z-2 flex gap-[3px]">
+      </div>
+      {payment && <PaymentBar view={payment} />}
+      <div
+        role="group"
+        aria-label="Map zoom"
+        className="absolute top-2 right-2.5 z-2 flex gap-[3px]"
+      >
         <button
           type="button"
           className={`${tool} w-7`}
@@ -166,7 +172,9 @@ export function Board({
         ref={galaxy}
         className="galaxy relative min-h-0 min-w-0 flex-1"
         onClickCapture={(event) => {
-          if (!camera.wasDrag()) return;
+          if (!camera.wasDrag()) {
+            return;
+          }
           event.stopPropagation();
           event.preventDefault();
         }}

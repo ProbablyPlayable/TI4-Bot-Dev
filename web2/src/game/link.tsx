@@ -20,9 +20,13 @@ function createLinkStore(): LinkStore {
   const store: LinkStore = {
     active: new Set(),
     set(tokens) {
-      if (!tokens.length && !store.active.size) return;
+      if (!tokens.length && !store.active.size) {
+        return;
+      }
       store.active = new Set(tokens);
-      listeners.forEach((listener) => listener());
+      for (const listener of listeners) {
+        listener();
+      }
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -51,7 +55,9 @@ export function useLink(tokens: readonly LinkToken[] | undefined) {
     () => !!key && key.split(" ").some((token) => store.active.has(token)),
   );
   const props = useMemo(() => {
-    if (!key) return {};
+    if (!key) {
+      return {};
+    }
     const on = (event: SyntheticEvent) => {
       event.stopPropagation();
       store.set(key.split(" "));

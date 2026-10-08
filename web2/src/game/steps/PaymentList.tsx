@@ -1,43 +1,43 @@
 import type { PaymentView } from "../../model";
-import { Button, Card, cx } from "../../ui";
-import { useDispatch } from "../context";
+import { Card, cx } from "../../ui";
+
+/** The unit of a payment, as a word after the number. */
+export const payUnit = (view: PaymentView) => (view.unit === "resource" ? "resources" : view.unit);
+
+/** How a payment stands: short, exact or more than the cost. The words carry it, not only the colour. */
+export function payState(view: Pick<PaymentView, "cost" | "paid">) {
+  if (view.paid < view.cost) {
+    return { tone: "text-red", border: "border-red/60", label: `${view.cost - view.paid} more` };
+  }
+  if (view.paid > view.cost) {
+    return {
+      tone: "text-orange",
+      border: "border-orange",
+      label: `⚠ ${view.paid - view.cost} wasted`,
+    };
+  }
+  return { tone: "text-green", border: "border-green/60", label: "✓ Paid" };
+}
 
 /**
- * The total of a payment, in one line. The player chooses the planets on the board only.
- * Trade goods are not on the board, so they have one button here.
+ * A payment that is recorded or planned, in one line. An open payment is not here: the board has
+ * its controls, and the footer has its line.
  */
 export function PaymentList({ view }: { view: PaymentView }) {
-  const dispatch = useDispatch();
-  const unit = view.unit === "resource" ? "" : ` ${view.unit}`;
-  const short = view.editable && view.paid < view.cost;
-  const goods = view.goods;
   return (
     <Card className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2">
       <h3 className="text-base font-semibold">{view.title}</h3>
       <span className="min-w-0 flex-1 text-sm text-muted">
-        {view.summary ||
-          (view.editable
-            ? goods?.checked
-              ? ""
-              : "Choose planets on the map"
-            : "No payment needed")}
+        {view.summary || "No payment needed"}
       </span>
-      {goods && (
-        <Button
-          size="sm"
-          tone="quiet"
-          active={goods.checked}
-          aria-pressed={goods.checked}
-          onClick={() => dispatch({ type: "setPayment", source: goods.id, on: !goods.checked })}
-        >
-          {goods.checked ? "✓ " : "+ "}
-          {goods.label}
-        </Button>
-      )}
-      <span className={cx("text-xs tabular-nums", short ? "text-red" : "text-muted")}>
-        Cost {view.cost}
-        {unit} · Paying {view.paid}
-        {view.paid > view.cost ? ` · ${view.paid - view.cost} wasted` : ""}
+      <span className="text-xs text-muted tabular-nums">
+        Cost {view.cost} {payUnit(view)} · Paying {view.paid}
+        {view.paid > view.cost && (
+          <span className={cx("font-semibold", payState(view).tone)}>
+            {" "}
+            · {payState(view).label}
+          </span>
+        )}
       </span>
     </Card>
   );

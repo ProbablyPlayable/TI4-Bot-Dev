@@ -136,6 +136,7 @@ export const MAP: Record<string, MapSystem> = {
     planets: [{ id: "vefut", name: "Vefut", res: 2, inf: 2, owner: "sol" }],
   },
   "33": {
+    token: true,
     q: 1,
     r: -1,
     name: "Corneeq",
@@ -360,7 +361,7 @@ export const SEATS: Record<string, any> = {
     tg: 1,
     comm: [0, 2],
     tokens: [2, 6, 1],
-    ac: 3,
+    ac: 0,
     so: [0, 2],
     planets: 7,
     abilities: [
@@ -371,7 +372,7 @@ export const SEATS: Record<string, any> = {
     leaders: "Agent ready · Commander locked · Hero locked",
   },
   jolnar: {
-    name: "Drew",
+    name: "Bartholomew",
     faction: "Jol-Nar",
     symbol: "✚",
     color: "#b79cf0",
@@ -422,7 +423,7 @@ export const SEATS: Record<string, any> = {
     leaders: "Agent ready · Commander locked · Hero locked",
   },
   yssaril: {
-    name: "Finley",
+    name: "Maximilian Alexander",
     faction: "Yssaril",
     symbol: "♣",
     color: "#f0a6d0",
@@ -653,8 +654,8 @@ export const ORIGIN_IDS = [
   ...new Set(LINES.filter((line) => U[line.type].ship).map((line) => line.origin)),
 ];
 export const RETREATS: Record<Side, string[]> = {
-  att: ["Jord · #1", "Tar’Mann · #23"],
-  def: ["Wellon · #19", "Gravity rift · #41"],
+  att: ["1", "23"],
+  def: ["19", "41"],
 };
 export const SPECS: Record<
   string,
@@ -673,11 +674,108 @@ export const baseData = {
   invasion: { "starpoint:infantry": 1, "newalbion:infantry": 2 },
   production: {
     units: { fighter: 2, infantry: 2 },
-    pay: { goods: true },
+    pay: { goods: 2 },
     place: { infantry: "starpoint", mech: "starpoint" },
   },
 };
+/** What the viewer has staged in a strategy card. Each card uses the fields of its parts. */
+export const blankMine = (number = 1) => ({
+  buy: 0,
+  // Warfare redistributes the pools, so its counters start at the tokens that are there.
+  pools: number === 6 ? { t: 3, f: 4, s: 2 } : { t: 0, f: 0, s: 0 },
+  pay: {},
+  system: null,
+  planets: [],
+  seat: null,
+  seats: [],
+  follow: null,
+  techs: [],
+  counts: {},
+  build: [
+    { type: null, planet: null },
+    { type: "pds", planet: null },
+  ],
+  agenda: [null, null],
+  swap: false,
+  objective: null,
+});
+/** What the other players do with each card in the demo: the primary, and a followed secondary. */
+export const STRATEGY_SIM: Record<number, { primary: string; follow: string }> = {
+  2: {
+    primary:
+      "chose Hercant · #51: each other player placed a command token there. Readied 2 planets.",
+    follow: "readied 2 planets",
+  },
+  3: {
+    primary:
+      "kept the speaker token away from Jamie: Blair is the speaker. Drew 2 action cards and placed 2 agenda cards.",
+    follow: "drew 2 action cards",
+  },
+  4: { primary: "placed a space dock and a PDS.", follow: "placed 1 PDS" },
+  5: {
+    primary:
+      "gained 3 trade goods, replenished commodities and chose Jamie and Blair for a free replenish.",
+    follow: "replenished commodities",
+  },
+  6: {
+    primary: "removed 1 command token from the board, gained 1 and redistributed the pools.",
+    follow: "produced 2 units in the home system",
+  },
+  7: { primary: "researched Gravity Drive.", follow: "researched 1 technology for 4 resources" },
+  8: {
+    primary: "scored Corner the Market and drew 1 secret objective.",
+    follow: "drew 1 secret objective",
+  },
+};
+const STRATEGY_EXAMPLES: Record<string, any> = {
+  // The viewer's primary of each card.
+  ...Object.fromEntries(
+    [2, 3, 4, 5, 6, 7, 8].map((number) => [
+      `live-strategy-${number}`,
+      {
+        mode: "live",
+        kind: "strategic",
+        flow: {
+          card: CARDS[number - 1],
+          number,
+          owner: "sol",
+          stage: "primary",
+          order: SEAT_IDS.slice(1),
+          turn: 0,
+          results: {},
+          mine: {},
+        },
+        tip: "Every part of the card is staged on this screen. Resolve primary sends it. Esc clears the last choice.",
+      },
+    ]),
+  ),
+  // The viewer's secondary on another player's card, drafted before the seat is reached.
+  ...Object.fromEntries(
+    [2, 3, 4, 5, 6, 7, 8].map((number) => [
+      `live-secondary-${number}`,
+      {
+        mode: "live",
+        kind: "strategic",
+        flow: {
+          card: CARDS[number - 1],
+          number,
+          owner: "hacan",
+          // Trade: Alex has resolved the primary and chose the viewer for a free replenish.
+          stage: number === 5 ? "secondary" : "primary",
+          primaryResult: number === 5 ? `Alex ${STRATEGY_SIM[5].primary}` : undefined,
+          free: number === 5 ? ["sol", "xxcha"] : [],
+          order: ["xxcha", "letnev", "sol", ...SEAT_IDS.slice(4)],
+          turn: 0,
+          results: {},
+          mine: {},
+        },
+        tip: "You draft your secondary while the game waits for other players. It resolves by itself when your seat is reached.",
+      },
+    ]),
+  ),
+};
 export const examples: Record<string, any> = {
+  ...STRATEGY_EXAMPLES,
   "draft-combat": {
     mode: "draft",
     route: "hostile",
@@ -789,7 +887,50 @@ export const examples: Record<string, any> = {
     mode: "live",
     kind: "picker",
     flow: {},
-    tip: "Your turn, no action open. A tactical action is one entry: choose it, then click any system on the board. The demo scripts Starpoint and Wellon.",
+    tip: "Your turn, no action open. Press the key on a row, or click it. A choice opens a draft: nothing is sent until the main button of the footer. Esc goes back.",
+  },
+  // A game of four players: two strategy cards for each player, and a hand with more action cards.
+  "live-picker-4p": {
+    mode: "live",
+    kind: "picker",
+    flow: {},
+    table: {
+      seats: ["sol", "hacan", "xxcha", "letnev"],
+      cards: { sol: [1, 5], hacan: [2, 6], xxcha: [3, 7], letnev: [4, 8] },
+      used: [5, 2, 3, 7],
+      actionCards: ["Mining Initiative", "Unexpected Action", "Spy", "Ghost Ship"],
+    },
+    tip: "Four players, two strategy cards each. A strategy card has its number as key. Press A for the list of action cards, then the number of the card.",
+  },
+  "live-decision-offer": {
+    mode: "live",
+    kind: "decision",
+    flow: { owner: "sol", decision: "Merchant Station", stage: "choose", chosen: null, counts: {} },
+    tip: "A decision with answers. The card is on top as printed. Press 1 or 2, then Enter. Esc clears the choice.",
+  },
+  "live-decision-units": {
+    mode: "live",
+    kind: "decision",
+    flow: { owner: "sol", decision: "Fleet supply", stage: "choose", chosen: null, counts: {} },
+    tip: "More ships than the fleet pool allows. Remove ships with the counters until the gauge holds.",
+  },
+  "live-reaction": {
+    mode: "live",
+    kind: "component",
+    flow: {
+      card: "Mining Initiative",
+      owner: "xxcha",
+      stage: "reaction",
+      pending: "Blair gained 3 trade goods for Archon Ren. Trade goods 1 → 4.",
+      reaction: { cards: ["Sabotage"], pick: null },
+    },
+    tip: "Blair plays an action card and you hold Sabotage. Enter passes. Press 1 to stage Sabotage; Enter then plays it.",
+  },
+  "live-waiting": {
+    mode: "live",
+    kind: "waiting",
+    flow: { owner: "xxcha" },
+    tip: "Your turn has ended. Simulate the other players to get the next turn.",
   },
   "live-strategic": {
     mode: "live",
@@ -803,12 +944,11 @@ export const examples: Record<string, any> = {
       results: {},
       mine: { buy: 1, pools: { t: 2, f: 1, s: 1 }, pay: {} },
     },
-    tip: "A strategic action has two steps. Pay on the map, resolve the primary, then watch the secondaries resolve in seat order.",
+    tip: "Pay on the map and resolve the primary. The list shows every seat and what it did; your row opens into the editor.",
   },
   "live-secondary": {
     mode: "live",
     kind: "strategic",
-    show: 1,
     flow: {
       card: "Leadership",
       owner: "hacan",
@@ -839,7 +979,6 @@ export const examples: Record<string, any> = {
   "h-leadership": {
     mode: "live",
     kind: "strategic",
-    show: 1,
     flow: {
       card: "Leadership",
       owner: "hacan",
@@ -858,6 +997,61 @@ export const examples: Record<string, any> = {
     show: 2,
     tip: "Every step keeps its result. Step through barrage and rounds; dice are grouped per unit type.",
   },
+};
+/**
+ * Decisions that use one of the shared shapes: a system on the board, a player in the player
+ * table, a list of answers, or counters with a limit.
+ */
+export const DECISIONS: Record<
+  string,
+  { type: string; text: string; shape: "system" | "seat" | "list" | "units"; ask: string }
+> = {
+  "Unexpected Action": {
+    type: "Action card",
+    text: "Remove 1 of your command tokens from the game board and return it to your reinforcements.",
+    shape: "system",
+    ask: "Choose a system",
+  },
+  Spy: {
+    type: "Action card",
+    text: "Choose 1 player. That player gives you 1 random action card from their hand.",
+    shape: "seat",
+    ask: "Choose a player",
+  },
+  "Merchant Station": {
+    type: "Frontier exploration",
+    text: "You may replenish your commodities, or convert your commodities to trade goods.",
+    shape: "list",
+    ask: "Choose 1 answer",
+  },
+  "Fleet supply": {
+    type: "Rule",
+    text: "The number of your non-fighter ships in a system cannot exceed the number of tokens in your fleet pool.",
+    shape: "units",
+    ask: "Remove ships",
+  },
+};
+
+/** Action cards that are played in a reaction window, with their text. */
+export const REACTION_CARDS: Record<string, string> = {
+  "Direct Hit":
+    "After another player’s ship uses Sustain Damage to cancel a hit of your units: destroy that ship.",
+  "Morale Boost":
+    "At the start of a combat round: apply +1 to the result of each of your unit’s combat rolls during this round.",
+  Sabotage:
+    "When another player plays an action card other than Sabotage: cancel that action card.",
+};
+
+/** Action cards that are played as a component action, with their text. */
+export const ACTION_CARDS: Record<string, string> = {
+  "Mining Initiative": "Gain trade goods equal to the resource value of 1 planet you control.",
+  "Unexpected Action": DECISIONS["Unexpected Action"].text,
+  Spy: DECISIONS.Spy.text,
+  "Ghost Ship":
+    "Place 1 destroyer from your reinforcements in a non-home system that contains a wormhole and no ships of other players.",
+  "Focused Research": "Spend 4 trade goods to research 1 technology.",
+  Plague:
+    "Choose 1 planet that another player controls. Roll 1 die for each infantry on it. Destroy 1 infantry for each result of 6 or greater.",
 };
 export const FACES = [
   7, 2, 9, 4, 10, 3, 8, 1, 6, 9, 5, 2, 8, 4, 10, 1, 7, 3, 6, 9, 2, 5, 8, 4, 1, 10, 6, 3, 7, 9,

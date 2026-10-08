@@ -9,10 +9,10 @@ import type {
   UnitType,
 } from "../../model";
 import { plural } from "../../model";
-import { P, RETREATS, ROLE, SEAT, SIDES, U, clone, other, type Side } from "../data";
+import { P, ROLE, SEAT, SIDES, U, clone, other, type Side } from "../data";
 import { E } from "../loose";
-import type { State } from "../world";
-import { button, toForce } from "./shared";
+import { sysLabel, type State } from "../world";
+import { toForce } from "./shared";
 
 export function oddsView(kind: "space" | "ground", att: any, def: any, caveat: string): OddsView {
   const result = E.odds(kind, att, def);
@@ -141,7 +141,9 @@ export function battleTable(
     const cards = options.meta
       ? `${plural(hand.length, "action card")}${viewer === seat && hand.length ? ": " + hand.join(", ") : ""}`
       : "";
-    if (mod) meta.push({ text: `+${mod.value} to combat rolls · ${mod.source}`, tone: "accent" });
+    if (mod) {
+      meta.push({ text: `+${mod.value} to combat rolls · ${mod.source}`, tone: "accent" });
+    }
     const rolled = Object.keys(rec.targets[name]).length > 0;
     return {
       seat,
@@ -163,6 +165,7 @@ export function battleTable(
     owed: owed ? { hits: owed, seat: SEAT[battle.side as Side] } : null,
     sides: SIDES.map(side),
     notes: rec.notes,
+    hint: rec.hint,
   };
 }
 
@@ -199,41 +202,26 @@ export function battleOffers(state: State, battle: any): BattleOfferView[] {
   const out: BattleOfferView[] = [];
   const viewer: string = E.env.viewer;
   const side = SIDES.find((name) => E.controls(state, name));
-  for (const name of SIDES)
-    if (battle.announced[name] && battle.stage !== "done")
+  for (const name of SIDES) {
+    if (battle.announced[name] && battle.stage !== "done") {
       out.push({
         kind: "note",
         tone: "accent",
         strong: `${viewer === SEAT[name] ? "You" : P[SEAT[name]].name} announced a retreat.`,
-        text: "Surviving ships leave after this round.",
+        hint: "Surviving ships leave after this round.",
       });
+    }
+  }
   if (battle.stage === "pre" && side && battle.kind === "space") {
-    if (battle.boost[side])
+    if (battle.boost[side]) {
       out.push({
         kind: "note",
         tone: "success",
         strong: "Morale Boost played.",
         text: "+1 to each of your combat rolls this round.",
       });
-    else if (state.hands[SEAT[side]].includes("Morale Boost"))
-      out.push({
-        kind: "offer",
-        eyebrow: "Action card · Start of a combat round",
-        title: "Morale Boost",
-        text: "Apply +1 to the result of each of your unit’s combat rolls during this round.",
-        actions: [
-          button({ type: "playCard", card: "Morale Boost" }, "Play Morale Boost", "default"),
-        ],
-      });
+    }
   }
-  if (battle.stage === "reaction" && E.controls(state, battle.reaction.side))
-    out.push({
-      kind: "offer",
-      eyebrow: "Action card · After a ship uses Sustain Damage",
-      title: "Direct Hit",
-      text: `Destroy ${P[SEAT[battle.reaction.target as Side]].name}’s ${U[battle.reaction.type as UnitType].name}, which just sustained damage.`,
-      actions: [],
-    });
   if (battle.stage === "assign" && E.controls(state, battle.side)) {
     const foe = SEAT[other(battle.side)];
     const group = battle.forces[battle.side];
@@ -241,29 +229,24 @@ export function battleOffers(state: State, battle: any): BattleOfferView[] {
       battle.kind === "space" &&
       E.types(group).some((type: UnitType) => U[type].sustain && group[type].n > group[type].dmg) &&
       state.hands[foe].length
-    )
+    ) {
       out.push({
         kind: "note",
         tone: "accent",
         alert: true,
         strong: `${P[foe].name} holds ${plural(state.hands[foe].length, "action card")}.`,
-        text: "A ship that sustains damage can be destroyed by Direct Hit.",
+        hint: "A ship that sustains damage can be destroyed by Direct Hit.",
       });
+    }
   }
-  if (battle.stage === "retreat" && E.controls(state, battle.side))
+  if (battle.stage === "retreat" && E.controls(state, battle.side)) {
     out.push({
       kind: "offer",
       eyebrow: "Retreat",
-      title: "Choose a destination",
+      title: battle.pick ? `Retreat to ${sysLabel(battle.pick)}` : "Choose a system on the board",
       text: "Your surviving ships move to an adjacent system that holds one of your command tokens or none of the enemy’s ships.",
-      actions: RETREATS[battle.side as Side].map((place) => ({
-        ...button(
-          { type: "pickRetreat", destination: place },
-          place,
-          battle.pick === place ? "primary" : "default",
-        ),
-        pressed: battle.pick === place,
-      })),
+      actions: [],
     });
+  }
   return out;
 }

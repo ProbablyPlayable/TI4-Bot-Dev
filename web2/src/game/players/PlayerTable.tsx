@@ -1,6 +1,6 @@
-import type { PlayerRowView, PlayerTableView } from "../../model";
+import type { PlayerPickView, PlayerRowView, PlayerTableView } from "../../model";
 import { cx } from "../../ui";
-import { SeatSymbol, useSeat } from "../context";
+import { SeatSymbol, useDispatch, useSeat } from "../context";
 
 // Full names: the table is wide at the design size (1920×1080). The title explains the format.
 const COLUMNS = [
@@ -16,12 +16,30 @@ const COLUMNS = [
   ["Planets", "Planets"],
 ] as const;
 
-const CELL = "px-2 py-0.5 text-right whitespace-nowrap tabular-nums";
+const CELL = "px-1.5 py-0.5 text-right whitespace-nowrap tabular-nums";
 
-function Row({ row, first, onOpen }: { row: PlayerRowView; first: boolean; onOpen: () => void }) {
+function Row({
+  row,
+  first,
+  pick,
+  onOpen,
+}: {
+  row: PlayerRowView;
+  first: boolean;
+  pick: PlayerPickView | null;
+  onOpen: () => void;
+}) {
   const seat = useSeat(row.seat);
+  const dispatch = useDispatch();
+  // While the task asks for a player, a click on a row chooses that player.
+  const option = pick?.seats[row.seat];
+  const allowed = !!option && option.reason === null;
+  const chosen = !!pick?.chosen.includes(row.seat);
+  const act = pick ? () => allowed && dispatch({ type: "pickSeat", seat: row.seat }) : onOpen;
   const values = [
-    <strong className="text-text">{row.victoryPoints}</strong>,
+    <strong key="vp" className="text-text">
+      {row.victoryPoints}
+    </strong>,
     row.strategyCards.length
       ? row.strategyCards.map((card, index) => (
           <span
@@ -47,10 +65,14 @@ function Row({ row, first, onOpen }: { row: PlayerRowView; first: boolean; onOpe
   const quiet = row.passed ? "text-faint" : undefined;
   return (
     <tr
-      onClick={onOpen}
+      onClick={act}
       className={cx(
-        "group relative cursor-pointer hover:bg-white/5 focus-within:bg-white/5",
-        row.isMe && "bg-cyan/[.07]",
+        "group relative focus-within:bg-white/5",
+        (!pick || allowed) && "cursor-pointer hover:bg-white/5",
+        pick && !allowed && "opacity-45",
+        allowed && !chosen && "shadow-[inset_2px_0_0_var(--color-text)]",
+        chosen && "shadow-[inset_2px_0_0_var(--color-gold)]",
+        row.isMe && !pick && "bg-cyan/[.07]",
         !first && "[&>*]:border-t [&>*]:border-white/[.04]",
       )}
     >
@@ -68,22 +90,48 @@ function Row({ row, first, onOpen }: { row: PlayerRowView; first: boolean; onOpe
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            onOpen();
+            act();
           }}
-          aria-label={`${seat.name}, ${seat.faction}${row.turn === "now" ? ", active player" : ""}${row.speaker ? ", speaker" : ""}${row.passed ? ", passed" : ""}. Open player sheet.`}
+          disabled={!!pick && !allowed}
+          aria-pressed={pick ? chosen : undefined}
+          aria-label={
+            pick
+              ? `${pick.verb} ${seat.name}, ${seat.faction}${option?.reason ? `. ${option.reason}` : ""}`
+              : `${seat.name}, ${seat.faction}${row.turn === "now" ? ", active player" : ""}${row.speaker ? ", speaker" : ""}${row.passed ? ", passed" : ""}. Open player sheet.`
+          }
           className="flex w-full min-w-0 items-baseline gap-[5px] overflow-hidden text-left text-xs focus-visible:outline-offset-1"
         >
           <SeatSymbol seat={row.seat} />
-          <span className={cx("font-strong", quiet)}>{seat.name}</span>
-          <span className={cx("min-w-0 truncate", quiet ?? "text-muted")}>{seat.faction}</span>
+          <span className={cx("w-[84px] flex-none truncate font-strong", quiet)} title={seat.name}>
+            {seat.name}
+          </span>
+          {/* While the table is the picker, the row has what the choice gives in this place. */}
+          {!pick && (
+            <span className={cx("min-w-0 truncate", quiet ?? "text-muted")}>{seat.faction}</span>
+          )}
           {row.speaker && (
-            <span className="text-2xs text-gold" title="Speaker">
+            <span className="min-w-0 truncate text-2xs text-gold" title="Speaker">
               Speaker
             </span>
           )}
           {row.passed && <span className="text-2xs text-faint">passed</span>}
+          {option?.reason && (
+            <span className="flex-none text-2xs whitespace-nowrap text-red">{option.reason}</span>
+          )}
+          {option?.note && !option.reason && (
+            <span className="flex-none text-2xs whitespace-nowrap text-text tabular-nums">
+              {option.note}
+            </span>
+          )}
+          {chosen && <span className="flex-none text-2xs font-bold text-gold">Selected</span>}
         </button>
-        <div className="absolute top-0 right-[calc(100%+6px)] z-20 hidden w-[min(340px,90vw)] cursor-default rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-[0_10px_30px_#0008] group-focus-within:block group-hover:block">
+        <div
+          className={cx(
+            "absolute top-0 right-[calc(100%+6px)] z-20 hidden w-[min(340px,90vw)] cursor-default rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-[0_10px_30px_#0008]",
+            // While the table is the picker, the sheet of a player does not cover the board.
+            !pick && "group-focus-within:block group-hover:block",
+          )}
+        >
           <strong>
             <SeatSymbol seat={row.seat} /> {seat.name} · {seat.faction}
           </strong>
@@ -120,7 +168,9 @@ export function PlayerTable({
   onToggle: () => void;
   onOpenSeat: (seat: string) => void;
 }) {
-  const shown = open ? view.rows : view.rows.filter((row) => row.isMe || row.turn === "now");
+  // While the task asks for a player, every row is in view.
+  const shown =
+    open || view.pick ? view.rows : view.rows.filter((row) => row.isMe || row.turn === "now");
   const hint = open ? "Show only you and the active player" : "Show all players";
   const head = "border-b border-line py-[3px] text-2xs font-semibold text-faint";
   return (
@@ -147,8 +197,7 @@ export function PlayerTable({
               <th
                 key={label}
                 scope="col"
-                title={title}
-                className={cx(head, "px-2 text-right whitespace-nowrap")}
+                className={cx(head, "px-1.5 text-right whitespace-nowrap")}
               >
                 <abbr title={title} className="cursor-help no-underline">
                   {label}
@@ -159,7 +208,13 @@ export function PlayerTable({
         </thead>
         <tbody>
           {shown.map((row, index) => (
-            <Row key={row.seat} row={row} first={index === 0} onOpen={() => onOpenSeat(row.seat)} />
+            <Row
+              key={row.seat}
+              row={row}
+              first={index === 0}
+              pick={view.pick}
+              onOpen={() => onOpenSeat(row.seat)}
+            />
           ))}
         </tbody>
       </table>

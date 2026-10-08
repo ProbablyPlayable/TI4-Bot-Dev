@@ -1,15 +1,18 @@
+import { payState } from "../steps/PaymentList";
 import { useEffect, useRef, type ReactNode } from "react";
 import type {
   ActionView,
   FooterView,
   HelpView,
+  InterruptView,
   PillView,
   StepContentView,
   TaskView,
 } from "../../model";
-import { Badge, Button, Hint, StepTabs, Trail, cx, type TrailItem } from "../../ui";
+import { Badge, Button, Eyebrow, Hint, StepTabs, Trail, cx, type TrailItem } from "../../ui";
 import { ActionButton, useDispatch } from "../context";
 import { Blocks } from "../flows/Blocks";
+import { useLink } from "../link";
 import { ActivationStep } from "../steps/ActivationStep";
 import { InvasionStep, SpaceCombatStep } from "../steps/BattleSteps";
 import { MovementStep } from "../steps/MovementStep";
@@ -30,8 +33,32 @@ function StepContent({ view }: { view: StepContentView }) {
   }
 }
 
+/** A reaction window on top of the open action: the trigger, and the cards that can be played now. */
+function Interrupt({ view }: { view: InterruptView }) {
+  const { linked, props } = useLink(view.link);
+  return (
+    <div
+      role="group"
+      aria-label={view.eyebrow}
+      className={cx("border-b border-cyan/30 bg-cyan/[.05] px-5 py-2.5", linked && "bg-cyan/[.09]")}
+      {...props}
+    >
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <Eyebrow className="text-cyan">{view.eyebrow}</Eyebrow>
+        <span className="flex gap-1.5">
+          {view.actions.map((action) => (
+            <ActionButton key={action.label} view={action} size="sm" />
+          ))}
+        </span>
+      </div>
+      <Blocks blocks={view.blocks} />
+    </div>
+  );
+}
+
 interface TaskPanelProps {
   heading: string;
+  interrupt: InterruptView | null;
   pill: PillView | null;
   trail: TrailItem[];
   edit?: TaskView["edit"];
@@ -48,6 +75,7 @@ interface TaskPanelProps {
 /** The open step: heading with its state, the content, and a footer that says what the main button does. */
 function TaskPanel({
   heading,
+  interrupt,
   pill,
   trail,
   edit,
@@ -61,10 +89,11 @@ function TaskPanel({
   const dispatch = useDispatch();
   const content = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (reveal)
+    if (reveal) {
       content.current
         ?.querySelector(`[data-link~="${reveal}"]`)
         ?.scrollIntoView({ block: "nearest" });
+    }
   }, [reveal]);
   return (
     <section
@@ -102,6 +131,7 @@ function TaskPanel({
           </Button>
         )}
       </div>
+      {interrupt && <Interrupt view={interrupt} />}
       <div
         key={contentKey}
         ref={content}
@@ -110,12 +140,26 @@ function TaskPanel({
         {children}
       </div>
       <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5">
-        <span
-          id="footer-note"
-          role={footer.error ? "status" : undefined}
-          className={cx("text-sm", footer.error ? "text-red" : "text-muted")}
-        >
-          {footer.note}
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 text-sm">
+          {footer.payment && (
+            // The open payment in one line. Its controls are on the board.
+            <span className="whitespace-nowrap text-muted">
+              <strong className="font-semibold text-text">Payment</strong>{" "}
+              {footer.payment.summary || "nothing staged"} ·{" "}
+              <span className={cx("font-semibold tabular-nums", payState(footer.payment).tone)}>
+                {footer.payment.paid} / {footer.payment.cost}
+                {footer.payment.paid > footer.payment.cost &&
+                  ` · ${payState(footer.payment).label}`}
+              </span>
+            </span>
+          )}
+          <span
+            id="footer-note"
+            role={footer.error ? "status" : undefined}
+            className={footer.error ? "text-red" : "text-muted"}
+          >
+            {footer.note}
+          </span>
         </span>
         <div className="flex shrink-0 items-center gap-2">
           {footer.actions.map((action) => (
@@ -190,6 +234,7 @@ export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string
       {view.kind === "tactical" ? (
         <TaskPanel
           heading={view.task.title}
+          interrupt={view.interrupt}
           pill={view.task.pill}
           trail={view.task.trail}
           edit={view.task.edit}
@@ -200,18 +245,21 @@ export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string
           reveal={reveal}
         >
           <StepContent view={view.task.content} />
+          <Blocks blocks={view.closing} />
         </TaskPanel>
       ) : (
         <TaskPanel
           heading={view.heading}
+          interrupt={view.interrupt}
           pill={view.pill}
-          trail={view.trail}
+          trail={[]}
           help={view.help}
           footer={view.footer}
           contentKey={view.contentKey}
           reveal={reveal}
         >
           <Blocks blocks={view.blocks} />
+          <Blocks blocks={view.closing} />
         </TaskPanel>
       )}
     </aside>

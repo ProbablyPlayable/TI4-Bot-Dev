@@ -8,6 +8,7 @@ import {
   Die,
   Gauge,
   Gauges,
+  Hint,
   Icon,
   InlineNote,
   ListRow,
@@ -62,7 +63,7 @@ function MoveRow({ row }: { row: MoveRowView }) {
                 tone="loss"
                 title="One die for each rift the ship leaves. The ship and its cargo are destroyed on 1–3."
               >
-                Rift roll · destroyed on 1–3
+                Rift roll 1–3
               </Pill>
             )}
           </div>
@@ -78,7 +79,7 @@ function MoveRow({ row }: { row: MoveRowView }) {
             )}
             <Counter
               {...row.counter}
-              onChange={(value) => dispatch({ type: "setCount", key: row.key, value })}
+              onChange={(value) => dispatch({ type: "setCount", key: row.counter!.id, value })}
             />
           </>
         ) : (
@@ -109,7 +110,7 @@ function SubHeading({ system, children }: { system?: string; children: React.Rea
 function Origin({ origin }: { origin: OriginView }) {
   const dispatch = useDispatch();
   const { linked, props } = useLink([`sys:${origin.system}`]);
-  if (origin.collapsed)
+  if (origin.collapsed) {
     return (
       <button
         type="button"
@@ -128,6 +129,7 @@ function Origin({ origin }: { origin: OriginView }) {
         <span className="ml-auto text-accent">Show</span>
       </button>
     );
+  }
   return (
     <Card {...props}>
       <CardHeading title={origin.label} bad={origin.cargo > origin.capacity}>
@@ -212,11 +214,13 @@ export function MovementStep({ view }: { view: MovementView }) {
         <InlineNote
           strong={
             <>
-              <Icon name="alert" /> {plural(view.riftRolls, "rift roll")}.
+              <Icon name="alert" /> {plural(view.riftRolls, "rift roll")}
             </>
           }
         >
-          Each ship that leaves a gravity rift is destroyed on 1–3, with its cargo.
+          <Hint label="About rift rolls">
+            Each ship that leaves a gravity rift is destroyed on 1–3, with its cargo.
+          </Hint>
         </InlineNote>
       )}
       {view.rift && (

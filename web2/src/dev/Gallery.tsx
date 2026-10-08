@@ -6,7 +6,6 @@ import {
   CardBody,
   CardHeading,
   CardText,
-  CheckRow,
   Hint,
   ChipTabs,
   Counter,
@@ -17,6 +16,7 @@ import {
   ICON_NAMES,
   Icon,
   InlineNote,
+  Kbd,
   ListRow,
   Menu,
   Offer,
@@ -49,7 +49,6 @@ export function Gallery() {
   const [count, setCount] = useState(2);
   const [view, setView] = useState("b");
   const [step, setStep] = useState(1);
-  const [checked, setChecked] = useState(true);
   const accents = [
     ["Draft", "var(--color-gold)"],
     ["Live", "var(--color-cyan)"],
@@ -107,6 +106,17 @@ export function Gallery() {
                     {tone}
                   </Badge>
                 ))}
+              </Line>
+              <Line>
+                <Button>
+                  Choose <Kbd>t</Kbd>
+                </Button>
+                <Button tone="quiet">
+                  Back to actions <Kbd>Escape</Kbd>
+                </Button>
+                <Button tone="primary" iconAfter="arrow">
+                  End turn <Kbd>Enter</Kbd>
+                </Button>
               </Line>
               <Line>
                 <Pill>plain</Pill>
@@ -179,24 +189,6 @@ export function Gallery() {
                       onChange={setView}
                     />
                   }
-                />
-              </Card>
-              <Card>
-                <CardHeading title="Payment" bad>
-                  Cost 3 · Paying 2
-                </CardHeading>
-                <CheckRow
-                  checked={checked}
-                  onChange={() => setChecked(!checked)}
-                  title="Spend 2 trade goods"
-                  aside="2 resources"
-                />
-                <CheckRow
-                  checked={false}
-                  onChange={() => {}}
-                  title="Exhaust Jord"
-                  aside="4 resources · gives up 2 influence"
-                  linked
                 />
               </Card>
               <Card>

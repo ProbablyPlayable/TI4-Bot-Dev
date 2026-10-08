@@ -1,4 +1,4 @@
-import type { HTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 import { cx } from "./cx";
 import { Icon, type IconName } from "./Icon";
 
@@ -58,31 +58,4 @@ export function ListRow({
 
 export function Quantity({ count }: { count: number }) {
   return <span className="font-mid tabular-nums">× {count}</span>;
-}
-
-export interface CheckRowProps extends Omit<
-  InputHTMLAttributes<HTMLInputElement>,
-  "title" | "type"
-> {
-  title: ReactNode;
-  aside?: ReactNode;
-  linked?: boolean;
-  rowProps?: HTMLAttributes<HTMLLabelElement>;
-}
-
-/** A whole-row checkbox: a payment source, a card to exhaust. */
-export function CheckRow({ title, aside, linked, rowProps, ...input }: CheckRowProps) {
-  return (
-    <label
-      {...rowProps}
-      className={cx(
-        "check flex cursor-pointer items-center gap-2.5 px-3.5 py-2 text-sm [.check+&]:border-t [.check+&]:border-line",
-        linked && "bg-cyan/[.06]",
-      )}
-    >
-      <input type="checkbox" className="m-0 size-[15px] accent-(--accent)" {...input} />
-      <strong className="font-mid">{title}</strong>
-      {aside != null && <span className="ml-auto text-xs text-muted">{aside}</span>}
-    </label>
-  );
 }

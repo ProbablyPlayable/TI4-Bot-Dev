@@ -8,9 +8,17 @@ import type {
   ShellView,
   ToolbarView,
 } from "../../model";
-import { CARDS, HISTORY, SEATS, SEAT_IDS } from "../data";
+import { ACTION_CARDS, CARDS, HISTORY, REACTION_CARDS, SEATS } from "../data";
 import { E } from "../loose";
-import { currentState, pastState, type State, type World } from "../world";
+import { OBJECTIVES, strategyEditor } from "../strategy";
+import {
+  currentState,
+  decisionShape,
+  pastState,
+  seatReason,
+  type State,
+  type World,
+} from "../world";
 import { selectBoard } from "./board";
 import { selectFlow } from "./flows";
 import { isTactical, seatViews, stagesOf, statusText, summaryOf } from "./shared";
@@ -18,7 +26,16 @@ import { applyItems, selectTactical } from "./tactical";
 
 const actor = (state: State): string => state.flow?.owner || "sol";
 
-function cardOwners(state: State) {
+/** Who holds each strategy card, by index (card number − 1). Free cards have no owner. */
+function cardOwners(world: World, state: State) {
+  const table = world.table;
+  if (table.cards) {
+    return CARDS.map((_, index) => ({
+      owner: table.seats.find((seat) => table.cards![seat]?.includes(index + 1)) ?? "",
+      used: world.usedCards.includes(index + 1),
+      tg: 0,
+    }));
+  }
   const owners = (
     [
       ["sol"],
@@ -31,9 +48,16 @@ function cardOwners(state: State) {
       ["naalu"],
     ] as [string, boolean?, number?][]
   ).map(([owner, used, tg]) => ({ owner, used: !!used, tg: tg ?? 0 }));
-  if (state.flow?.card === "Leadership") {
-    if (state.flow.owner === "hacan") [owners[0].owner, owners[4].owner] = ["hacan", "sol"];
-    owners[0].used = true;
+  if (state.kind === "strategic") {
+    // The open card is with the player who plays it; that player's card goes to the other seat.
+    const at = (state.flow.number ?? 1) - 1;
+    const other = owners.findIndex((item) => item.owner === state.flow.owner);
+    [owners[at].owner, owners[other].owner] = [owners[other].owner, owners[at].owner];
+    owners[other].used = owners[at].used;
+    owners[at].used = true;
+  }
+  for (const number of world.usedCards) {
+    owners[number - 1].used = true;
   }
   return owners;
 }
@@ -60,18 +84,32 @@ function toolbar(world: World, state: State): ToolbarView {
 
 /** One row for each player, in seat order. Rows do not move. */
 function players(world: World, state: State): PlayerTableView {
-  const owners = cardOwners(state);
+  const owners = cardOwners(world, state);
+  const seats = world.table.seats;
   const now = world.mode === "history" ? null : actor(state);
+  // The lowest card of a seat gives its place in the initiative order.
   const card = (seat: string) => owners.findIndex((item) => item.owner === seat);
-  const queue = SEAT_IDS.filter((seat) => !SEATS[seat].passed && card(seat) >= 0).sort(
-    (a, b) => card(a) - card(b),
-  );
+  const queue = seats
+    .filter((seat) => !SEATS[seat].passed && card(seat) >= 0)
+    .sort((a, b) => card(a) - card(b));
   const next = now && queue.length > 1 ? queue[(queue.indexOf(now) + 1) % queue.length] : null;
   const me = world.viewer === "observer" ? "sol" : world.viewer;
+  const picking = world.mode === "live" && decisionShape(state) === "seat";
   return {
-    rows: SEAT_IDS.map((seat) => {
+    pick:
+      world.mode === "live" && state.kind === "strategic" && E.flowEditing(state)
+        ? strategyEditor(state, seats).pick
+        : picking
+          ? {
+              verb: "Choose",
+              seats: Object.fromEntries(
+                seats.map((seat) => [seat, { reason: seatReason(world, seat) }]),
+              ),
+              chosen: state.flow.chosen ? [state.flow.chosen] : [],
+            }
+          : null,
+    rows: seats.map((seat) => {
       const player = SEATS[seat];
-      const index = card(seat);
       const tokens =
         seat === "sol" && isTactical(state) && state.mode === "live" && state.done[0]
           ? [player.tokens[0] - 1, ...player.tokens.slice(1)]
@@ -83,8 +121,9 @@ function players(world: World, state: State): PlayerTableView {
         speaker: !!player.speaker,
         passed: !!player.passed,
         victoryPoints: player.vp,
-        strategyCards:
-          index < 0 ? [] : [{ number: index + 1, name: CARDS[index], used: owners[index].used }],
+        strategyCards: owners.flatMap((item, index) =>
+          item.owner === seat ? [{ number: index + 1, name: CARDS[index], used: item.used }] : [],
+        ),
         resources: player.res,
         influence: player.inf,
         tradeGoods: player.tg,
@@ -105,6 +144,8 @@ function players(world: World, state: State): PlayerTableView {
 }
 
 function reference(world: World, state: State): ReferenceView {
+  // The hand of the viewer. The demo has hands for the two sides of the battle only.
+  const hand: string[] = state.hands[world.viewer] ?? [];
   const sym = (seat: string) => ({ seat });
   const section = (title: string, rows: (Rich | string)[]): ListSectionView => ({
     title,
@@ -117,6 +158,7 @@ function reference(world: World, state: State): ReferenceView {
     "Ghost Ship": "place 1 destroyer in a wormhole system",
   };
   const live = world.workspaces.live;
+  const seats = world.table.seats;
   const entry = (item: (typeof HISTORY)[number]): LogEntryView => {
     const past = pastState(item);
     return {
@@ -129,7 +171,7 @@ function reference(world: World, state: State): ReferenceView {
     };
   };
   const current: LogEntryView[] =
-    live.kind !== "picker"
+    live.kind !== "picker" && live.kind !== "waiting"
       ? [
           {
             id: "current",
@@ -143,40 +185,38 @@ function reference(world: World, state: State): ReferenceView {
       : [];
   return {
     objectives: [
-      section("Public objectives · stage I", [
-        [
-          "Corner the Market · 4 planets with the same trait · scored by ",
-          sym("hacan"),
-          " ",
-          sym("xxcha"),
-        ],
-        ["Develop Weaponry · 2 unit upgrades · scored by ", sym("sol")],
-        ["Sway the Council · spend 8 influence · scored by ", sym("hacan"), " ", sym("xxcha")],
-        "Erect a Monument · spend 8 resources · not scored",
-      ]),
+      section(
+        "Public objectives · stage I",
+        OBJECTIVES.map((item): Rich => [
+          `${item.name} · ${item.text} · ${item.scored.length ? "scored by " : "not scored"}`,
+          ...item.scored.flatMap((seat) => [sym(seat), " "]),
+        ]),
+      ),
       section("Your secret objectives", [
         "Destroy Their Greatest Ship · scored",
         "Occupy the Seat of the Empire · not scored",
       ]),
       section(
         "Points",
-        SEAT_IDS.map((id) => [
+        seats.map((id) => [
           sym(id),
           ` ${SEATS[id].name} · ${SEATS[id].vp} of 10 · ${SEATS[id].so[0]} from secrets`,
         ]),
       ),
     ],
-    technology: SEAT_IDS.map((id) =>
+    technology: seats.map((id) =>
       section(`${SEATS[id].name} · ${SEATS[id].faction}`, SEATS[id].tech),
     ),
     cards: [
       section(
         "Your action cards",
-        state.hands.sol.map((card: string) => `${card} · ${cardText[card] || ""}`),
+        [...(E.own() ? world.table.actionCards : []), ...hand].map(
+          (card: string) => `${card} · ${cardText[card] || ACTION_CARDS[card] || ""}`,
+        ),
       ),
       section(
         "Strategy cards",
-        cardOwners(state).map((card, index): Rich =>
+        cardOwners(world, state).map((card, index): Rich =>
           card.owner
             ? [
                 `${index + 1} ${CARDS[index]} · `,
@@ -191,12 +231,20 @@ function reference(world: World, state: State): ReferenceView {
         "Ceasefire (Sol) · held by Blair",
       ]),
     ],
+    offerCards: hand
+      .filter((card: string) => REACTION_CARDS[card])
+      .map((card: string) => ({
+        card,
+        text: REACTION_CARDS[card],
+        never: world.neverOffer.includes(card),
+      })),
     log: [3, 2].map((round) => ({
       round,
+      current: round === 3,
       label: `Round ${round}${round === 3 ? " · Action phase" : " · complete"}`,
       entries: [
         ...(round === 3 ? current : []),
-        ...HISTORY.filter((item) => item.round === round).map(entry),
+        ...HISTORY.filter((item) => item.round === round && seats.includes(item.seat)).map(entry),
       ],
     })),
   };
@@ -204,6 +252,7 @@ function reference(world: World, state: State): ReferenceView {
 
 export function selectShell(world: World): ShellView {
   E.env.viewer = world.viewer;
+  E.env.neverOffer = world.neverOffer;
   const state = currentState(world);
   const tactical = isTactical(state);
   const canApply =
@@ -214,7 +263,15 @@ export function selectShell(world: World): ShellView {
     !state.edit;
   return {
     seats: seatViews,
-    accent: state.mode === "draft" ? "draft" : state.frontier === null ? "done" : "live",
+    accent:
+      state.mode === "draft" ||
+      E.flowStaged(state) ||
+      E.decisionStaged(state) ||
+      E.reactionPick(state)
+        ? "draft"
+        : state.frontier === null
+          ? "done"
+          : "live",
     toolbar: toolbar(world, state),
     players: players(world, state),
     board: selectBoard(world, state),

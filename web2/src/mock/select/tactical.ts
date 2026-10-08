@@ -27,7 +27,6 @@ import {
   MAP,
   ORIGIN_IDS,
   P,
-  PAY,
   SEAT,
   SEATS,
   SIDES,
@@ -43,7 +42,20 @@ import {
 import { E } from "../loose";
 import { sysLabel, type State, type World } from "../world";
 import { battleOffers, battleTable, oddsView, outcomeView } from "./battle";
-import { button, countsForce, mine, stepCaption, systemName, waitingFor } from "./shared";
+import {
+  END_TURN,
+  battleReaction,
+  button,
+  paySummary,
+  productionPayment,
+  closingBlocks,
+  countsForce,
+  mine,
+  stepCaption,
+  systemName,
+  waitingFor,
+  withKeys,
+} from "./shared";
 
 type Trail = TaskView["trail"];
 
@@ -56,17 +68,21 @@ function activation(state: State): ActivationView {
     kind: "activation" as const,
     editing,
     draft,
+    tacticPool: [SEATS.sol.tokens[0], SEATS.sol.tokens[0] - 1] as [number, number],
     systems: Object.keys(MAP).map((id) => ({ id, label: sysLabel(id) })),
   };
-  if (!editing)
+  if (!editing) {
     return {
       ...base,
       chosen: null,
       active: { system: state.data.activation.system, name: systemName(state) },
     };
+  }
   const id: string | null = state.edit.value.system;
   const system = id ? MAP[id] : null;
-  if (!id || !system) return { ...base, chosen: null, active: null };
+  if (!id || !system) {
+    return { ...base, chosen: null, active: null };
+  }
   const fleets = E.others(state, id);
   const range = system.token ? { ships: 0, systems: 0 } : E.reach(state, id);
   const facts =
@@ -128,7 +144,9 @@ function movement(state: State): MovementView {
     const count: number = data[key] || 0;
     const max: number = Math.max(0, E.available(state, data, key));
     const bad = count > max;
-    if (!count && (!editing || !line.n)) return null;
+    if (!count && (!editing || !line.n)) {
+      return null;
+    }
     const name = E.unitName(line.type, editing ? 1 : count);
     const subtitle = !editing
       ? read
@@ -157,7 +175,9 @@ function movement(state: State): MovementView {
     const count: number = data[line.id] || 0;
     const max: number = info.routes.length ? line.n : 0;
     const bad = count > max;
-    if (!count && (!editing || !max)) return null;
+    if (!count && (!editing || !max)) {
+      return null;
+    }
     const path: string[] | undefined = E.chosen(state, data, line);
     const exits: string[] = path ? E.rifts(path) : [];
     const unit = U[line.type];
@@ -223,7 +243,7 @@ function movement(state: State): MovementView {
       capacity: total.capacity,
       carriers: total.carriers,
     };
-    if (!open)
+    if (!open) {
       return {
         ...base,
         collapsed: {
@@ -236,6 +256,7 @@ function movement(state: State): MovementView {
         pickups: [],
         stays: [],
       };
+    }
     const sites: string[] = E.pickupSites(state, data, origin);
     const stray = entries.filter(
       (entry) =>
@@ -299,23 +320,25 @@ function movement(state: State): MovementView {
   const pds = state.planets.find((planet: any) => E.hostile(planet) && E.shielded(planet));
   const riftName = (ship: any) => lineById[ship.line].label || E.unitName(ship.type);
   let rift: MovementView["rift"] = null;
-  if (!editing && state.rift)
+  if (!editing && state.rift) {
     rift = state.rift.map((ship: any) => ({
       unit: ship.type,
       name: riftName(ship),
       text: `From ${MAP[lineById[ship.line].origin].name} · left gravity rift #${ship.rift} · survives on 4+`,
       roll: { face: ship.face, lost: ship.lost },
     }));
-  else if (!editing && state.boundary === "rift")
+  } else if (!editing && state.boundary === "rift") {
     rift = exits.map((ship) => ({
       unit: ship.type,
       name: riftName(ship),
       text: `From ${MAP[lineById[ship.line].origin].name} · leaves gravity rift #${ship.rift}`,
       roll: null,
     }));
+  }
   let cannon: MovementView["cannon"] = null;
-  if (!editing && state.cannon) cannon = battleTable(state, state.cannon);
-  else if (!editing && state.boundary === "cannon")
+  if (!editing && state.cannon) {
+    cannon = battleTable(state, state.cannon);
+  } else if (!editing && state.boundary === "cannon") {
     cannon = battleTable(
       state,
       E.preview(
@@ -324,6 +347,7 @@ function movement(state: State): MovementView {
         { def: SPECS.cannon },
       ),
     );
+  }
   return {
     kind: "movement",
     editing,
@@ -360,10 +384,12 @@ function combat(state: State): CombatView {
     offers: [],
     revision: `${state.rev || 0}`,
   };
-  if (state.skipped[2]) return { ...base, skipped: skippedText(state.skipped[2]), records: [] };
+  if (state.skipped[2]) {
+    return { ...base, skipped: skippedText(state.skipped[2]), records: [] };
+  }
   const battle = state.battle;
   const both = { att: SPECS.combat, def: SPECS.combat };
-  if (!battle)
+  if (!battle) {
     return {
       ...base,
       records: [
@@ -379,8 +405,11 @@ function combat(state: State): CombatView {
         },
       ],
     };
+  }
   const tabs: [string, string][] = battle.records.map((rec: any) => [rec.key, rec.label]);
-  if (battle.stage === "pre") tabs.push(["next", `Round ${battle.round} · next`]);
+  if (battle.stage === "pre") {
+    tabs.push(["next", `Round ${battle.round} · next`]);
+  }
   const latest = tabs.at(-1)![0];
   const records = tabs.map(([key, label]): BattleRecordView => {
     const rec =
@@ -419,7 +448,9 @@ function invasion(state: State): InvasionView {
     plannedNote: false,
     revision: `${state.rev || 0}`,
   };
-  if (state.skipped[3]) return { ...base, skipped: skippedText(state.skipped[3]) };
+  if (state.skipped[3]) {
+    return { ...base, skipped: skippedText(state.skipped[3]) };
+  }
   const editing = state.edit?.step === 3;
   const data = E.editedData(state, 3);
   const inv = state.inv;
@@ -460,13 +491,22 @@ function invasion(state: State): InvasionView {
         })
       : [];
     let projection: InvasionPlanetView["projection"] = null;
-    if (editing || state.boundary === "ground")
+    if (editing || state.boundary === "ground") {
       projection =
         !enemy || !E.size(planet.units)
           ? { note: "No ground combat expected here." }
           : !E.size(troops)
             ? { note: "Stage forces to see projected odds." }
             : {
+                table: battleTable(
+                  state,
+                  E.preview(
+                    "Ground combat · Round 1",
+                    { att: troops, def: planet.units },
+                    { att: SPECS.ground, def: SPECS.ground },
+                  ),
+                  { meta: "ground" },
+                ),
                 odds: oddsView(
                   "ground",
                   troops,
@@ -474,6 +514,7 @@ function invasion(state: State): InvasionView {
                   "no action cards or space cannon defense",
                 ),
               };
+    }
     const recs: any[] = [...(inv.records[planet.id] || []), ...(battle?.records || [])];
     const records = recs.map((rec): BattleRecordView => {
       const ground = battle?.records.includes(rec);
@@ -489,7 +530,7 @@ function invasion(state: State): InvasionView {
     });
     let preview: InvasionPlanetView["preview"] = null;
     if (enemy && E.size(planet.units)) {
-      if (state.boundary === "bombard")
+      if (state.boundary === "bombard") {
         preview = battleTable(
           state,
           E.preview(
@@ -507,7 +548,8 @@ function invasion(state: State): InvasionView {
             { att: SPECS.bombard },
           ),
         );
-      if (state.boundary === "cannon-defense" && E.size(troops))
+      }
+      if (state.boundary === "cannon-defense" && E.size(troops)) {
         preview = battleTable(
           state,
           E.preview(
@@ -516,16 +558,7 @@ function invasion(state: State): InvasionView {
             { def: SPECS.cannon },
           ),
         );
-      if (state.boundary === "ground" && E.size(troops))
-        preview = battleTable(
-          state,
-          E.preview(
-            "Ground combat · Round 1",
-            { att: troops, def: planet.units },
-            { att: SPECS.ground, def: SPECS.ground },
-          ),
-          { meta: "ground" },
-        );
+      }
     }
     const kind: string | undefined = inv.results[planet.id];
     const outcome = kind
@@ -548,14 +581,18 @@ function invasion(state: State): InvasionView {
             : "",
       },
     ];
-    if (structures) facts.push({ text: structures });
-    if (inv.bombard[planet.id])
+    if (structures) {
+      facts.push({ text: structures });
+    }
+    if (inv.bombard[planet.id]) {
       facts.push({ text: `Bombardment skipped · ${inv.bombard[planet.id]}` });
-    if (!editing)
+    }
+    if (!editing) {
       facts.push({
         label: `${committed && !draft ? "Landed" : draft ? "Planned to land" : "Staged"}: `,
         strong: E.list(troops),
       });
+    }
     return {
       id: planet.id,
       name: planet.name,
@@ -606,10 +643,13 @@ function production(state: State): ProductionView {
       editable: false,
       summary: "",
       goods: null,
+      actions: [],
     },
     done: null,
   };
-  if (state.skipped[4]) return { ...empty, skipped: skippedText(state.skipped[4]) };
+  if (state.skipped[4]) {
+    return { ...empty, skipped: skippedText(state.skipped[4]) };
+  }
   const editing = state.edit?.step === 4;
   const data = E.editedData(state, 4);
   const total = E.productionTotals(state, data);
@@ -636,7 +676,6 @@ function production(state: State): ProductionView {
               id: `units.${type}`,
               value: count,
               max: STOCK[type]!,
-              step: unit.per || 1,
               label: unit.name,
             }
           : null,
@@ -671,17 +710,9 @@ function production(state: State): ProductionView {
       paid: total.paid,
       unit: "resource",
       editable: editing,
-      // While the player edits, the trade goods are a control, so the text names the planets only.
-      summary: PAY.filter((source) => data.pay[source.id] && (source.system || !editing))
-        .map((source) => `${source.label.replace(/^Spend |^Exhaust /, "")} ${source.res}`)
-        .join(" + "),
-      goods: editing
-        ? (PAY.filter((source) => !source.system).map((source) => ({
-            id: source.id,
-            label: source.label.replace(/^Spend /, ""),
-            checked: !!data.pay[source.id],
-          }))[0] ?? null)
-        : null,
+      summary: paySummary(data.pay),
+      goods: null,
+      actions: [],
     },
     done:
       done && !editing
@@ -698,7 +729,9 @@ function stepTrail(state: State, step: number): Trail {
   const editing = state.edit?.step === step;
   const over = status === "done";
   const mark = (active: boolean): TrailStatus => (over ? "complete" : active ? "active" : "todo");
-  if (status === "skipped" || status === "future") return [];
+  if (status === "skipped" || status === "future") {
+    return [];
+  }
   if (step === 1) {
     const pds = state.planets.some((planet: any) => E.hostile(planet) && E.shielded(planet));
     const cannon = state.boundary === "cannon";
@@ -802,11 +835,12 @@ function stepTrail(state: State, step: number): Trail {
       { label: "Control", status: over ? "complete" : "todo" },
     ];
   }
-  if (step === 4)
+  if (step === 4) {
     return ["Build units", "Payment", "Placement"].map((label) => ({
       label,
       status: mark(editing),
     }));
+  }
   return [];
 }
 
@@ -819,7 +853,7 @@ function stepHelp(state: State, step: number): HelpView[] {
 function stepLede(state: State, step: number): string {
   const status = E.stepState(state, step);
   const editing = state.edit?.step === step;
-  if (status === "boundary")
+  if (status === "boundary") {
     return (
       (
         {
@@ -834,10 +868,13 @@ function stepLede(state: State, step: number): string {
       )[state.boundary] +
       " The draft holds no dice and no predicted winner. Apply to continue in Live."
     );
-  if (editing && status === "needs-review")
+  }
+  if (editing && status === "needs-review") {
     return "A recorded choice no longer fits. The affected rows are marked.";
-  if (editing && step !== state.frontier)
+  }
+  if (editing && step !== state.frontier) {
     return "Your recorded choices stay intact until you commit these edits. Later steps are rechecked.";
+  }
   return "";
 }
 
@@ -867,18 +904,20 @@ function taskFooter(state: State): FooterView {
         : ["Activate system", "Move fleet", "", "Commit ground forces", "Produce units"]
     )[step];
     const back =
-      state.picked && step === 0 && !state.done[0]
-        ? [button({ type: "backToPicker" }, "Back to actions")]
-        : state.edit.dirty || !current
-          ? [button({ type: "cancelEdit" }, current ? "Reset selection" : "Cancel edits")]
-          : [];
-    return foot(
-      error || (draft ? "Private to you until you apply." : "This commits to the live game."),
-      [...back, button({ type: "commitEdit" }, verb, "primary", !!error, true)],
-      !!error,
-    );
+      state.edit.dirty || !current
+        ? [button({ type: "cancelEdit" }, current ? "Reset selection" : "Cancel edits")]
+        : [];
+    return {
+      ...foot(
+        error || (draft ? "Private to you until you apply." : "This commits to the live game."),
+        [...back, button({ type: "commitEdit" }, verb, "primary", !!error, true)],
+        !!error,
+      ),
+      // The open payment is one line here; its controls are on the board.
+      payment: productionPayment(state) ?? undefined,
+    };
   }
-  if (state.frontier !== null && step !== state.frontier)
+  if (state.frontier !== null && step !== state.frontier) {
     return foot(
       `Viewing ${STEPS[step].toLowerCase()}. The action is at ${STEPS[state.frontier].toLowerCase()}.`,
       [
@@ -891,19 +930,27 @@ function taskFooter(state: State): FooterView {
         ),
       ],
     );
-  if (state.frontier === null)
+  }
+  if (state.frontier === null) {
     return foot(
       draft
         ? "Every step is drafted. Review, edit, or apply."
         : "Action complete. Every step keeps its result.",
       draft ? [apply] : [],
     );
-  if (state.blocker === "boundary")
+  }
+  if (state.blocker === "boundary") {
     return foot("Later steps unlock after this live result.", [apply]);
-  if (!mine(state))
+  }
+  if (!mine(state)) {
     return foot(`Waiting for ${waitingFor(state)} · ${E.need(state).what}.`, [
       button({ type: "simulate" }, `Simulate ${waitingFor(state)} (demo)`, "demo"),
     ]);
+  }
+  const reaction = battleReaction(state);
+  if (reaction) {
+    return foot(reaction.note, reaction.actions);
+  }
   if (battle?.stage === "pre") {
     const side = SIDES.find((name) => E.controls(state, name));
     const retreat =
@@ -935,20 +982,17 @@ function taskFooter(state: State): FooterView {
       ],
     );
   }
-  if (battle?.stage === "reaction")
-    return foot("Reaction window. Passing keeps the card.", [
-      button({ type: "battle", action: "passReaction" }, "Pass"),
-      button({ type: "battle", action: "playReaction" }, "Play Direct Hit", "primary"),
-    ]);
-  if (battle?.stage === "retreat")
+  if (battle?.stage === "retreat") {
     return foot("Your surviving ships leave the active system.", [
+      ...(battle.pick ? [button({ type: "clearChoice" }, "Clear choice")] : []),
       button(
         { type: "battle", action: "retreat" },
-        battle.pick ? `Retreat to ${battle.pick}` : "Choose a destination",
+        battle.pick ? `Retreat to ${sysLabel(battle.pick)}` : "Choose a destination",
         "primary",
         !battle.pick,
       ),
     ]);
+  }
   return foot("");
 }
 
@@ -1007,6 +1051,16 @@ export function selectTactical(world: World, state: State): TacticalActionView {
   const target: string | null =
     state.edit?.step === 0 ? state.edit.value.system : E.activeId(state);
   const dirtyElsewhere = state.edit?.dirty && state.selected !== state.edit.step;
+  const view = task(state);
+  // The draft was opened from the action picker: the player can go back; the draft stays.
+  if (world.mode === "draft" && world.viewer === "sol" && world.workspaces.live.kind === "picker") {
+    view.footer.actions.unshift(button({ type: "backToPicker" }, "Back to actions"));
+  }
+  const closing = world.mode === "live" ? closingBlocks(state) : [];
+  if (closing.length) {
+    view.footer.actions.push(END_TURN);
+  }
+  withKeys(view.footer);
   return {
     kind: "tactical",
     title: "Tactical action",
@@ -1028,7 +1082,9 @@ export function selectTactical(world: World, state: State): TacticalActionView {
     current: state.frontier,
     contentKey: `${state.kind}:${state.selected}`,
     uncommitted: dirtyElsewhere ? { step: state.edit.step, name: STEPS[state.edit.step] } : null,
-    task: task(state),
+    interrupt: world.mode === "history" ? null : (battleReaction(state)?.interrupt ?? null),
+    closing,
+    task: view,
   };
 }
 
@@ -1038,18 +1094,21 @@ export function applyItems(state: State): string[] {
     `Activate ${systemName(state)} · #${state.data.activation.system}`,
     `Move ${E.list(state.fleet)}`,
   ];
-  if (state.ground.infantry + state.ground.mech)
+  if (state.ground.infantry + state.ground.mech) {
     items.push(`Transport ${E.list(E.force(state.ground))}`);
-  if (state.done[3])
+  }
+  if (state.done[3]) {
     items.push(
       ...state.planets
         .filter((planet: any) => E.size(E.landed(state, planet.id)))
         .map((planet: any) => `Land ${E.list(E.landed(state, planet.id))} on ${planet.name}`),
     );
-  if (state.done[4])
+  }
+  if (state.done[4]) {
     items.push(
       `Produce ${plural(E.productionTotals(state, state.data.production).count, "unit")} for ${plural(E.productionTotals(state, state.data.production).cost, "resource")}`,
     );
+  }
   return items;
 }
 

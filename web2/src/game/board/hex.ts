@@ -36,9 +36,13 @@ export function routePath(path: SystemId[], tiles: Record<SystemId, TileView>) {
   return path
     .map((id, index) => {
       const { x, y } = hexCenter(tiles[id]);
-      if (!index) return `M${x.toFixed(1)} ${y.toFixed(1)}`;
+      if (!index) {
+        return `M${x.toFixed(1)} ${y.toFixed(1)}`;
+      }
       const before = tiles[path[index - 1]];
-      if (adjacent(before, tiles[id])) return `L${x.toFixed(1)} ${y.toFixed(1)}`;
+      if (adjacent(before, tiles[id])) {
+        return `L${x.toFixed(1)} ${y.toFixed(1)}`;
+      }
       const from = hexCenter(before);
       const mx = (from.x + x) / 2;
       const my = (from.y + y) / 2;

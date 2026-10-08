@@ -2,11 +2,13 @@
 // turns intents into engine calls. This is the body of the click handlers of the HTML dummy.
 import type { Intent } from "../model";
 import {
+  DECISIONS,
   HISTORY,
   KEYS,
   MAP,
   ORIGIN_IDS,
   PAY,
+  RETREATS,
   SEAT,
   SEATS,
   SIDES,
@@ -18,12 +20,19 @@ import {
   plural,
 } from "./data";
 import { E } from "./loose";
+import { strategyEditor, strategyIntent } from "./strategy";
 
 export type State = any;
 export interface World {
   mode: "draft" | "live" | "history";
   viewer: string;
   workspaces: { draft: State; live: State; history?: State };
+  /** Who plays, and what the viewer holds. `cards` is null in the game of eight: one fixed card each. */
+  table: { seats: string[]; cards: Record<string, number[]> | null; actionCards: string[] };
+  /** Numbers of the strategy cards that are used in this round. */
+  usedCards: number[];
+  /** Cards of the viewer that are set to "Never offer": their reaction windows do not open. */
+  neverOffer: string[];
   /** Counts example loads: the board frames itself again. */
   fit: number;
   toast: { id: number; text: string } | null;
@@ -46,19 +55,95 @@ export function createWorld(): World {
     mode: "draft",
     viewer: "sol",
     workspaces: { draft: E.makeState("draft-combat"), live: E.makeState("live-combat") },
+    table: tableOf("live-combat"),
+    usedCards: [],
+    neverOffer: [],
     fit: 0,
     toast: null,
     announcement: "",
   };
 }
 
+function tableOf(example: string): World["table"] {
+  const table = examples[example]?.table;
+  return {
+    seats: table?.seats ?? Object.keys(SEATS),
+    cards: table?.cards ?? null,
+    actionCards: [...(table?.actionCards ?? ["Mining Initiative"])],
+  };
+}
+
+/** The reaction window that the viewer must answer, in a battle or outside one. */
+function openReaction(state: State): { pick: string | null } | null {
+  if (state.kind === "tactical") {
+    const open = E.activeBattle(state);
+    if (E.startWindow(state, open)) {
+      return open.start;
+    }
+    return open?.stage === "reaction" && E.controls(state, open.reaction.side)
+      ? open.reaction
+      : null;
+  }
+  return state.flow?.stage === "reaction" ? state.flow.reaction : null;
+}
+
+/** The shape of the open decision, or null when no decision is open for a choice. */
+export const decisionShape = (state: State) =>
+  E.own() && state.kind === "decision" && state.flow.stage !== "done"
+    ? DECISIONS[state.flow.decision].shape
+    : null;
+
+/** Why a seat cannot be chosen for Spy, or null when it can. */
+export const seatReason = (world: World, seat: string): string | null =>
+  !world.table.seats.includes(seat)
+    ? "Not a choice"
+    : seat === "sol"
+      ? "You"
+      : SEATS[seat].ac
+        ? null
+        : "No action cards";
+
+/** What a sent decision did, in game values. */
+function decisionResult(_world: World, state: State): string {
+  const flow = state.flow;
+  const me = SEATS.sol;
+  switch (flow.decision) {
+    case "Unexpected Action":
+      return `Jamie removed the command token from ${sysLabel(flow.chosen)}. The demo board does not change.`;
+    case "Spy":
+      return `Jamie took 1 action card from ${SEATS[flow.chosen].name}. Action cards ${me.ac} → ${me.ac + 1}.`;
+    case "Merchant Station":
+      return flow.chosen === "replenish"
+        ? `Jamie replenished commodities. Commodities ${me.comm[0]} → ${me.comm[1]}.`
+        : `Jamie converted commodities. Trade goods ${me.tg} → ${me.tg + me.comm[0]}, commodities ${me.comm[0]} → 0.`;
+    default: {
+      const units = E.unitsOver(state);
+      return `Jamie removed ${plural(units.removed, "ship")} from ${sysLabel(units.system)}. Fleet supply ${units.left} / ${units.limit}.`;
+    }
+  }
+}
+
+/** The strategy cards of the viewer, by number. */
+export const heldCards = (world: World): number[] => world.table.cards?.sol ?? [1];
+
+/** The viewer's turn with no action open. */
+const picker = (): State => E.makeState("live-picker");
+
 export function loadExample(world: World, example: string) {
   E.env.viewer = world.viewer;
   const state = E.makeState(example);
   world.toast = null;
+  world.table = tableOf(example);
+  world.usedCards = [...(examples[example]?.table?.used ?? [])];
   world.mode = state.mode;
   world.workspaces[state.mode as "draft" | "live"] = state;
-  if (world.mode === "draft") world.viewer = E.env.viewer = "sol";
+  // The picker example starts with no draft, so "Activate a system" starts one.
+  if (state.kind === "picker") {
+    world.workspaces.draft = E.makeState("draft-start");
+  }
+  if (world.mode === "draft") {
+    world.viewer = E.env.viewer = "sol";
+  }
   world.fit++;
   E.normalize(state);
 }
@@ -70,7 +155,9 @@ export function setViewer(world: World, viewer: string) {
   world.workspaces.live = E.makeState(
     examples[world.workspaces.live.example] ? world.workspaces.live.example : "live-combat",
   );
-  if (viewer !== "sol" || world.mode === "history") world.mode = "live";
+  if (viewer !== "sol" || world.mode === "history") {
+    world.mode = "live";
+  }
   E.normalize(currentState(world));
 }
 
@@ -81,18 +168,29 @@ export function resetExample(world: World) {
 }
 
 const battleActions: Record<string, (state: State, battle: any, data: any) => void> = {
-  roll: (state, battle) => E.battleRoll(state, battle),
+  roll: (state, battle) => {
+    // The window at the start of the round is answered first.
+    if (E.startWindow(state, battle)) {
+      return;
+    }
+    const side = SIDES.find((name) => E.controls(state, name));
+    if (
+      side &&
+      battle.kind === "space" &&
+      battle.start.asked !== battle.round &&
+      state.hands[SEAT[side]].includes("Morale Boost")
+    ) {
+      E.env.toasts.push("Morale Boost was not offered: it is set to Never offer.");
+    }
+    E.battleRoll(state, battle);
+  },
   announceRetreat: (state, battle) => {
     battle.announced[SIDES.find((side) => E.controls(state, side))!] = true;
   },
-  playCard: (state, battle, data) => {
-    const side = SIDES.find((name) => E.controls(state, name))!;
-    battle.boost[side] = true;
-    state.hands[SEAT[side]] = state.hands[SEAT[side]].filter((card: string) => card !== data.card);
-  },
   stageHit: (_state, battle, data) => {
-    if (battle.staged.length < battle.owed[battle.side])
+    if (battle.staged.length < battle.owed[battle.side]) {
       battle.staged.push({ type: data.unit, kind: data.kind });
+    }
   },
   resetHits: (_state, battle) => {
     battle.staged = [];
@@ -104,10 +202,23 @@ const battleActions: Record<string, (state: State, battle: any, data: any) => vo
     E.battleContinue(state, battle);
   },
   passReaction: (state, battle) => {
+    if (battle.stage === "pre") {
+      battle.start = { pick: null, asked: battle.round };
+      return;
+    }
     Object.assign(battle, { reaction: null, stage: "hits" });
     E.battleContinue(state, battle);
   },
   playReaction: (state, battle) => {
+    if (battle.stage === "pre") {
+      const mine = SIDES.find((name) => E.controls(state, name))!;
+      battle.boost[mine] = true;
+      state.hands[SEAT[mine]] = state.hands[SEAT[mine]].filter(
+        (card: string) => card !== battle.start.pick,
+      );
+      battle.start = { pick: null, asked: battle.round };
+      return;
+    }
     const { side, target, type } = battle.reaction;
     const rec = battle.records.at(-1);
     const unit = battle.forces[target][type];
@@ -124,17 +235,50 @@ const battleActions: Record<string, (state: State, battle: any, data: any) => vo
     Object.assign(battle, { reaction: null, stage: "hits" });
     E.battleContinue(state, battle);
   },
-  pickRetreat: (_state, battle, data) => {
-    battle.pick = data.destination;
+  pickRetreat: (state, battle, data) => {
+    if (
+      battle.stage === "retreat" &&
+      E.controls(state, battle.side) &&
+      RETREATS[battle.side as "att"].includes(data.system)
+    ) {
+      battle.pick = battle.pick === data.system ? null : data.system;
+      state.reveal = `sys:${data.system}`;
+    }
   },
   retreat: (state, battle) => {
+    if (battle.stage !== "retreat" || !battle.pick) {
+      return;
+    }
     battle.destination = battle.pick;
     E.endRound(state, battle);
   },
 };
 
+/** Choices in an action of Jamie that is not a battle. Another viewer cannot send them. */
+const PRIVATE = new Set<Intent["type"]>([
+  "togglePlanet",
+  "toggleSystem",
+  "pickSeat",
+  "chooseOption",
+  "pickTech",
+  "clearPart",
+  "clearChoice",
+  "stageReaction",
+  "reaction",
+  "payment",
+  "setPayment",
+  "pickAction",
+  "pickGroup",
+  "backToPicker",
+  "pass",
+  "endTurn",
+  "flowCount",
+  "flow",
+]);
+
 export function reduce(world: World, intent: Intent) {
   E.env.viewer = world.viewer;
+  E.env.neverOffer = world.neverOffer;
   const state = currentState(world);
   const toast = (text: string) => (world.toast = { id: ++toastId, text });
   const announce = (text: string) => (world.announcement = text);
@@ -143,8 +287,12 @@ export function reduce(world: World, intent: Intent) {
   state.reveal = null;
 
   function selectStep(step: number | null) {
-    if (state.kind !== "tactical") return void (state.selected = step);
-    if (step === null || !E.isReached(state, step)) return;
+    if (state.kind !== "tactical") {
+      return void (state.selected = step);
+    }
+    if (step === null || !E.isReached(state, step)) {
+      return;
+    }
     state.selected = step;
     announce(
       `Viewing ${STEPS[step]}. ${state.frontier === null ? "Action complete." : `Current step: ${STEPS[state.frontier]}.`}`,
@@ -152,21 +300,38 @@ export function reduce(world: World, intent: Intent) {
   }
   function battle(action: string, data: object = {}) {
     const open = E.activeBattle(state);
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     const frontier = state.frontier;
     state.rev = (state.rev || 0) + 1;
     battleActions[action](state, open, data);
-    if (open.stage === "done")
+    if (open.stage === "done") {
       toast(
         open.kind === "space"
           ? "Space combat resolved. Its record stays in this step."
           : "Ground combat resolved.",
       );
-    else if (action === "announceRetreat")
+    } else if (action === "announceRetreat") {
       toast("Retreat announced. Your ships leave after this round.");
-    if (state.frontier !== frontier) announce(progress());
+    }
+    if (state.frontier !== frontier) {
+      announce(progress());
+    }
   }
 
+  if (!E.own() && state.kind !== "tactical" && PRIVATE.has(intent.type)) {
+    return;
+  }
+  // A choice in the open half of a strategy card goes to the part that is open there.
+  const editing = state.kind === "strategic" && world.mode === "live" && E.flowEditing(state);
+  if (editing && strategyIntent(state, world.table.seats, intent)) {
+    announce(strategyEditor(state, world.table.seats).problem || "Selection updated.");
+    for (const text of E.env.toasts.splice(0)) {
+      toast(text);
+    }
+    return;
+  }
   switch (intent.type) {
     case "selectStep":
       selectStep(intent.step);
@@ -178,10 +343,13 @@ export function reduce(world: World, intent: Intent) {
       selectStep(state.edit.step);
       break;
     case "commitEdit": {
-      if (!state.edit || E.validation(state)) break;
+      if (!state.edit || E.validation(state)) {
+        break;
+      }
       const step = state.edit.step;
-      if (step === 0 && state.edit.value.system !== state.data.activation.system)
+      if (step === 0 && state.edit.value.system !== state.data.activation.system) {
         state.data.invasion = {};
+      }
       state.data[KEYS[step]!] = clone(state.edit.value);
       state.edit = null;
       E.commitStep(state, step);
@@ -206,16 +374,20 @@ export function reduce(world: World, intent: Intent) {
     }
     case "confirmApply": {
       const draft = world.workspaces.draft;
-      if (world.mode !== "draft" || !E.canApply(draft) || draft.edit) break;
+      if (world.mode !== "draft" || !E.canApply(draft) || draft.edit) {
+        break;
+      }
       const live = E.blankState("applied", "live", draft.route, draft.data);
       Object.assign(live, {
         stale: draft.stale,
         tip: "Your draft is now the live action. Recorded steps are read-only; the rest needs live decisions.",
       });
       // Replay the recorded choices until the live game needs something the draft could not hold.
-      for (const step of [0, 1, 3, 4])
-        if (draft.done[step] && live.frontier === step && live.blocker === "decision")
+      for (const step of [0, 1, 3, 4]) {
+        if (draft.done[step] && live.frontier === step && live.blocker === "decision") {
           E.commitStep(live, step);
+        }
+      }
       live.selected = live.frontier ?? 4;
       E.remember(live);
       world.workspaces.live = live;
@@ -227,23 +399,25 @@ export function reduce(world: World, intent: Intent) {
     case "battle":
       battle(intent.action);
       break;
-    case "playCard":
-      battle("playCard", intent);
-      break;
     case "stageHit":
       battle("stageHit", intent);
       break;
-    case "pickRetreat":
-      battle("pickRetreat", intent);
-      break;
     case "workspace":
-      if (intent.mode !== "history" || world.workspaces.history) world.mode = intent.mode;
+      if (intent.mode !== "history" || world.workspaces.history) {
+        world.mode = intent.mode;
+      }
       break;
     case "simulate":
-      if (state.kind === "tactical") {
+      if (state.kind === "waiting") {
+        if (!state.flow.passed) {
+          world.workspaces.live = picker();
+        }
+      } else if (state.kind === "tactical") {
         state.rev = (state.rev || 0) + 1;
         E.simulate(state);
-      } else E.flowAdvance(state);
+      } else {
+        E.flowAdvance(state);
+      }
       break;
     case "undo":
     case "redo":
@@ -260,8 +434,9 @@ export function reduce(world: World, intent: Intent) {
       break;
     case "editStep": {
       const step = intent.step;
-      if (state.mode !== "draft" || state.edit?.dirty || !E.isReached(state, step) || !KEYS[step])
+      if (state.mode !== "draft" || state.edit?.dirty || !E.isReached(state, step) || !KEYS[step]) {
         break;
+      }
       E.beginEdit(state, step);
       announce(`Editing ${STEPS[step]}. Changes are uncommitted.`);
       break;
@@ -273,7 +448,9 @@ export function reduce(world: World, intent: Intent) {
     case "setCount":
     case "removeLine":
     case "setPlacement": {
-      if (!state.edit) break;
+      if (!state.edit) {
+        break;
+      }
       const path = intent.type === "setPlacement" ? `place.${intent.unit}` : intent.key;
       const value =
         intent.type === "setPlacement"
@@ -288,8 +465,9 @@ export function reduce(world: World, intent: Intent) {
     }
     case "inspectSystem":
       state.inspect = intent.system;
-      if (state.edit?.step === 0 && state.selected === 0)
+      if (state.edit?.step === 0 && state.selected === 0) {
         Object.assign(state.edit, { value: { system: state.inspect }, dirty: true });
+      }
       if (state.edit?.step === 1 && ORIGIN_IDS.includes(state.inspect)) {
         state.open[state.inspect] = true;
         state.reveal = `sys:${state.inspect}`;
@@ -304,31 +482,123 @@ export function reduce(world: World, intent: Intent) {
       break;
     case "togglePlanet":
       if (state.kind === "tactical") {
-        if (state.edit?.step !== 4) break;
+        if (state.edit?.step !== 4) {
+          break;
+        }
         state.edit.value.pay[intent.planet] = !state.edit.value.pay[intent.planet];
         state.edit.dirty = true;
         state.reveal = `pl:${intent.planet}`;
         announce(E.validation(state) || "Payment staged.");
-      } else if (state.kind === "strategic") {
-        state.flow.mine.pay[intent.planet] = !state.flow.mine.pay[intent.planet];
-        state.reveal = `pl:${intent.planet}`;
       } else if (state.kind === "component") {
         state.flow.target = intent.planet;
         state.reveal = `pl:${intent.planet}`;
       }
       break;
+    case "toggleSystem":
+      if (state.kind === "tactical") {
+        battle("pickRetreat", intent);
+        break;
+      }
+      if (decisionShape(state) !== "system" || !MAP[intent.system]?.token) {
+        break;
+      }
+      state.flow.chosen = state.flow.chosen === intent.system ? null : intent.system;
+      state.reveal = `sys:${intent.system}`;
+      break;
+    case "pickSeat":
+      if (decisionShape(state) !== "seat" || seatReason(world, intent.seat) !== null) {
+        break;
+      }
+      state.flow.chosen = state.flow.chosen === intent.seat ? null : intent.seat;
+      break;
+    case "chooseOption":
+      if (decisionShape(state) !== "list") {
+        break;
+      }
+      state.flow.chosen = state.flow.chosen === intent.option ? null : intent.option;
+      break;
+    case "pickTech":
+    case "clearPart":
+      break;
+    case "clearChoice":
+      if (state.kind === "decision" && state.flow.stage !== "done") {
+        Object.assign(state.flow, { chosen: null, counts: {} });
+      } else {
+        const open =
+          openReaction(state) ??
+          (state.kind === "tactical" && E.activeBattle(state)?.stage === "retreat"
+            ? E.activeBattle(state)
+            : null);
+        if (open) {
+          open.pick = null;
+        }
+      }
+      break;
+    case "stageReaction": {
+      const open = openReaction(state);
+      if (open) {
+        open.pick = open.pick === intent.card ? null : intent.card;
+      }
+      break;
+    }
+    case "reaction": {
+      const open = openReaction(state);
+      if (!open || (intent.action === "play" && !open.pick)) {
+        break;
+      }
+      if (state.kind === "tactical") {
+        battle(intent.action === "play" ? "playReaction" : "passReaction");
+        break;
+      }
+      // Another player's action card: it resolves, or the viewer's card cancels it.
+      const flow = state.flow;
+      if (intent.action === "play") {
+        state.hands.sol = state.hands.sol.filter((card: string) => card !== open.pick);
+      }
+      Object.assign(flow, {
+        stage: "done",
+        result:
+          intent.action === "play"
+            ? `Jamie played ${open.pick}. ${flow.card} was cancelled.`
+            : flow.pending,
+      });
+      toast(intent.action === "play" ? `${open.pick} played.` : "You passed.");
+      break;
+    }
+    case "setCardOffer":
+      world.neverOffer = world.neverOffer.filter((card) => card !== intent.card);
+      if (intent.never) {
+        world.neverOffer.push(intent.card);
+      }
+      toast(
+        intent.never
+          ? `${intent.card}: never offered. Its windows are skipped and you are told.`
+          : `${intent.card}: offered again.`,
+      );
+      break;
+    case "payment": {
+      const auto = intent.action === "auto";
+      if (state.edit?.step === 4) {
+        const cost = E.productionTotals(state, state.edit.value).cost;
+        state.edit.value.pay = auto ? E.autoPay(cost, "res") : {};
+        state.edit.dirty = true;
+        announce(E.validation(state) || "Payment staged.");
+      }
+      break;
+    }
+    case "openReference":
+      break;
     case "setPayment":
-      if (state.kind === "strategic") {
-        state.flow.mine.pay[intent.source] = intent.on;
-        announce(E.flowProblem(state) || "Payment staged.");
-      } else if (state.edit?.step === 4) {
-        state.edit.value.pay[intent.source] = intent.on;
+      if (state.edit?.step === 4) {
+        state.edit.value.pay[intent.source] = intent.value;
         state.edit.dirty = true;
         announce(E.validation(state) || "Payment staged.");
       }
       break;
     case "chooseRoute":
-      if (state.edit?.step !== 1) break;
+      if (state.edit?.step !== 1) {
+        break;
+      }
       state.edit.value["@" + intent.line] = intent.index;
       state.edit.dirty = true;
       announce(E.validation(state) || "Route changed.");
@@ -360,54 +630,150 @@ export function reduce(world: World, intent: Intent) {
       world.mode = "live";
       break;
     case "pickAction":
+      if (state.kind !== "picker" || world.viewer !== "sol") {
+        break;
+      }
       if (intent.action === "tactical") {
-        const system = intent.system || null;
-        Object.assign(state, {
-          kind: "tactical",
-          picked: true,
-          tip: "A tactical action is staged. Nothing is spent until you activate. Click a different system to change it.",
+        // A tactical action opens as the private draft: the one the player prepared before the
+        // turn, or a new one. Nothing is sent until "Apply to Live".
+        const prepared = world.workspaces.draft;
+        const draft = !intent.system && prepared.done[0] ? prepared : E.makeState("draft-start");
+        if (intent.system) {
+          Object.assign(draft.edit, { value: { system: intent.system }, dirty: true });
+          draft.inspect = intent.system;
+        }
+        draft.tip =
+          "The tactical action is a private draft. Nothing is spent until you apply. Esc goes back to the actions; the draft stays.";
+        world.workspaces.draft = draft;
+        world.mode = "draft";
+      } else if (intent.action === "strategic") {
+        const number = +(intent.card ?? 1);
+        const live = E.makeState(number > 1 ? `live-strategy-${number}` : "live-strategic");
+        live.example = state.example;
+        // The secondaries go to the other players of this table, in seat order.
+        live.flow.order = world.table.seats.filter((seat) => seat !== "sol");
+        world.workspaces.live = live;
+      } else if (intent.card && DECISIONS[intent.card]) {
+        // An action card that asks for a choice: the decision is the action.
+        const live = E.makeState("live-decision-offer");
+        Object.assign(live.flow, { decision: intent.card, card: true });
+        live.example = state.example;
+        live.tip =
+          "The card is staged. Choose, then Enter sends it. Esc clears the choice, then goes back.";
+        world.workspaces.live = live;
+      } else {
+        const live = E.makeState("live-component");
+        const card = intent.card ?? "Mining Initiative";
+        // Only Mining Initiative has a target in the demo. Any other card is played in one step.
+        Object.assign(live.flow, {
+          card,
+          stage: card === "Mining Initiative" ? "target" : "ready",
         });
-        E.beginEdit(state, 0);
-        Object.assign(state.edit, { value: { system }, dirty: !!system });
-        if (system) state.inspect = system;
-      } else
-        world.workspaces.live = E.makeState(
-          intent.action === "strategic" ? "live-strategic" : "live-component",
-        );
+        world.workspaces.live = live;
+      }
+      break;
+    case "pickGroup":
+      if (state.kind === "picker" && world.table.actionCards.length) {
+        state.flow.menu = intent.group;
+      }
       break;
     case "backToPicker":
-      Object.assign(state, { kind: "picker", edit: null, selected: 0 });
+      // One level back. A tactical draft stays in its workspace. A staged strategic or component
+      // action is dropped; an action card goes back to the list of action cards.
+      if (world.mode === "draft") {
+        world.mode = "live";
+      } else if (E.flowStaged(state)) {
+        world.workspaces.live = picker();
+        if (state.kind !== "strategic") {
+          world.workspaces.live.flow.menu = "actionCards";
+        }
+      } else if (state.kind === "picker") {
+        state.flow.menu = null;
+      }
+      break;
+    case "pass":
+      if (state.kind !== "picker" || !heldCards(world).every((n) => world.usedCards.includes(n))) {
+        break;
+      }
+      world.workspaces.live = E.makeState("live-waiting");
+      world.workspaces.live.flow.passed = true;
+      toast("You passed. You take no more actions in this round.");
+      break;
+    case "endTurn":
+      if (!E.turnClosing(state)) {
+        break;
+      }
+      if (state.kind === "strategic" && !world.usedCards.includes(state.flow.number ?? 1)) {
+        world.usedCards.push(state.flow.number ?? 1);
+      }
+      world.workspaces.live = E.makeState("live-waiting");
+      world.mode = "live";
+      toast("Turn ended.");
       break;
     case "flowCount":
+      if (state.kind === "decision") {
+        state.flow.counts[intent.key] = Math.max(0, intent.value);
+        break;
+      }
       E.put(state.flow.mine, intent.key, Math.max(0, intent.value));
-      announce(E.flowProblem(state) || "Selection updated.");
-      break;
-    case "flowTarget":
-      state.flow.target = intent.planet;
-      state.reveal = `pl:${intent.planet}`;
+      if (!strategyEditor(state, world.table.seats).cost?.amount) {
+        state.flow.mine.pay = {};
+      }
+      announce(strategyEditor(state, world.table.seats).problem || "Selection updated.");
       break;
     case "flow": {
       const flow = state.flow;
-      if (intent.action === "play") {
-        const source = PAY.find((item) => item.id === flow.target)!;
+      if (intent.action === "play" && state.kind === "decision") {
+        if (flow.stage === "done" || !E.decisionReady(state)) {
+          break;
+        }
+        Object.assign(flow, { stage: "done", result: decisionResult(world, state) });
+        if (flow.card) {
+          world.table.actionCards = world.table.actionCards.filter(
+            (card) => card !== flow.decision,
+          );
+        }
+        toast(`${flow.decision} resolved.`);
+      } else if (intent.action === "play") {
+        const source = PAY.find((item) => item.id === flow.target);
+        if (flow.stage === "target" && !source) {
+          break;
+        }
         Object.assign(flow, {
           stage: "done",
-          result: `Jamie gained ${plural(source.res, "trade good")} for ${source.label.replace("Exhaust ", "")}. Trade goods ${SEATS.sol.tg} → ${SEATS.sol.tg + source.res}.`,
+          result: source
+            ? `Jamie gained ${plural(source.res, "trade good")} for ${source.label.replace("Exhaust ", "")}. Trade goods ${SEATS.sol.tg} → ${SEATS.sol.tg + source.res}.`
+            : `Jamie played ${flow.card}. The demo does not script its effect.`,
         });
-        toast("Mining Initiative resolved.");
+        world.table.actionCards = world.table.actionCards.filter((card) => card !== flow.card);
+        toast(`${flow.card} resolved.`);
       } else if (intent.action === "ready") {
-        flow.mine.ready = true;
+        const editor = strategyEditor(state, world.table.seats);
+        if (editor.problem) {
+          break;
+        }
+        Object.assign(flow.mine, { ready: true, outcome: editor.result });
         toast("Draft ready. It resolves when your seat is reached.");
         E.settle(state);
-      } else if (intent.action === "change") flow.mine.ready = false;
-      else {
-        if (E.flowProblem(state)) break;
-        if (flow.stage === "primary")
-          Object.assign(flow, {
-            stage: "secondary",
-            primaryResult: `Jamie gained 3 command tokens${flow.mine.buy ? ` and bought ${flow.mine.buy} for ${flow.mine.buy * 3} influence` : ""}.`,
-          });
-        else E.resolveMine(state);
+      } else if (intent.action === "change") {
+        flow.mine.ready = false;
+      } else {
+        const editor = strategyEditor(state, world.table.seats);
+        if (editor.problem) {
+          break;
+        }
+        if (flow.stage === "primary" && flow.number === 3 && !flow.sent) {
+          // Politics: the first part is sent, because the agenda cards are revealed after it.
+          Object.assign(flow, { sent: true, speaker: flow.mine.seat });
+          toast("Speaker chosen. You drew 2 action cards and look at 2 agenda cards.");
+          break;
+        }
+        if (flow.stage === "primary") {
+          Object.assign(flow, { stage: "secondary", primaryResult: editor.result });
+        } else {
+          flow.mine.outcome = editor.result;
+          E.resolveMine(state);
+        }
         E.settle(state);
         toast(
           `${flow.card} ${flow.stage === "secondary" ? "primary resolved. Secondaries follow in seat order." : "secondary resolved."}`,
@@ -418,6 +784,8 @@ export function reduce(world: World, intent: Intent) {
     case "openApply":
       break;
   }
-  for (const text of E.env.toasts.splice(0)) toast(text);
+  for (const text of E.env.toasts.splice(0)) {
+    toast(text);
+  }
   E.normalize(currentState(world));
 }
