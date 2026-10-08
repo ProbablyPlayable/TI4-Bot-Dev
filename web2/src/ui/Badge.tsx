@@ -68,7 +68,8 @@ export function Kbd({ children }: { children: string }) {
   return (
     <kbd
       aria-hidden
-      className="rounded-[3px] border border-current/40 px-1 font-sans text-2xs leading-[1.45] font-bold opacity-80"
+      // A key is of no use under a finger.
+      className="rounded-[3px] border border-current/40 px-1 font-sans text-2xs leading-[1.45] font-bold opacity-80 touch:hidden"
     >
       {KEY_LABELS[children] ?? children.toUpperCase()}
     </kbd>

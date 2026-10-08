@@ -174,7 +174,7 @@ export function MovementStep({ view }: { view: MovementView }) {
     <>
       {view.origins.length ? (
         // Two columns: the panel is wide, and every origin must be in view without scroll.
-        <div className="columns-2 gap-2.5 [&>*]:mb-2.5 [&>*]:break-inside-avoid">
+        <div className="columns-2 gap-2.5 phone:columns-1 [&>*]:mb-2.5 [&>*]:break-inside-avoid">
           {view.origins.map((origin) => (
             <Origin key={origin.system} origin={origin} />
           ))}

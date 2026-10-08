@@ -19,7 +19,7 @@ const MAP_VIEWS: { id: MapViewId; label: string; legend: string }[] = [
 function SystemInspector({ view }: { view: InspectorView }) {
   const dispatch = useDispatch();
   return (
-    <div className="absolute bottom-2.5 left-2.5 z-2 max-h-[40%] w-[280px] overflow-auto rounded border border-line bg-surface/95 px-3 py-2.5 text-xs">
+    <div className="absolute bottom-2.5 left-2.5 z-2 max-h-[40%] w-[280px] overflow-auto rounded border border-line bg-surface/95 px-3 py-2.5 text-xs phone:inset-x-0 phone:bottom-0 phone:z-3 phone:max-h-[55%] phone:w-auto phone:rounded-none phone:border-x-0 phone:border-b-0 phone:bg-surface">
       <CloseButton
         label="Close system details"
         className="float-right -mt-1 -mr-1.5 ml-1.5"
@@ -107,22 +107,23 @@ export function Board({
   const camera = useCamera(svg, galaxy, view.tiles);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the board is framed again only when the data source asks for it
   useLayoutEffect(() => camera.fitFor(view.taskSystems), [view.fitKey]);
-  const tool = "h-7 rounded-sm border border-line bg-surface text-base";
+  // Under a finger a pinch zooms: the two zoom buttons are not shown.
+  const tool = "h-7 rounded-sm border border-line bg-surface text-base touch:h-9";
   const payment = view.task?.interactive ? view.task.payment : undefined;
   return (
     <section
       aria-label="Galaxy board"
       className="relative flex min-h-0 min-w-0 overflow-hidden bg-board"
     >
-      <div className="pointer-events-none absolute top-2 right-[210px] left-2.5 z-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <div className="pointer-events-none absolute top-2 right-[210px] left-2.5 z-2 flex flex-wrap items-center gap-x-3 gap-y-1 phone:right-2.5 phone:flex-nowrap phone:gap-x-2">
         <Segmented
           label="Map view"
           options={MAP_VIEWS}
           value={mapView}
           onChange={setMapView}
-          className="pointer-events-auto bg-surface"
+          className="pointer-events-auto bg-surface phone:min-w-0 phone:overflow-x-auto phone:[scrollbar-width:none]"
         />
-        <span className="pointer-events-auto">
+        <span className="pointer-events-auto flex-none">
           <Hint label="Map legend">
             {MAP_VIEWS.find((item) => item.id === mapView)!.legend} · ▼ your command token · α β
             wormholes · inner ring: ships of one player · red dashed: contested
@@ -133,11 +134,11 @@ export function Board({
       <div
         role="group"
         aria-label="Map zoom"
-        className="absolute top-2 right-2.5 z-2 flex gap-[3px]"
+        className="absolute top-2 right-2.5 z-2 flex gap-[3px] phone:top-auto phone:bottom-14"
       >
         <button
           type="button"
-          className={`${tool} w-7`}
+          className={`${tool} w-7 touch:hidden`}
           aria-label="Zoom out"
           onClick={() => camera.zoom(0.8)}
         >
@@ -145,7 +146,7 @@ export function Board({
         </button>
         <button
           type="button"
-          className={`${tool} w-7`}
+          className={`${tool} w-7 touch:hidden`}
           aria-label="Zoom in"
           onClick={() => camera.zoom(1.25)}
         >
@@ -182,8 +183,8 @@ export function Board({
         <GalaxyMap view={view} mapView={mapView} svgRef={svg} />
       </div>
       {view.inspector && <SystemInspector view={view.inspector} />}
-      <div className="absolute right-2.5 bottom-2.5 z-2 flex max-w-[calc(100%-310px)] items-center gap-2.5 rounded border border-line bg-surface/95 py-1 pr-1.5 pl-3 text-xs text-muted">
-        <span>{view.latestResult}</span>
+      <div className="absolute right-2.5 bottom-2.5 z-2 flex max-w-[calc(100%-310px)] items-center gap-2.5 rounded border border-line bg-surface/95 py-1 pr-1.5 pl-3 text-xs text-muted phone:left-2.5 phone:max-w-none phone:justify-between">
+        <span className="phone:min-w-0 phone:truncate">{view.latestResult}</span>
         <Button tone="quiet" size="sm" aria-expanded={logOpen} onClick={onLog}>
           Log
         </Button>

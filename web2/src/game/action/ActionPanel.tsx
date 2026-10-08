@@ -40,7 +40,10 @@ function Interrupt({ view }: { view: InterruptView }) {
     <div
       role="group"
       aria-label={view.eyebrow}
-      className={cx("border-b border-cyan/30 bg-cyan/[.05] px-5 py-2.5", linked && "bg-cyan/[.09]")}
+      className={cx(
+        "border-b border-cyan/30 bg-cyan/[.05] px-5 py-2.5 phone:px-3",
+        linked && "bg-cyan/[.09]",
+      )}
       {...props}
     >
       <div className="mb-1.5 flex items-center justify-between gap-3">
@@ -56,6 +59,43 @@ function Interrupt({ view }: { view: InterruptView }) {
   );
 }
 
+/** What the main button does, and the main button. A phone shows it under every pane. */
+export function ActionFooter({ view: footer }: { view: FooterView }) {
+  return (
+    <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5 phone:flex-col phone:items-stretch phone:gap-1.5 phone:px-3 phone:py-2">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 text-sm">
+        {footer.payment && (
+          // The open payment in one line. Its controls are on the board.
+          <span className="whitespace-nowrap text-muted phone:whitespace-normal">
+            <strong className="font-semibold text-text">Payment</strong>{" "}
+            {footer.payment.summary || "nothing staged"} ·{" "}
+            <span className={cx("font-semibold tabular-nums", payState(footer.payment).tone)}>
+              {footer.payment.paid} / {footer.payment.cost}
+              {footer.payment.paid > footer.payment.cost && ` · ${payState(footer.payment).label}`}
+            </span>
+          </span>
+        )}
+        <span
+          id="footer-note"
+          role={footer.error ? "status" : undefined}
+          className={footer.error ? "text-red" : "text-muted"}
+        >
+          {footer.note}
+        </span>
+      </span>
+      <div className="flex shrink-0 items-center gap-2 phone:flex-wrap phone:justify-end phone:[&>button]:flex-auto">
+        {footer.actions.map((action) => (
+          <ActionButton key={action.label} view={action} describedBy="footer-note" />
+        ))}
+      </div>
+    </footer>
+  );
+}
+
+/** The footer of the open action, whatever its kind. */
+export const footerOf = (view: ActionView): FooterView =>
+  view.kind === "tactical" ? view.task.footer : view.footer;
+
 interface TaskPanelProps {
   heading: string;
   interrupt: InterruptView | null;
@@ -64,7 +104,8 @@ interface TaskPanelProps {
   edit?: TaskView["edit"];
   /** Rules and explanations. They are shown on hover or click only. */
   help: HelpView[];
-  footer: FooterView;
+  /** Null when the shell shows the footer itself. */
+  footer: FooterView | null;
   /** Scroll position is kept while this stays the same. */
   contentKey: string;
   labelledBy?: string;
@@ -103,7 +144,7 @@ function TaskPanel({
       tabIndex={-1}
       className="flex min-h-0 min-w-0 flex-1 flex-col outline-none"
     >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line px-5 py-[9px]">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line px-5 py-[9px] phone:px-3">
         <h2 className="text-lg font-semibold tracking-[-.2px]">{heading}</h2>
         {pill && <Badge tone={pill.tone}>{pill.label}</Badge>}
         {help.length > 0 && (
@@ -135,38 +176,11 @@ function TaskPanel({
       <div
         key={contentKey}
         ref={content}
-        className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-5 pt-3 pb-4"
+        className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-5 pt-3 pb-4 phone:px-3"
       >
         {children}
       </div>
-      <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5">
-        <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 text-sm">
-          {footer.payment && (
-            // The open payment in one line. Its controls are on the board.
-            <span className="whitespace-nowrap text-muted">
-              <strong className="font-semibold text-text">Payment</strong>{" "}
-              {footer.payment.summary || "nothing staged"} ·{" "}
-              <span className={cx("font-semibold tabular-nums", payState(footer.payment).tone)}>
-                {footer.payment.paid} / {footer.payment.cost}
-                {footer.payment.paid > footer.payment.cost &&
-                  ` · ${payState(footer.payment).label}`}
-              </span>
-            </span>
-          )}
-          <span
-            id="footer-note"
-            role={footer.error ? "status" : undefined}
-            className={footer.error ? "text-red" : "text-muted"}
-          >
-            {footer.note}
-          </span>
-        </span>
-        <div className="flex shrink-0 items-center gap-2">
-          {footer.actions.map((action) => (
-            <ActionButton key={action.label} view={action} describedBy="footer-note" />
-          ))}
-        </div>
-      </footer>
+      {footer && <ActionFooter view={footer} />}
     </section>
   );
 }
@@ -176,7 +190,16 @@ function TaskPanel({
  * has two, a component action has none. Live, Draft and History use the same frame.
  * The panel has one width for every step.
  */
-export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string | null }) {
+export function ActionPanel({
+  view,
+  reveal,
+  footer = true,
+}: {
+  view: ActionView;
+  reveal: string | null;
+  /** False when the shell shows `ActionFooter` itself, under every pane. */
+  footer?: boolean;
+}) {
   const dispatch = useDispatch();
   const away = view.kind === "tactical" && view.current !== null && view.selected !== view.current;
   const uncommitted = view.kind === "tactical" ? view.uncommitted : null;
@@ -239,7 +262,7 @@ export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string
           trail={view.task.trail}
           edit={view.task.edit}
           help={view.task.help}
-          footer={view.task.footer}
+          footer={footer ? view.task.footer : null}
           contentKey={view.contentKey}
           labelledBy={`step-tab-${view.selected}`}
           reveal={reveal}
@@ -254,7 +277,7 @@ export function ActionPanel({ view, reveal }: { view: ActionView; reveal: string
           pill={view.pill}
           trail={[]}
           help={view.help}
-          footer={view.footer}
+          footer={footer ? view.footer : null}
           contentKey={view.contentKey}
           reveal={reveal}
         >

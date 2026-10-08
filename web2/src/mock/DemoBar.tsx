@@ -15,13 +15,16 @@ export interface DemoControls {
 export function DemoBar({ demo }: { demo: DemoControls }) {
   const listed = EXAMPLE_IDS.includes(demo.example);
   return (
-    <footer className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-t border-line bg-[#080c12] px-4 py-1.5 text-xs text-faint">
+    <footer className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-t border-line bg-[#080c12] px-4 py-1.5 text-xs text-faint phone:flex-nowrap phone:gap-x-1.5 phone:px-2 phone:pb-[max(6px,env(safe-area-inset-bottom))]">
       <span className="rounded-sm border border-dashed border-faint px-1.5 py-px font-bold tracking-[.06em] uppercase">
         Demo
       </span>
-      <label htmlFor="example">Example</label>
+      <label htmlFor="example" className="phone:sr-only">
+        Example
+      </label>
       <Select
         id="example"
+        className="phone:min-w-0 phone:flex-1"
         value={demo.example}
         onChange={(event) => demo.loadExample(event.target.value)}
       >
@@ -40,9 +43,12 @@ export function DemoBar({ demo }: { demo: DemoControls }) {
           </option>
         )}
       </Select>
-      <label htmlFor="viewer">View as</label>
+      <label htmlFor="viewer" className="phone:sr-only">
+        View as
+      </label>
       <Select
         id="viewer"
+        className="phone:min-w-0 phone:flex-1"
         value={demo.viewer}
         onChange={(event) => demo.setViewer(event.target.value)}
       >
@@ -53,8 +59,8 @@ export function DemoBar({ demo }: { demo: DemoControls }) {
       <Button tone="quiet" size="sm" onClick={demo.reset}>
         Reset
       </Button>
-      <span className="min-w-0 flex-[1_1_260px] text-muted">{demo.tip}</span>
-      <span>Fictional data · Scripted dice</span>
+      <span className="min-w-0 flex-[1_1_260px] text-muted phone:hidden">{demo.tip}</span>
+      <span className="phone:hidden">Fictional data · Scripted dice</span>
     </footer>
   );
 }

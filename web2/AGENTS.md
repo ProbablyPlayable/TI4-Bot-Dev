@@ -33,14 +33,32 @@ Checklist for a new screen or a changed screen:
 - What must the player see to decide? Is all of it on this screen?
 - Does every state have a sign or a word, and only one signal?
 - Does it fit at 1920×1080 with 8 players and the long names?
+- On a phone: is nothing cut at the side, and is the main button in view?
 - Does History show the same screen read-only?
 
 ## Screen size
 
-- The design target is a viewport of 1920×1080 or larger.
-- Narrower screens and mobile clients are a **non-goal**. The game shows too much information for them.
-- Do not add breakpoints, container queries, or short variants of labels.
-- Screenshots and layout tests use 1920×1080 only.
+There are two layouts, and no others.
+
+- **Desktop** is the design target: a viewport of 1920×1080 or larger. Every rule in this file is written for it.
+- **Phone** is a portrait phone, checked on a Pixel 9 (412×923, the installed app with no browser bars). The owner added it on 2026-10-08. It shows the same views with the same blocks; only the shell differs.
+- Tablets, landscape phones and narrow desktop windows are a **non-goal**. They get whichever of the two layouts their width selects.
+- There is one breakpoint: `phone:` in `src/styles/theme.css`, and `usePhone()` in `src/ui/usePhone.ts` with the same width. Do not add another breakpoint or a container query.
+- `touch:` (a coarse pointer) is only for the size of a control under a finger. It does not change the layout.
+- Desktop screenshots and layout tests use 1920×1080 (`e2e/shots.spec.ts`). Phone tests use the `phone` project (`e2e/phone.spec.ts`).
+
+### Phone
+
+- The shell shows one pane at a time: **Map · Players · Action**, with a tab bar at the bottom. The toolbar stays on top.
+- The footer of the action (note, payment line, main button) is under every pane, so the main button is always in reach. This is how pattern 2 holds on a phone: the choice and the button that sends it are on one screen, the rest is one tap away.
+- The pane follows the choice (pattern 1): a choice on the board opens Map, a choice of a player opens Players, everything else opens Action. The player can switch at any time.
+- A pane may scroll down. Pattern 9 and "the open step must not need vertical scroll" are desktop rules. Nothing may be cut at the side: `e2e/phone.spec.ts` checks every example for this.
+- The player table keeps the names in view and scrolls the values sideways. A tap on a row opens the sheet of the player; there is no hover sheet.
+- A phone has no hover and no keys. A shortcut key is not shown. A name that desktop cuts with "…" takes a second line where the full name is only on hover (the technology tree, the action picker).
+- The map zooms with two fingers; the "+" and "−" buttons are not shown under a finger. "Fit task" and "Fit board" stay.
+- The reference sheets and the draft menu are one menu in the toolbar. A sheet covers the pane.
+- The app can be installed (`public/manifest.webmanifest`): fullscreen, locked to portrait. There is no service worker: the game is live, and the CDN already caused stale bundles once. The icons come from `scripts/make-icons.mjs`.
+- A new screen is checked in both layouts. Short variants of labels are still not allowed; restructure the row instead.
 
 ## Action panel
 

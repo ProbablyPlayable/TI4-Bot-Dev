@@ -14,10 +14,13 @@ export function Toolbar({
   view,
   drawer,
   onDrawer,
+  phone = false,
 }: {
   view: ToolbarView;
   drawer: string | null;
   onDrawer: (id: string) => void;
+  /** A phone has the reference sheets in the menu: the row has no room for four buttons. */
+  phone?: boolean;
 }) {
   const dispatch = useDispatch();
   const tab = (mode: Workspace, label: string, disabled = false, title?: string) => (
@@ -32,9 +35,13 @@ export function Toolbar({
       {label}
     </button>
   );
+  const draftItems = [
+    { label: "Start over", onSelect: () => dispatch({ type: "startOver" }) },
+    { label: "Discard draft", onSelect: () => dispatch({ type: "discardDraft" }) },
+  ];
   return (
-    <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 py-1.5">
-      <div className="flex min-w-0 flex-col text-xs leading-[1.3] text-muted">
+    <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 py-1.5 phone:flex-wrap phone:gap-x-2 phone:gap-y-1.5 phone:px-3 phone:pt-[max(6px,env(safe-area-inset-top))]">
+      <div className="flex min-w-0 flex-col text-xs leading-[1.3] text-muted phone:flex-1">
         <span>
           Round {view.round} · {view.phase}
         </span>
@@ -64,22 +71,24 @@ export function Toolbar({
           </>
         )}
       </nav>
-      <nav aria-label="Reference" className="ml-auto flex gap-1">
-        {REFERENCES.map(([id, label]) => (
-          <Button
-            key={id}
-            tone="quiet"
-            size="sm"
-            active={drawer === id}
-            aria-expanded={drawer === id}
-            onClick={() => onDrawer(id)}
-          >
-            {label}
-          </Button>
-        ))}
-      </nav>
+      {phone ? null : (
+        <nav aria-label="Reference" className="ml-auto flex gap-1">
+          {REFERENCES.map(([id, label]) => (
+            <Button
+              key={id}
+              tone="quiet"
+              size="sm"
+              active={drawer === id}
+              aria-expanded={drawer === id}
+              onClick={() => onDrawer(id)}
+            >
+              {label}
+            </Button>
+          ))}
+        </nav>
+      )}
       {view.draft && (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 phone:order-last phone:w-full phone:[&>:last-child]:flex-1">
           <Button
             tone="quiet"
             size="icon"
@@ -107,14 +116,17 @@ export function Toolbar({
           >
             Apply to Live
           </Button>
-          <Menu
-            label="More draft actions"
-            items={[
-              { label: "Start over", onSelect: () => dispatch({ type: "startOver" }) },
-              { label: "Discard draft", onSelect: () => dispatch({ type: "discardDraft" }) },
-            ]}
-          />
+          {!phone && <Menu label="More draft actions" items={draftItems} />}
         </div>
+      )}
+      {phone && (
+        <Menu
+          label="Reference and more"
+          items={[
+            ...REFERENCES.map(([id, label]) => ({ label, onSelect: () => onDrawer(id) })),
+            ...(view.draft ? draftItems : []),
+          ]}
+        />
       )}
     </header>
   );

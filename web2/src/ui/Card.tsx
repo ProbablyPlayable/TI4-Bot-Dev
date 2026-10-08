@@ -18,7 +18,7 @@ export function CardHeading({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1 border-b border-line px-3.5 py-1.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1 border-b border-line px-3.5 py-1.5 phone:px-2.5">
       <h3 className="text-base font-semibold">{title}</h3>
       {children != null && (
         <span className={cx("text-xs", bad ? "text-red" : "text-muted")}>{children}</span>

@@ -17,7 +17,7 @@ export function PaymentBar({ view }: { view: PaymentView }) {
       role="group"
       aria-label="Payment"
       className={cx(
-        "pointer-events-auto absolute top-11 left-1/2 z-2 flex -translate-x-1/2 items-center gap-2.5 rounded-md border bg-surface px-3 py-1.5 whitespace-nowrap shadow-lg",
+        "pointer-events-auto absolute top-11 left-1/2 z-2 flex -translate-x-1/2 items-center gap-2.5 rounded-md border bg-surface px-3 py-1.5 whitespace-nowrap shadow-lg phone:inset-x-2.5 phone:top-14 phone:translate-x-0 phone:flex-wrap phone:gap-y-1.5 phone:px-2.5",
         state.border,
       )}
     >
@@ -30,7 +30,7 @@ export function PaymentBar({ view }: { view: PaymentView }) {
         <span className={cx("min-w-[68px] text-sm font-semibold", state.tone)}>{state.label}</span>
       </span>
       {goods && (
-        <span className="flex items-center gap-2 border-l border-line pl-2.5 text-xs text-muted">
+        <span className="flex items-center gap-2 border-l border-line pl-2.5 text-xs text-muted phone:order-last phone:w-full phone:border-l-0 phone:pl-0">
           Trade goods
           <Counter
             value={goods.value}
@@ -51,7 +51,7 @@ export function PaymentBar({ view }: { view: PaymentView }) {
           </Button>
         </span>
       )}
-      <span className="flex items-center gap-1.5 border-l border-line pl-2.5">
+      <span className="flex items-center gap-1.5 border-l border-line pl-2.5 phone:ml-auto phone:border-l-0 phone:pl-0">
         {view.actions.map((action) => (
           <ActionButton key={action.label} view={action} size="sm" />
         ))}

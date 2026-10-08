@@ -16,7 +16,10 @@ const COLUMNS = [
   ["Planets", "Planets"],
 ] as const;
 
-const CELL = "px-1.5 py-0.5 text-right whitespace-nowrap tabular-nums";
+const CELL = "px-1.5 py-0.5 text-right whitespace-nowrap tabular-nums phone:px-2.5 phone:py-2.5";
+// On a phone the values scroll sideways and the name stays in view.
+const NAME =
+  "w-[99%] max-w-0 pr-[5px] text-left phone:sticky phone:left-[18px] phone:z-1 phone:w-auto phone:max-w-none phone:min-w-[132px] phone:bg-board";
 
 function Row({
   row,
@@ -76,7 +79,7 @@ function Row({
         !first && "[&>*]:border-t [&>*]:border-white/[.04]",
       )}
     >
-      <td className="w-[18px] pl-1.5 text-center text-muted">
+      <td className="w-[18px] pl-1.5 text-center text-muted phone:sticky phone:left-0 phone:z-1 phone:bg-board">
         {row.turn === "now" ? (
           <span className="text-accent" title="Active player">
             ▶
@@ -85,7 +88,7 @@ function Row({
           <span title="Next player">›</span>
         ) : null}
       </td>
-      <th scope="row" className="w-[99%] max-w-0 py-0.5 pr-[5px] text-left font-normal">
+      <th scope="row" className={cx(NAME, "py-0.5 font-normal")}>
         <button
           type="button"
           onClick={(event) => {
@@ -107,7 +110,9 @@ function Row({
           </span>
           {/* While the table is the picker, the row has what the choice gives in this place. */}
           {!pick && (
-            <span className={cx("min-w-0 truncate", quiet ?? "text-muted")}>{seat.faction}</span>
+            <span className={cx("min-w-0 truncate phone:hidden", quiet ?? "text-muted")}>
+              {seat.faction}
+            </span>
           )}
           {row.speaker && (
             <span className="min-w-0 truncate text-2xs text-gold" title="Speaker">
@@ -129,7 +134,8 @@ function Row({
           className={cx(
             "absolute top-0 right-[calc(100%+6px)] z-20 hidden w-[min(340px,90vw)] cursor-default rounded-lg border border-line bg-raised px-3 py-2.5 text-xs leading-[1.45] font-normal whitespace-normal text-text shadow-[0_10px_30px_#0008]",
             // While the table is the picker, the sheet of a player does not cover the board.
-            !pick && "group-focus-within:block group-hover:block",
+            // A phone opens the sheet of the player with a tap; it has the same text.
+            !pick && "group-focus-within:block group-hover:block phone:hidden!",
           )}
         >
           <strong>
@@ -174,14 +180,22 @@ export function PlayerTable({
   const hint = open ? "Show only you and the active player" : "Show all players";
   const head = "border-b border-line py-[3px] text-2xs font-semibold text-faint";
   return (
-    <section aria-label="Players" className="relative flex-none border-b border-line bg-board">
+    <section
+      aria-label="Players"
+      className="relative flex-none border-b border-line bg-board phone:w-max phone:min-w-full"
+    >
       <table className="w-full border-collapse text-xs leading-[1.3]">
         <thead>
           <tr>
-            <td className={cx(head, "w-[18px] pl-1.5 text-center")}>
+            <td
+              className={cx(
+                head,
+                "w-[18px] pl-1.5 text-center phone:sticky phone:left-0 phone:z-1 phone:bg-board",
+              )}
+            >
               <button
                 type="button"
-                className="px-0.5 text-xs text-muted"
+                className="px-0.5 text-xs text-muted phone:invisible"
                 aria-expanded={open}
                 aria-label={hint}
                 title={hint}
@@ -190,7 +204,7 @@ export function PlayerTable({
                 {open ? "▾" : "▸"}
               </button>
             </td>
-            <th scope="col" className={cx(head, "w-[99%] max-w-0 pr-[5px] text-left")}>
+            <th scope="col" className={cx(head, NAME)}>
               {open ? "Player" : `Player · ${shown.length} of ${view.rows.length}`}
             </th>
             {COLUMNS.map(([label, title]) => (

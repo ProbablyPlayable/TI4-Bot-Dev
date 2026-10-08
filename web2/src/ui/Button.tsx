@@ -14,9 +14,9 @@ const TONES: Record<ButtonTone, string> = {
   demo: `border-dashed border-line bg-transparent text-muted ${HOVER}`,
 };
 const SIZES: Record<ButtonSize, string> = {
-  md: "min-h-9 px-3.5 py-2 text-sm",
-  sm: "min-h-7 px-[9px] py-[3px] text-xs",
-  icon: "w-8 min-h-8 p-0 text-sm",
+  md: "min-h-9 px-3.5 py-2 text-sm touch:min-h-11",
+  sm: "min-h-7 px-[9px] py-[3px] text-xs touch:min-h-9 touch:px-3",
+  icon: "w-8 min-h-8 p-0 text-sm touch:w-10 touch:min-h-10",
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -69,7 +69,7 @@ export function CloseButton({
       aria-label={label}
       title={label}
       className={cx(
-        "grid size-7 shrink-0 place-items-center rounded-md text-muted hover:bg-hover hover:text-text",
+        "grid size-7 shrink-0 place-items-center rounded-md text-muted hover:bg-hover hover:text-text touch:size-10",
         className,
       )}
       {...rest}

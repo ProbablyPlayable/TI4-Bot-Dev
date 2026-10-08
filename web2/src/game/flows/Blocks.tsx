@@ -40,7 +40,7 @@ function TokenPool({ now, after, up }: { now: number; after: number; up?: boolea
       role="img"
       aria-label={now === after ? `${now} tokens` : `${now} tokens now, ${after} after`}
     >
-      <span className="inline-flex min-w-[216px] items-center gap-1">
+      <span className="inline-flex min-w-[216px] items-center gap-1 phone:min-w-0 phone:flex-wrap">
         {Array.from({ length: Math.max(now, after) }, (_, index) => {
           const added = index >= kept && after > now;
           const removed = index >= kept && !added;
@@ -141,15 +141,21 @@ function MenuRow({ row, grouped }: { row: MenuRowView; grouped: boolean }) {
   return (
     <div
       className={cx(
-        "relative grid min-h-10 items-center gap-x-3 px-3.5 py-1.5 [&+&]:border-t [&+&]:border-line/50",
+        "relative grid min-h-10 items-center gap-x-3 px-3.5 py-1.5 touch:min-h-12 [&+&]:border-t [&+&]:border-line/50",
+        // A phone has no keys: the column of the key is not there.
         grouped
-          ? "grid-cols-[30px_104px_minmax(0,1fr)_auto]"
-          : "grid-cols-[30px_minmax(0,1fr)_auto]",
+          ? "grid-cols-[30px_104px_minmax(0,1fr)_auto] phone:grid-cols-[68px_minmax(0,1fr)_auto]"
+          : "grid-cols-[30px_minmax(0,1fr)_auto] phone:grid-cols-[minmax(0,1fr)_auto]",
         !row.disabled && "focus-within:bg-white/5 hover:bg-white/5",
         row.selected && "shadow-[inset_2px_0_0_var(--color-gold)]",
       )}
     >
-      <span className={cx("justify-self-start", row.disabled ? "text-faint" : "text-accent")}>
+      <span
+        className={cx(
+          "justify-self-start phone:hidden",
+          row.disabled ? "text-faint" : "text-accent",
+        )}
+      >
         <Kbd>{row.key}</Kbd>
       </span>
       {grouped && <span className="text-xs text-muted">{row.group}</span>}
@@ -160,7 +166,7 @@ function MenuRow({ row, grouped }: { row: MenuRowView; grouped: boolean }) {
           aria-pressed={row.selected}
           aria-keyshortcuts={row.key}
           onClick={() => dispatch(row.intent)}
-          className="truncate text-left text-base font-mid outline-none after:absolute after:inset-0 enabled:cursor-pointer disabled:text-faint focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
+          className="truncate text-left text-base font-mid outline-none after:absolute after:inset-0 enabled:cursor-pointer disabled:text-faint phone:whitespace-normal focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
         >
           {row.title}
         </button>
@@ -207,7 +213,8 @@ function SeatList({ rows }: { rows: SeatRowView[] }) {
         <div key={row.order} className="[&+&]:border-t [&+&]:border-line/50">
           <div
             className={cx(
-              "grid min-h-6 grid-cols-[16px_16px_132px_150px_minmax(0,1fr)] items-baseline gap-x-2.5 px-3.5 py-0.5 text-sm",
+              // On a phone the name and the state are one line; what the seat did is the line under it.
+              "grid min-h-6 grid-cols-[16px_16px_132px_150px_minmax(0,1fr)] items-baseline gap-x-2.5 px-3.5 py-0.5 text-sm phone:grid-cols-[16px_16px_minmax(0,1fr)_auto] phone:px-2.5 phone:py-1",
               row.open && "bg-gold/[.06] shadow-[inset_2px_0_0_var(--color-gold)]",
             )}
           >
@@ -222,12 +229,17 @@ function SeatList({ rows }: { rows: SeatRowView[] }) {
             <span className={cx("text-xs whitespace-nowrap", STATUS_TONE[row.status.tone])}>
               {row.status.sign} {row.status.label}
             </span>
-            <span className={cx("min-w-0", row.status.tone === "quiet" && "text-muted")}>
+            <span
+              className={cx(
+                "min-w-0 phone:col-start-3 phone:col-end-[-1] phone:empty:hidden",
+                row.status.tone === "quiet" && "text-muted",
+              )}
+            >
               {row.text}
             </span>
           </div>
           {row.open && (
-            <div className="space-y-1.5 border-l-2 border-gold/60 py-1 pr-2.5 pl-3">
+            <div className="space-y-1.5 border-l-2 border-gold/60 py-1 pr-2.5 pl-3 phone:pr-1.5 phone:pl-1.5">
               <Blocks blocks={row.open} />
             </div>
           )}
@@ -248,7 +260,7 @@ function TechCell({ cell }: { cell: TechCellView }) {
   return (
     <div
       className={cx(
-        "relative flex min-h-[26px] items-center gap-1.5 rounded-md border px-2 py-0.5",
+        "relative flex min-h-[26px] items-center gap-1.5 rounded-md border px-2 py-0.5 touch:min-h-10",
         cell.selected
           ? "border-gold bg-gold/[.12]"
           : cell.state === "open"
@@ -263,7 +275,8 @@ function TechCell({ cell }: { cell: TechCellView }) {
         aria-label={`${cell.name}${cell.state === "owned" ? ", researched" : closed ? `, ${missing} prerequisite${missing === 1 ? "" : "s"} missing` : ""}`}
         onClick={() => dispatch(cell.intent)}
         className={cx(
-          "min-w-0 flex-1 truncate text-left text-xs font-mid outline-none after:absolute after:inset-0 enabled:cursor-pointer focus-visible:after:rounded-md focus-visible:after:outline-2 focus-visible:after:outline-accent",
+          // A phone has no hover for the full name: the name takes a second line.
+          "min-w-0 flex-1 truncate text-left text-xs font-mid outline-none after:absolute after:inset-0 enabled:cursor-pointer focus-visible:after:rounded-md focus-visible:after:outline-2 focus-visible:after:outline-accent phone:whitespace-normal",
           closed ? "text-faint" : cell.state === "owned" ? "text-muted" : "text-text",
         )}
       >
@@ -349,7 +362,7 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
                   </span>
                   {block.aside && <span className="text-xs text-muted">{block.aside}</span>}
                 </div>
-                <div className="grid grid-cols-4 gap-x-2.5">
+                <div className="grid grid-cols-4 gap-x-2.5 phone:grid-cols-2 phone:gap-y-2.5">
                   {block.columns.map((column) => (
                     <div key={column.color} className="space-y-1">
                       <div
@@ -374,6 +387,7 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
                       className={cx(
                         "grid gap-x-2.5 gap-y-1",
                         band.cells.length > 4 ? "grid-cols-5" : "grid-cols-3",
+                        "phone:grid-cols-2",
                       )}
                     >
                       {band.cells.map((cell) => (
@@ -406,7 +420,7 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
                 {block.rows.every((row) => row.order !== undefined) ? (
                   // A list in seat order: two columns, read down the left column first.
                   <div
-                    className="grid grid-flow-col grid-cols-2 [&>.row]:border-t-0"
+                    className="grid grid-flow-col grid-cols-2 phone:grid-flow-row phone:grid-cols-1 [&>.row]:border-t-0"
                     style={{
                       gridTemplateRows: `repeat(${Math.ceil(block.rows.length / 2)}, auto)`,
                     }}

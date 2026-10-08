@@ -24,7 +24,8 @@ export function DemoApp() {
     history.replaceState(null, "", `?${params}`);
   }, [demo.example, demo.viewer]);
   return (
-    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]">
+    // The demo bar is under the shell, so it has the bottom edge of the screen, not the shell.
+    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] [--inset-bottom:0px]">
       <GameShell session={session} />
       <DemoBar demo={demo} />
     </div>

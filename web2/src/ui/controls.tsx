@@ -11,7 +11,7 @@ export interface CounterProps {
 
 export function Counter({ value, max, label, onChange }: CounterProps) {
   const button =
-    "size-7 text-lg text-muted enabled:hover:bg-raised enabled:hover:text-text disabled:opacity-30";
+    "size-7 text-lg text-muted enabled:hover:bg-raised enabled:hover:text-text disabled:opacity-30 touch:size-10";
   return (
     <div className="inline-flex items-center rounded-md border border-line bg-canvas">
       <button
@@ -66,7 +66,7 @@ export function Segmented<T extends string>({
           type="button"
           aria-pressed={option.id === value}
           onClick={() => onChange(option.id)}
-          className="px-[9px] py-[5px] text-xs whitespace-nowrap text-muted aria-pressed:bg-raised aria-pressed:text-accent"
+          className="px-[9px] py-[5px] text-xs whitespace-nowrap text-muted aria-pressed:bg-raised aria-pressed:text-accent touch:px-3 touch:py-2.5"
         >
           {option.label}
         </button>
@@ -88,7 +88,7 @@ export function ChipTabs<T extends string>({ label, options, value, onChange }: 
           type="button"
           aria-pressed={option.id === value}
           onClick={() => onChange(option.id)}
-          className="rounded-full border border-line px-[11px] py-[3px] text-xs font-semibold text-muted aria-pressed:border-line-strong aria-pressed:bg-raised aria-pressed:text-text"
+          className="rounded-full border border-line px-[11px] py-[3px] text-xs font-semibold text-muted aria-pressed:border-line-strong aria-pressed:bg-raised aria-pressed:text-text touch:px-3.5 touch:py-2"
         >
           {option.label}
         </button>
@@ -130,7 +130,7 @@ export function Select({ className, ...rest }: SelectHTMLAttributes<HTMLSelectEl
   return (
     <select
       className={cx(
-        "max-w-full rounded-md border border-line bg-surface px-2 py-1 text-xs",
+        "max-w-full rounded-md border border-line bg-surface px-2 py-1 text-xs touch:py-2",
         className,
       )}
       {...rest}

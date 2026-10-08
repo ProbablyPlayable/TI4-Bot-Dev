@@ -66,7 +66,9 @@ export function useLink(tokens: readonly LinkToken[] | undefined) {
       event.stopPropagation();
       store.set([]);
     };
-    return { "data-link": key, onMouseOver: on, onMouseOut: off, onFocus: on, onBlur: off };
+    // A tap sends a mouse-over with no mouse-out after it: the light would stay.
+    const hover = matchMedia("(hover: hover)").matches ? { onMouseOver: on, onMouseOut: off } : {};
+    return { "data-link": key, ...hover, onFocus: on, onBlur: off };
   }, [store, key]);
   return { linked, props };
 }

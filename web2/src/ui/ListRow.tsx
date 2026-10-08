@@ -34,7 +34,8 @@ export function ListRow({
   return (
     <div
       className={cx(
-        "row flex min-h-9 items-center justify-between gap-3 px-3.5 py-0.5 [.row+&]:border-t [.row+&]:border-line/50",
+        // On a phone the controls go under a text that has no room next to them.
+        "row flex min-h-9 items-center justify-between gap-3 px-3.5 py-0.5 phone:flex-wrap phone:gap-y-1 phone:px-2.5 phone:py-1.5 [.row+&]:border-t [.row+&]:border-line/50",
         invalid && "bg-red/[.027]",
         linked && "bg-cyan/[.06]",
         className,
@@ -51,7 +52,9 @@ export function ListRow({
           {extra}
         </div>
       </div>
-      {controls != null && <div className="flex shrink-0 items-center gap-2">{controls}</div>}
+      {controls != null && (
+        <div className="flex shrink-0 items-center gap-2 phone:ml-auto">{controls}</div>
+      )}
     </div>
   );
 }

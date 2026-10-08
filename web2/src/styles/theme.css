@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "./board.css";
 
+/* The phone shell: a portrait phone shows one pane at a time (see AGENTS.md, "Screen size").
+   `phone:` is for layout, `touch:` is for the size of a control under a finger. */
+@custom-variant phone (@media (max-width: 720px));
+@custom-variant touch (@media (pointer: coarse));
+
 /* Design tokens. Taken from the tactical-action click dummy; every component uses these names. */
 @theme {
   --color-*: initial;
@@ -85,6 +90,8 @@
 
   body {
     overflow: hidden;
+    /* An installed app has no browser bars: a drag down must not reload the page. */
+    overscroll-behavior: none;
     background: var(--color-canvas);
     color: var(--color-text);
     font-family: var(--font-sans);

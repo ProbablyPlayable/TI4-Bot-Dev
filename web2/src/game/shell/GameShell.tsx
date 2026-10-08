@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { shortcuts, type GameSession, type Intent } from "../../model";
-import { Badge, Button, Dialog, InlineNote, LiveRegion, Toast } from "../../ui";
-import { ActionPanel } from "../action/ActionPanel";
+import { Badge, Button, Dialog, InlineNote, LiveRegion, Toast, cx, usePhone } from "../../ui";
+import { ActionFooter, ActionPanel, footerOf } from "../action/ActionPanel";
 import { Board } from "../board/Board";
 import { GameProvider } from "../context";
 import { LinkProvider } from "../link";
@@ -16,9 +16,18 @@ const ACCENT = {
   done: "var(--color-green)",
 };
 
+const PANES = [
+  ["map", "Map"],
+  ["players", "Players"],
+  ["action", "Action"],
+] as const;
+type Pane = (typeof PANES)[number][0];
+
 /**
  * The game screen: one toolbar, then the board and the right column (player table, action panel).
  * The right column has one fixed width. The design target is 1920×1080 or larger; see AGENTS.md.
+ * A portrait phone shows the same three parts one at a time, with the footer of the action under
+ * each of them.
  * It needs a `GameSession` and nothing else. State that only changes what is in view lives here.
  */
 export function GameShell({ session }: { session: GameSession }) {
@@ -27,6 +36,15 @@ export function GameShell({ session }: { session: GameSession }) {
   const [tableOpen, setTableOpen] = useState(true);
   const [applyOpen, setApplyOpen] = useState(false);
   const toggleDrawer = (id: string) => setDrawer((now) => (now === id ? null : id));
+  const phone = usePhone();
+  const [pane, setPane] = useState<Pane>("action");
+  // The pane follows the choice: a choice on the board or in the player table opens that pane.
+  const choiceOn: Pane | null = view.players.pick
+    ? "players"
+    : view.board.task?.interactive || view.board.targeting
+      ? "map"
+      : null;
+  useEffect(() => setPane(choiceOn ?? "action"), [choiceOn]);
 
   const dispatch = useCallback(
     (intent: Intent) => {
@@ -85,6 +103,31 @@ export function GameShell({ session }: { session: GameSession }) {
     };
   }, []);
 
+  const reference = drawer && (
+    <ReferenceDrawer
+      id={drawer}
+      view={view.reference}
+      players={view.players.rows}
+      onClose={() => setDrawer(null)}
+    />
+  );
+  const players = (
+    <PlayerTable
+      view={view.players}
+      open={tableOpen || phone}
+      onToggle={() => setTableOpen(!tableOpen)}
+      onOpenSeat={(seat) => toggleDrawer(`player:${seat}`)}
+    />
+  );
+  const board = (
+    <Board view={view.board} logOpen={drawer === "log"} onLog={() => toggleDrawer("log")} />
+  );
+  const paneClass = (id: Pane) =>
+    cx(
+      "absolute inset-0 grid grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)]",
+      pane !== id && "invisible",
+    );
+
   return (
     <GameProvider seats={view.seats} dispatch={dispatch}>
       <LinkProvider>
@@ -92,28 +135,58 @@ export function GameShell({ session }: { session: GameSession }) {
           className="flex min-h-0 flex-col"
           style={{ "--accent": ACCENT[view.accent] } as CSSProperties}
         >
-          <Toolbar view={view.toolbar} drawer={drawer} onDrawer={toggleDrawer} />
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_1040px]">
-            <Board view={view.board} logOpen={drawer === "log"} onLog={() => toggleDrawer("log")}>
-              {drawer && (
-                <ReferenceDrawer
-                  id={drawer}
-                  view={view.reference}
-                  players={view.players.rows}
-                  onClose={() => setDrawer(null)}
-                />
-              )}
-            </Board>
-            <div className="flex min-h-0 min-w-0 flex-col border-l border-line">
-              <PlayerTable
-                view={view.players}
-                open={tableOpen}
-                onToggle={() => setTableOpen(!tableOpen)}
-                onOpenSeat={(seat) => toggleDrawer(`player:${seat}`)}
-              />
-              <ActionPanel view={view.action} reveal={view.reveal} />
+          <Toolbar view={view.toolbar} drawer={drawer} onDrawer={toggleDrawer} phone={phone} />
+          {phone ? (
+            <>
+              <div className="relative min-h-0 flex-1">
+                {/* Every pane stays in the page, so the board keeps its camera and its size. */}
+                <div className={paneClass("map")} inert={pane !== "map"}>
+                  {board}
+                </div>
+                <div
+                  className={cx(paneClass("players"), "block! overflow-auto bg-board")}
+                  inert={pane !== "players"}
+                >
+                  {players}
+                </div>
+                <div className={paneClass("action")} inert={pane !== "action"}>
+                  <ActionPanel view={view.action} reveal={view.reveal} footer={false} />
+                </div>
+                {reference}
+              </div>
+              <ActionFooter view={footerOf(view.action)} />
+              <nav
+                aria-label="Panes"
+                className="flex border-t border-line bg-well pb-(--inset-bottom,env(safe-area-inset-bottom))"
+              >
+                {PANES.map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={pane === id}
+                    onClick={() => {
+                      setDrawer(null);
+                      setPane(id);
+                    }}
+                    className="min-h-12 flex-1 border-t-2 border-transparent text-sm font-strong text-muted aria-pressed:border-accent aria-pressed:text-accent"
+                  >
+                    {label}
+                    {choiceOn === id && pane !== id && " ·"}
+                  </button>
+                ))}
+              </nav>
+            </>
+          ) : (
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_1040px]">
+              <Board view={view.board} logOpen={drawer === "log"} onLog={() => toggleDrawer("log")}>
+                {reference}
+              </Board>
+              <div className="flex min-h-0 min-w-0 flex-col border-l border-line">
+                {players}
+                <ActionPanel view={view.action} reveal={view.reveal} />
+              </div>
             </div>
-          </div>
+          )}
           <Dialog
             open={applyOpen && !!view.apply}
             onClose={() => setApplyOpen(false)}

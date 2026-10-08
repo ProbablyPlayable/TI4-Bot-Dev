@@ -61,7 +61,7 @@ export function Menu({
               key={item.label}
               type="button"
               role="menuitem"
-              className="rounded-[5px] px-2.5 py-2 text-left text-sm hover:bg-[#2a3a50]"
+              className="rounded-[5px] px-2.5 py-2 text-left text-sm hover:bg-[#2a3a50] touch:py-3"
               onClick={() => {
                 setOpen(false);
                 item.onSelect();
@@ -115,7 +115,7 @@ export function Hint({ label, children }: { label: string; children: ReactNode }
   const unpeek = () => setOpen((now) => (now === "peek" ? null : now));
   // Fixed position: the text is not cut by a scrolling parent.
   const rect = open ? button.current?.getBoundingClientRect() : undefined;
-  const width = 340;
+  const width = Math.min(340, window.innerWidth - 16);
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hover only shows the text early; the button inside is the control
     <span ref={root} className="relative inline-flex" onMouseEnter={peek} onMouseLeave={unpeek}>
@@ -131,7 +131,8 @@ export function Hint({ label, children }: { label: string; children: ReactNode }
           setOpen(open === "pinned" ? null : "pinned");
         }}
         className={cx(
-          "grid size-[18px] shrink-0 place-items-center rounded-full border text-2xs leading-none font-bold hover:border-line-strong hover:text-text",
+          // Under a finger the button keeps its size in the layout; the area that takes the tap is larger.
+          "relative grid size-[18px] shrink-0 place-items-center rounded-full border text-2xs leading-none font-bold hover:border-line-strong hover:text-text touch:size-6 touch:text-xs touch:after:absolute touch:after:-inset-2.5",
           open === "pinned" ? "border-cyan text-cyan" : "border-line text-faint",
         )}
       >
@@ -233,7 +234,7 @@ export function Drawer({
   return (
     <aside
       aria-label={title}
-      className="absolute inset-y-0 left-0 z-5 flex w-[min(420px,94%)] flex-col border-r border-line bg-surface shadow-[12px_0_30px_#0006]"
+      className="absolute inset-y-0 left-0 z-5 flex w-[min(420px,94%)] flex-col border-r border-line bg-surface shadow-[12px_0_30px_#0006] phone:w-full phone:border-r-0"
     >
       <div className="flex items-center justify-between border-b border-line py-2 pr-2.5 pl-4">
         <h2 className="text-md font-semibold">{title}</h2>

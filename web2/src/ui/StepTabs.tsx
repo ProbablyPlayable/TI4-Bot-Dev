@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 import { cx } from "./cx";
 import { Icon } from "./Icon";
 
@@ -38,6 +38,13 @@ export function StepTabs({
   panelId = "step-panel",
 }: StepTabsProps) {
   const list = useRef<HTMLDivElement>(null);
+  // Where the row of steps scrolls (a phone), the selected step is in view.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the selected step moves the row
+  useEffect(() => {
+    list.current
+      ?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selected]);
   const reached = tabs
     .map((tab, index) => (tab.status === "future" ? -1 : index))
     .filter((index) => index >= 0);
@@ -95,7 +102,8 @@ export function StepTabs({
               title={`${tab.name}${tab.caption ? " · " + tab.caption : ""}`}
               data-state={tab.status}
               onClick={() => onSelect(index)}
-              className="flex min-w-0 flex-[1_1_0] items-center gap-[7px] border-b-[3px] border-transparent px-2.5 text-left text-sm whitespace-nowrap enabled:hover:bg-white/[.02] disabled:text-faint aria-selected:border-b-cyan aria-selected:bg-cyan/[.04]"
+              // On a phone the row of steps scrolls sideways: a step keeps its name.
+              className="flex min-w-0 flex-[1_1_0] items-center gap-[7px] border-b-[3px] border-transparent px-2.5 text-left text-sm whitespace-nowrap enabled:hover:bg-white/[.02] disabled:text-faint aria-selected:border-b-cyan aria-selected:bg-cyan/[.04] phone:flex-none phone:px-3"
             >
               <span
                 className={cx(
@@ -116,7 +124,7 @@ export function StepTabs({
               <span className="font-strong">{tab.name}</span>
               <span
                 className={cx(
-                  "min-w-0 overflow-hidden text-xs text-ellipsis",
+                  "min-w-0 overflow-hidden text-xs text-ellipsis phone:hidden",
                   review ? "text-red" : isCurrent ? "text-accent" : "text-muted",
                 )}
               >
