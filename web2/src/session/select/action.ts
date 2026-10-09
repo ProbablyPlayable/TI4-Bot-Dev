@@ -1,0 +1,122 @@
+// The action panel: every decision as one list. A dedicated screen later takes one kind of
+// decision out of this list; the list stays for every kind that has none.
+import type { BoardTaskView, FlowActionView, MenuRowView } from "../../model";
+import type { Choice, SessionUpdate } from "../wire";
+import { sentence } from "./names";
+
+/** What the player does in this page, between two updates. Nothing of it is sent. */
+export interface LocalState {
+  /** The system in the inspector. */
+  inspected: string | null;
+  /** The staged option of the pending choice, by id. */
+  staged: string | null;
+  /** The nonce of the choice that was answered. Its update is still the latest one. */
+  sent: string | null;
+  /** Why the game stopped, if it did. */
+  error: string | null;
+}
+
+/** The choice that the viewer can answer now. */
+export const openChoice = (update: SessionUpdate, local: LocalState): Choice | null =>
+  update.pending_choice && update.pending_choice.nonce !== local.sent && !local.error
+    ? update.pending_choice.choice
+    : null;
+
+/** A choice of systems is also made on the board: every option is a system. */
+export function boardTask(update: SessionUpdate, local: LocalState): BoardTaskView | null {
+  const choice = openChoice(update, local);
+  if (!choice?.options.length || !choice.options.every((option) => option.kind === "activate")) {
+    return null;
+  }
+  return {
+    target: "system",
+    kind: "pick",
+    interactive: true,
+    values: Object.fromEntries(choice.options.map((option) => [option.id, 0])),
+    chosen: local.staged ? { [local.staged]: true } : {},
+    verb: "Choose",
+    unit: "system",
+  };
+}
+
+const KEYS = "123456789";
+
+export function selectAction(update: SessionUpdate, local: LocalState): FlowActionView {
+  const choice = openChoice(update, local);
+  const onBoard = boardTask(update, local) !== null;
+  const staged = choice?.options.find((option) => option.id === local.staged) ?? null;
+  const rows: MenuRowView[] = (choice?.options ?? []).map((option, index) => ({
+    key: KEYS[index] ?? "",
+    title: sentence(option.label || option.id),
+    selected: option.id === staged?.id,
+    disabled: false,
+    intent: { type: "chooseOption", option: option.id },
+  }));
+  const status = update.turn_status;
+  const idle = local.error
+    ? local.error
+    : status.kind === "game_over"
+      ? "The game is over."
+      : "The other seats are playing.";
+  return {
+    kind: "flow",
+    title: choice ? "Decision" : "Waiting",
+    subtitle: "",
+    badge: staged ? { tone: "draft", label: "Not sent" } : null,
+    past: null,
+    tabs: [],
+    selected: 0,
+    current: null,
+    contentKey: update.pending_choice?.nonce ?? "idle",
+    interrupt: null,
+    closing: [],
+    heading: choice ? sentence(choice.prompt) : "Waiting",
+    pill: choice ? { tone: "live", label: "Your decision" } : null,
+    trail: [],
+    help: [],
+    blocks: !choice
+      ? [{ kind: "note", tone: local.error ? "accent" : "quiet", text: idle }]
+      : onBoard
+        ? // The board is where a system is chosen. The panel has the choice, not the candidates.
+          [
+            {
+              kind: "note",
+              tone: staged ? "accent" : "quiet",
+              strong: staged ? `System ${staged.id}` : undefined,
+              text: staged
+                ? "Selected on the board."
+                : `${choice.options.length} systems can be chosen on the board.`,
+            },
+          ]
+        : [{ kind: "menu", rows }],
+    footer: {
+      note: !choice
+        ? ""
+        : staged
+          ? `Selected: ${sentence(staged.label || staged.id)}`
+          : `Choose one of ${choice.options.length}.`,
+      error: false,
+      actions: choice
+        ? [
+            ...(staged
+              ? [
+                  {
+                    label: "Clear",
+                    tone: "quiet" as const,
+                    key: "Escape",
+                    intent: { type: "clearChoice" as const },
+                  },
+                ]
+              : []),
+            {
+              label: "Send",
+              tone: "primary",
+              disabled: !staged,
+              key: "Enter",
+              intent: { type: "flow", action: "resolve" },
+            },
+          ]
+        : [],
+    },
+  };
+}

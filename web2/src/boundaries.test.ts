@@ -10,7 +10,9 @@ const ALLOWED: Record<string, string[]> = {
   model: [],
   game: ["ui", "model"],
   mock: ["model", "ui"],
-  dev: ["ui", "model", "game", "mock"],
+  // The game from a transport (the wasm engine now, the server later), as the view models.
+  session: ["model"],
+  dev: ["ui", "model", "game", "mock", "session"],
 };
 
 const root = dirname(fileURLToPath(import.meta.url));

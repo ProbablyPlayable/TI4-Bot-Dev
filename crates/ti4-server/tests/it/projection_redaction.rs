@@ -333,6 +333,46 @@ fn state_update_preserves_identical_redaction_guarantees() {
     assert!(!json.contains("\"pending_choice\""));
 }
 
+/// The wasm build hands `SessionUpdate` to web2 and the server sends `StateUpdateMsg`. One client
+/// reads both, so the fields they share must serialize the same.
+#[test]
+fn a_session_update_is_the_shared_part_of_a_state_update() {
+    let game = create_sample_game();
+    let choice = create_sample_pending_choice();
+    let mut viewers = vec![ViewerRole::Spectator];
+    viewers.extend(
+        game.players
+            .iter()
+            .map(|p| ViewerRole::Player(p.id.clone())),
+    );
+    let mut asked_seen = false;
+    for viewer in &viewers {
+        let pending = Some((&choice, "nonce_123"));
+        let message = serde_json::to_value(project_state_update("g", 2, &game, viewer, pending))
+            .expect("state update");
+        let update = serde_json::to_value(ti4_server::projection::project_session_update(
+            &game,
+            viewer,
+            pending,
+            &[],
+        ))
+        .expect("session update");
+        let fields = update.as_object().expect("an object");
+        asked_seen |= fields.contains_key("pending_choice");
+        for (name, value) in fields {
+            assert_eq!(&message[name], value, "{name} for {viewer:?}");
+        }
+        for name in ["viewer", "view", "turn_status"] {
+            assert!(fields.contains_key(name), "{name} for {viewer:?}");
+        }
+        assert_eq!(
+            fields.contains_key("pending_choice"),
+            message.get("pending_choice").is_some()
+        );
+    }
+    assert!(asked_seen, "the asked seat is among the viewers");
+}
+
 #[test]
 fn player_view_uses_the_model_redaction_result_including_search_warrant() {
     let mut game = create_sample_game();

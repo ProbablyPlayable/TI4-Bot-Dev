@@ -166,3 +166,10 @@ All eight cards use one frame: one list of seats. There are no tabs, no seat col
 - Before you commit Rust changes, all three must be clean: `cargo fmt --all -- --check`, `cargo l-web` (Clippy, no warnings), and `cargo t-web`.
 - The server integration tests are one binary. Run one file with `cargo test -p ti4-server --test it <file name>::`.
 - Temporary (2026-10-09): update this section when the other crates are fixed.
+
+## Local play
+
+- `?local=<seed>&players=8&humans=<mask>` plays a real game of the engine in the page (`src/dev/LocalApp.tsx`). Build the engine first: `scripts/build-wasm.sh`.
+- `src/session/` turns an update of the game into the view models. It imports `model` only, and it decides no rule: a value that needs a rule comes from the engine.
+- A decision without a dedicated screen is one list in the action panel. A choice of systems is made on the board.
+- The details and the limits are in `crates/ti4-wasm/README.md`.

@@ -338,7 +338,7 @@ export interface RowView {
 export interface MenuRowView {
   /** Shown on the first row of a group only. */
   group?: string;
-  /** Shortcut key: a letter or a digit. */
+  /** Shortcut key: a letter or a digit. Empty for a row that has none: a list with more rows than keys. */
   key: string;
   title: string;
   /** Game state of this choice: a count, or the reason why it is not allowed. */

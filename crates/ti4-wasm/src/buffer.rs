@@ -11,14 +11,12 @@ use std::sync::Mutex;
 
 /// The largest result of an export, in bytes. A full game state is about 40 KiB (2026-10-09).
 pub const RESPONSE_CAPACITY: usize = 256 * 1024;
-/// The largest pending choice, in bytes.
-pub const PENDING_CAPACITY: usize = 64 * 1024;
-/// The largest view of a seat, in bytes. A view early in a game is about 20 KiB (2026-10-09).
-pub const VIEW_CAPACITY: usize = 128 * 1024;
+/// The largest update for the host, in bytes: the view of a seat and the choice it is asked.
+/// Early in a game of eight an update is about 40 KiB (2026-10-09).
+pub const UPDATE_CAPACITY: usize = 512 * 1024;
 
 pub static RESPONSE: Mutex<Buffer<RESPONSE_CAPACITY>> = Mutex::new(Buffer::new());
-pub static PENDING: Mutex<Buffer<PENDING_CAPACITY>> = Mutex::new(Buffer::new());
-pub static VIEW: Mutex<Buffer<VIEW_CAPACITY>> = Mutex::new(Buffer::new());
+pub static UPDATE: Mutex<Buffer<UPDATE_CAPACITY>> = Mutex::new(Buffer::new());
 
 pub struct Buffer<const N: usize> {
     bytes: [u8; N],

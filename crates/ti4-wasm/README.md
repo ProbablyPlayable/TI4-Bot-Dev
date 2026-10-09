@@ -2,9 +2,9 @@
 
 The rules engine compiled to WebAssembly, for an offline hotseat mode in `web2/`.
 
-This crate is a spike (2026-10-09). It answers three questions: how large the wasm file is, what
-could make it smaller, and whether the engine's blocking decisions work in a browser. It is not
-yet the interface that `web2` will use.
+It began as a spike (2026-10-09) that answered three questions: how large the wasm file is, what
+could make it smaller, and whether the engine's blocking decisions work in a browser. `web2` now
+plays a game through it (see "Local play in web2").
 
 ## Result
 
@@ -14,8 +14,8 @@ yet the interface that `web2` will use.
 - A seeded game of three to eight players gives the same state in wasm and natively.
 - A decision of a player can suspend the engine and wait for a promise (JSPI). The engine needs
   no change for it.
-- The host gets the same redacted view as online play (`GameView` from `ti4-view`), also while
-  the game waits in a choice.
+- The host gets what a client of the server gets: the redacted view, the pending choice and the
+  turn status (`SessionUpdate` from `ti4-view`, the shared part of the server's `StateUpdateMsg`).
 
 ## Size
 
@@ -107,9 +107,9 @@ New code uses data structures that fit the use, with fixed or arena memory, so t
 have to be migrated when the engine changes.
 
 - Everything that crosses the boundary is in a fixed static buffer (`src/buffer.rs`): the result
-  of an export (`RESPONSE_CAPACITY`, 256 KiB), the pending choice (`PENDING_CAPACITY`, 64 KiB)
-  and the view of the asked seat (`VIEW_CAPACITY`, 128 KiB). A full game state is about 40 KiB,
-  a choice about 1 KiB and a view early in a game about 20 KiB, as of this spike.
+  of an export (`RESPONSE_CAPACITY`, 256 KiB) and the update for the host (`UPDATE_CAPACITY`,
+  512 KiB). A full game state is about 40 KiB. An update of a game of eight is 26 KiB at the
+  start, and the largest of one full game (seed 3) was 42 KiB.
 - A buffer never grows and never moves. The host reads every result at the same address.
 - A value is serialized directly into its buffer. No intermediate `String` or `Value` is built.
 - A value that does not fit fails the call at once. The error says what was too large, its size,
@@ -127,8 +127,8 @@ have to be migrated when the engine changes.
   boxed decider, the setup lists) and the text of an error. The engine itself allocates on every
   step, so the global allocator stays for now.
 - The views allocate too. A decider is given no game state, so the run keeps a copy of the state
-  and refreshes it after each step, and `ti4-view` builds a `GameView` of maps and vectors from
-  it. Both are shaped by the engine's types and change with them. The view is then serialized
+  and refreshes it after each step and at each choice that the engine offers with its position,
+  and `ti4-view` builds a `GameView` of maps and vectors from it. Both are shaped by the engine's types and change with them. The view is then serialized
   directly into its buffer.
 - Serializing goes through `dyn Write`. One copy of every serializer for each writer type cost
   39 KB.
@@ -141,15 +141,24 @@ Plain C ABI, no `wasm-bindgen`. The crate has its own `[lints]` because the boun
 | Export | |
 |---|---|
 | `ti4_run_seeded(seed, players, max_steps) -> status` | Random deciders on all seats; the result is the state. |
-| `ti4_play_hosted(seed, choices) -> status` | Seat `a` is answered by the host through `host.ask`. |
+| `ti4_play(seed, players, human_mask) -> status` | Plays a game to its end. A seat whose bit is set in the mask (bit 0 is seat `a`) is answered by the host through `host.ask`; the others decide at random. |
 | `ti4_response_ptr()` | The address of the result or the error of the last export. |
-| `ti4_pending_ptr()`, `ti4_pending_len()` | The choice the game waits in; length 0 when it does not wait. |
-| `ti4_view_ptr()`, `ti4_view_len()` | The `GameView` of the seat that is asked; length 0 when the game does not wait. |
+| `ti4_update_ptr()`, `ti4_update_len()` | The update for the host: while the game waits in a choice, and after `ti4_play` has returned. Length 0 when there is none. |
 
 The result of `ti4_run_seeded` has the state and, as `view`, what seat `a` is shown of it.
 
 A status of 0 or more is the length of a JSON result. A status below 0 is the negated length of
-an error text. The import `host.ask() -> i32` returns the index of the chosen option.
+an error text.
+
+The update is `{ viewer, view, pending_choice, turn_status }`, with the names and shapes of the
+same fields of the server's `StateUpdateMsg`. A test of `ti4-server` keeps them equal
+(`a_session_update_is_the_shared_part_of_a_state_update`). The viewer is the seat that is asked.
+The nonce of a choice is its number in the game.
+
+The import `host.ask() -> i32` returns the index of the chosen option. A negative answer leaves
+the game: every later choice fails without asking, the run unwinds, and `ti4_play` returns with
+`stopped` set. A choice with one option is asked like any other, as on the server: the engine
+itself skips the choices that need no answer.
 
 ## Decisions with JSPI
 
@@ -162,13 +171,40 @@ stack is parked until the promise of the answer settles.
 - The glue is about ten lines of JS, written by hand.
 - While the game is parked, other exports of the same instance can be called. They must not
   touch the game, which the parked stack has borrowed. They read a copy that was stored when the
-  choice was offered: this is what the pending buffer and the view buffer are.
+  choice was offered: this is what the update buffer is.
 - Such a call must return before the game is resumed. Rust keeps a second stack in linear
   memory, and the calls share it.
 - Undo cannot rewind a parked stack. It is a replay from the seed and the decision log.
 - Checked in Chromium 156 only. Firefox and Safari are not checked. The fallback is a Web Worker
   that blocks in `Atomics.wait`; it needs cross-origin isolation, and a blocked worker cannot
   answer queries.
+
+## Local play in web2
+
+`web2/?local=<seed>&players=8&humans=<mask>` plays a game of this engine in the shell of web2.
+`humans=1` is seat `a` against seven random seats; `humans=255` is hotseat for eight.
+
+- `web2/scripts/build-wasm.sh` builds the file and copies it to `web2/src/session/ti4.wasm`
+  (not in the repository).
+- `web2/src/session/` is the client side: `Transport` (updates in, `submitChoice` out),
+  `wasmTransport.ts` (the JSPI glue), the selectors from an update to the view models of web2,
+  and `useLiveSession`. A websocket transport for the server needs the same two things.
+- Every decision is one list in the action panel. A choice of systems is made on the board.
+  The dedicated screens of web2 are not connected yet.
+- `cargo run -p ti4-wasm --example record -- <seed> <players> <mask> <choice number>` writes the
+  update of one choice. The selector tests of web2 use two such files.
+
+Limits:
+
+- The random seats play on the main thread between two choices, and the page does not respond
+  in that time. In one full game (seed 3, eight seats, 296 choices of seat `a`, Chromium) the
+  pause was 10 ms in the median, under 0.16 s for 90% of the choices, and 0.6 to 0.75 s at most.
+- Hotseat shows the hand of the asked seat at once. There is no hand-over screen yet.
+- The view has ids, not names. web2 shows technologies by id and has a small table for the
+  names and commodity values of the eight factions (`session/select/names.ts`).
+- Systems outside the map (the wormhole nexus, the fracture) are not on the board of web2.
+- The view does not say whose home a system is, and has no combat strength.
+- No saved game, no undo. A reload starts the game again from its seed.
 
 ## Eight players
 
@@ -193,13 +229,13 @@ content does not have.
   `preset.rs` and `maps/`.
 - The view of a seat is as old as the last finished step, apart from the combat and invasion
   boundary, which is current. The server has the same limit.
-- The JSPI check reads the view at each choice, but nobody holds an action card that early, so
+- The JSPI check reads the update at each choice, but nobody holds an action card that early, so
   it does not show the redaction. The tests of `ti4-server` do (`tests/projection_redaction.rs`).
 - The other workspace crates were not rebuilt after the `rand` change or the move to
   `ti4-view`. `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-bot-agent` and `ti4-wasm` pass their
   tests. `ti4-advisor` uses the moved paths through the re-exports of `ti4-server` and was not
   built (it needs libtorch).
-- No UI queries, no saved games, no undo.
+- No UI queries, no saved games, no undo, no bots other than random.
 
 ## Commands
 

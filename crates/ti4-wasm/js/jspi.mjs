@@ -27,18 +27,22 @@ const report = await page.evaluate(async (base64) => {
   const ask = new WebAssembly.Suspending(async () => {
     // A real timer tick: the event loop runs while the game is parked.
     await new Promise((resolve) => setTimeout(resolve, 5));
-    // A query into the same instance while its game is suspended.
-    const choice = JSON.parse(text(exports.ti4_pending_ptr(), exports.ti4_pending_len()));
-    asked.push(`${choice.player}: ${choice.prompt} [${choice.options.length}]`);
+    // A negative answer leaves the game: the engine unwinds and the export returns.
+    if (asked.length === 10) return -1;
+    // A query into the same instance while its game is suspended: the update for the host.
+    const update = JSON.parse(text(exports.ti4_update_ptr(), exports.ti4_update_len()));
+    const { nonce, choice } = update.pending_choice;
+    asked.push(`${nonce} ${choice.player}: ${choice.prompt} [${choice.options.length}]`);
     // The view of the asked seat: its own hand is listed, another seat's is only a count. Nobody
     // holds a card this early (`otherCards` is 0), so this shows the shape, not the redaction.
-    const view = JSON.parse(text(exports.ti4_view_ptr(), exports.ti4_view_len()));
+    const view = update.view;
     // An empty list is left out of the JSON.
     const held = (player) => player.held_action_cards ?? [];
     const own = view.players.find((player) => player.id === choice.player);
     const others = view.players.filter((player) => player.id !== choice.player);
     views.push({
-      bytes: exports.ti4_view_len(),
+      bytes: exports.ti4_update_len(),
+      viewerIsAsked: update.viewer.seat === choice.player,
       players: view.players.length,
       tiles: (view.board.map_tiles ?? []).length,
       ownHandListed: held(own).length === own.action_cards_count,
@@ -48,9 +52,10 @@ const report = await page.evaluate(async (base64) => {
     return choice.options.length - 1;
   });
   ({ exports } = (await WebAssembly.instantiate(bytes, { host: { ask } })).instance);
-  const play = WebAssembly.promising(exports.ti4_play_hosted);
+  const play = WebAssembly.promising(exports.ti4_play);
   const started = performance.now();
-  const running = play(7, 10);
+  // Seed 7, eight seats, seat a on the host.
+  const running = play(7, 8, 1);
   const pendingBeforeFirstAnswer = running instanceof Promise;
   const result = response(await running);
   return { pendingBeforeFirstAnswer, asked, views, result, ms: Math.round(performance.now() - started) };
@@ -59,6 +64,11 @@ console.log(`chromium ${browser.version()}`);
 console.log(JSON.stringify(report, null, 2));
 await browser.close();
 const viewsHold = report.views?.every(
-  (view) => view.players === 6 && view.tiles > 0 && view.ownHandListed && view.otherHandsHidden,
+  (view) =>
+    view.players === 8 &&
+    view.tiles > 0 &&
+    view.viewerIsAsked &&
+    view.ownHandListed &&
+    view.otherHandsHidden,
 );
 if (report.error || report.asked.length !== 10 || !viewsHold) process.exit(1);

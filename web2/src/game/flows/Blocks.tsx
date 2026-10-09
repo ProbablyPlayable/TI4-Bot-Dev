@@ -156,7 +156,7 @@ function MenuRow({ row, grouped }: { row: MenuRowView; grouped: boolean }) {
           row.disabled ? "text-faint" : "text-accent",
         )}
       >
-        <Kbd>{row.key}</Kbd>
+        {row.key && <Kbd>{row.key}</Kbd>}
       </span>
       {grouped && <span className="text-xs text-muted">{row.group}</span>}
       <span className="flex min-w-0 flex-wrap items-center gap-x-2">
@@ -402,9 +402,10 @@ export function Blocks({ blocks }: { blocks: BlockView[] }) {
             return (
               <Card key={index}>
                 {block.title && <CardHeading title={block.title} />}
-                {block.rows.map((row) => (
+                {block.rows.map((row, index) => (
                   <MenuRow
-                    key={row.key}
+                    // A long list has rows without a shortcut key, so the key does not identify a row.
+                    key={index}
                     row={row}
                     grouped={block.rows.some((item) => item.group)}
                   />

@@ -87,6 +87,12 @@ pub fn project_state_update_with_map(
     map_tiles: &[BoardTileView],
     galaxy_layout: &GalaxyLayout,
 ) -> StateUpdateMsg {
+    let SessionUpdate {
+        viewer: _,
+        view,
+        pending_choice: pending,
+        turn_status,
+    } = project_session_update(state, viewer, pending_choice, map_tiles);
     StateUpdateMsg {
         history: crate::protocol::server::HistoryStatus::default(),
         current_path: None,
@@ -94,17 +100,11 @@ pub fn project_state_update_with_map(
         game_id: game_id.to_owned(),
         game_version,
         viewer: viewer.clone(),
-        view: project_game_view_full(
-            state,
-            viewer,
-            map_tiles,
-            pending_choice.map(|(c, _)| c),
-            &[],
-        ),
+        view,
         state: redacted_state(state, viewer),
         galaxy_layout: galaxy_layout.clone(),
-        pending_choice: project_pending_choice(viewer, pending_choice),
-        turn_status: project_turn_status(state, pending_choice.map(|(c, _)| c)),
+        pending_choice: pending,
+        turn_status,
         auto_resolved: Vec::new(),
         reaction_modes: BTreeMap::new(),
     }

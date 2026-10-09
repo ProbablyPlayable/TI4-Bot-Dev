@@ -634,6 +634,37 @@ pub struct PendingChoiceEnvelope {
     pub choice: Choice,
 }
 
+/// What a client is shown of a game: the part of a state update that depends on the game alone.
+///
+/// The server's `StateUpdateMsg` has these four fields under the same names, and the wasm build
+/// hands them to its host as they are, so one client reads both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUpdate {
+    pub viewer: ViewerRole,
+    pub view: GameView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_choice: Option<PendingChoiceEnvelope>,
+    pub turn_status: PublicTurnStatus,
+}
+
+/// Projects what `viewer` is shown of `state` while the game waits in `pending_choice`.
+#[must_use]
+pub fn project_session_update(
+    state: &GameState,
+    viewer: &ViewerRole,
+    pending_choice: Option<(&Choice, &str)>,
+    map_tiles: &[BoardTileView],
+) -> SessionUpdate {
+    let choice = pending_choice.map(|(choice, _)| choice);
+    SessionUpdate {
+        viewer: viewer.clone(),
+        view: project_game_view_full(state, viewer, map_tiles, choice, &[]),
+        pending_choice: project_pending_choice(viewer, pending_choice),
+        turn_status: project_turn_status(state, choice),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

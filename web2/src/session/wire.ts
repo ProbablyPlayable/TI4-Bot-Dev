@@ -1,0 +1,155 @@
+/**
+ * The part of the wire protocol that web2 reads. The shapes are the serde output of the Rust
+ * types named in each comment (`crates/ti4-view`, `crates/ti4-engine`). The server sends them in
+ * `StateUpdateMsg`, the wasm build hands them over as `SessionUpdate`: same names, same shapes.
+ */
+
+/** `ti4_view::status::ViewerRole` */
+export type ViewerRole = { role: "player"; seat: string } | { role: "spectator" };
+
+/** `ti4_view::status::PublicTurnStatus` */
+export type PublicTurnStatus =
+  | { kind: "active_turn"; player: string; phase: string; round: number }
+  | { kind: "waiting_for_decision"; seat: string; phase: string; round: number; stage: string }
+  | { kind: "phase_transition"; phase: string; round: number }
+  | { kind: "game_over"; winner?: string | null };
+
+/** `ti4_engine::choice::ChoiceOption` */
+export interface ChoiceOption {
+  id: string;
+  kind: string;
+  label: string;
+  payload: Record<string, unknown>;
+  auto_resolved?: boolean;
+}
+
+/** `ti4_engine::choice::Choice`. `context` and `details` are not read yet. */
+export interface Choice {
+  player: string;
+  prompt: string;
+  options: ChoiceOption[];
+  context?: unknown;
+  details?: Record<string, unknown>;
+}
+
+/** `ti4_view::projection::PendingChoiceEnvelope` */
+export interface PendingChoiceEnvelope {
+  nonce: string;
+  choice: Choice;
+}
+
+/** `ti4_view::view::PlayerView` */
+export interface PlayerView {
+  id: string;
+  faction: string;
+  victory_points: number;
+  trade_goods: number;
+  commodities: number;
+  tactic_tokens: number;
+  fleet_tokens: number;
+  strategic_tokens: number;
+  passed: boolean;
+  strategy_cards: string[];
+  exhausted_strategy_cards: string[];
+  technologies: string[];
+  exhausted_technologies: string[];
+  relics: string[];
+  exhausted_relics: string[];
+  action_cards_count: number;
+  secret_objectives_count: number;
+  held_action_cards?: string[];
+  held_secret_objectives?: string[];
+  scored_secret_objectives?: string[];
+  leaders: Record<string, string>;
+}
+
+/** `ti4_view::view::PlanetView` */
+export interface PlanetView {
+  planet_id: string;
+  controlled_by: string | null;
+  exhausted: boolean;
+  attachments?: string[];
+}
+
+/** `ti4_view::view::PlacedUnitView` */
+export interface PlacedUnitView {
+  unit_type: string;
+  owner: string;
+  planet: string | null;
+  damaged: boolean;
+  galvanized?: boolean;
+}
+
+/** `ti4_view::view::SystemView` */
+export interface SystemView {
+  system_id: string;
+  command_tokens: string[];
+  planets: Record<string, PlanetView>;
+  units: PlacedUnitView[];
+}
+
+/** `ti4_view::view::PlanetMetaView` */
+export interface PlanetMetaView {
+  id: string;
+  label: string;
+  resources: number;
+  influence: number;
+  traits?: string[];
+  tech_specialties?: string[];
+  legendary?: boolean;
+  space_station?: boolean;
+}
+
+/** `ti4_view::view::BoardTileView` */
+export interface BoardTileView {
+  system_id: string;
+  label: string;
+  q: number;
+  r: number;
+  hyperlane?: boolean;
+  special_area?: string;
+  anomalies?: string[];
+  wormholes?: string[];
+  egress?: boolean;
+  planets?: PlanetMetaView[];
+}
+
+/** `ti4_view::view::BoardView`. `combat` and `invasion` are not read yet. */
+export interface BoardView {
+  systems: Record<string, SystemView>;
+  active_system?: string;
+  map_tiles?: BoardTileView[];
+  combat?: unknown;
+  invasion?: unknown;
+}
+
+/** `ti4_view::view::TableView`. `objective_progress` is not read yet. */
+export interface TableView {
+  revealed_objectives: string[];
+  scored_objectives: Record<string, string[]>;
+  objective_progress?: unknown;
+  unclaimed_strategy_cards: string[];
+  strategy_card_goods: Record<string, number>;
+  laws: Record<string, string>;
+}
+
+/** `ti4_view::view::GameView` */
+export interface GameView {
+  round: number;
+  phase: string;
+  speaker: string;
+  seating_order: string[];
+  active_player?: string;
+  finished: boolean;
+  players: PlayerView[];
+  board: BoardView;
+  table: TableView;
+}
+
+/** `ti4_view::projection::SessionUpdate`: the fields of `StateUpdateMsg` that web2 reads. */
+export interface SessionUpdate {
+  viewer: ViewerRole;
+  view: GameView;
+  pending_choice?: PendingChoiceEnvelope;
+  turn_status: PublicTurnStatus;
+}
