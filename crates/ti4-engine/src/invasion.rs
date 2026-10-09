@@ -123,17 +123,9 @@ pub fn bombardable(
     }
     // Arc Secundus, the Letnev flagship: "Other player's units in this system lose PLANETARY
     // SHIELD." Its own player's shields are untouched, and the invader is the only one bombarding.
-    let arc_secundus = board
-        .units_of(invader)
-        .into_iter()
-        .any(|unit| {
-            crate::factions::flagship_has_text(
-                state,
-                invader,
-                unit.type_id.as_str(),
-                "letnev_flagship",
-            )
-        });
+    let arc_secundus = board.units_of(invader).into_iter().any(|unit| {
+        crate::factions::flagship_has_text(state, invader, unit.type_id.as_str(), "letnev_flagship")
+    });
     if arc_secundus {
         return true;
     }
@@ -6418,10 +6410,9 @@ mod tests {
         nekro
             .technologies
             .insert(ti4_model::id::TechnologyId::new("vax"));
-        nekro.assimilated_technologies.insert(
-            "vax".to_owned(),
-            ti4_model::id::TechnologyId::new("l4"),
-        );
+        nekro
+            .assimilated_technologies
+            .insert("vax".to_owned(), ti4_model::id::TechnologyId::new("l4"));
         let mut table = Table::with_default(Box::new(crate::choice::FirstOption));
         let mut dice = Dice::from_faces([10u32]);
         let mut rng = GameRng::new(7);
@@ -8071,8 +8062,7 @@ mod tests {
         let content = ContentStore::embedded();
         let run = |lent: &[&str]| {
             let (_, system, planet) = arena_off_mecatol();
-            let mut state =
-                crate::fixtures::nekro_with_z(&[("a", "nekro"), ("b", "sol")], lent);
+            let mut state = crate::fixtures::nekro_with_z(&[("a", "nekro"), ("b", "sol")], lent);
             on_planet(&mut state, &system, &planet, "pds", &holder(), 1);
             on_planet(&mut state, &system, &planet, "infantry", &holder(), 1);
             in_space(&mut state, &system, "dreadnought", &invader(), 1);

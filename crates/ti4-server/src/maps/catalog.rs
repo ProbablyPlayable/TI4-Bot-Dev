@@ -151,11 +151,12 @@ pub fn variant_seed(choice: &MapChoice, player_count: usize, variant: u32) -> u6
 }
 
 type ShapeKey = (Option<String>, usize);
+type ShapeCache = Mutex<BTreeMap<ShapeKey, Option<(usize, bool)>>>;
 
 /// Cached `(systems, hyperlanes)` of a template or random board at a size, or `None` if it does
 /// not build. The shape does not depend on the seed.
 fn shape(choice: &MapChoice, player_count: usize) -> Option<(usize, bool)> {
-    static CACHE: OnceLock<Mutex<BTreeMap<ShapeKey, Option<(usize, bool)>>>> = OnceLock::new();
+    static CACHE: OnceLock<ShapeCache> = OnceLock::new();
     let key = (choice.stored(), player_count);
     let cache = CACHE.get_or_init(Mutex::default);
     if let Some(hit) = cache.lock().expect("shape cache").get(&key) {

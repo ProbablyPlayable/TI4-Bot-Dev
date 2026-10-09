@@ -1329,7 +1329,6 @@ fn exhaust_specialties_for_research(
     }
 }
 
-
 /// Research `alias` by taking a selected module waiver and paying its selected legal cost.
 ///
 /// This is intentionally separate from [`research`]: a table-less caller cannot silently spend an
@@ -1870,7 +1869,12 @@ mod tests {
         assert_eq!(choice.details["mode"], "restack");
         assert_eq!(choice.details["total"], 9);
         assert_eq!(choice.details["pools"]["fleet"], 4);
-        assert!(choice.options.iter().any(|option| option.id == "fleet|tactic"));
+        assert!(
+            choice
+                .options
+                .iter()
+                .any(|option| option.id == "fleet|tactic")
+        );
     }
 
     /// OBS-003e: `start_turn`/`end_turn`'s remaining reactive asks -- Chaos Mapping and

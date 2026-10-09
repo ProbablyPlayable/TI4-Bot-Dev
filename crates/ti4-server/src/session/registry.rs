@@ -262,6 +262,10 @@ mod committed_worker_tests {
     /// Runs 06 and 23 of the 2026-10-06 sweep timed out on `/snapshot` while a batch replayed a
     /// thousand decisions with the global lock held: every read of every game waited for it.
     #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "the closure returns the registry's own batch result"
+    )]
     fn a_slow_batch_replay_does_not_block_registry_reads() {
         use std::sync::atomic::{AtomicBool, Ordering};
         const SLOW_REPLAY: Duration = Duration::from_millis(1500);
@@ -281,7 +285,10 @@ mod committed_worker_tests {
             });
             let deadline = Instant::now() + Duration::from_secs(10);
             while !replaying.load(Ordering::SeqCst) {
-                assert!(Instant::now() < deadline, "the batch never reached its replay");
+                assert!(
+                    Instant::now() < deadline,
+                    "the batch never reached its replay"
+                );
                 std::thread::sleep(Duration::from_millis(2));
             }
             let started = Instant::now();
@@ -324,6 +331,10 @@ mod committed_worker_tests {
     /// `remove_game` is not serialised by the game gate; a batch must not resurrect a game
     /// removed while its replacement replayed.
     #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "the closure returns the registry's own batch result"
+    )]
     fn a_game_removed_during_the_batch_replay_stays_removed() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -333,18 +344,13 @@ mod committed_worker_tests {
         let release = AtomicBool::new(false);
         std::thread::scope(|scope| {
             let batch = scope.spawn(|| {
-                registry.submit_batch_with_worker(
-                    "removed_mid_batch",
-                    &token,
-                    request,
-                    |config| {
-                        replaying.store(true, Ordering::SeqCst);
-                        while !release.load(Ordering::SeqCst) {
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
-                        GameSession::start(config)
-                    },
-                )
+                registry.submit_batch_with_worker("removed_mid_batch", &token, request, |config| {
+                    replaying.store(true, Ordering::SeqCst);
+                    while !release.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    GameSession::start(config)
+                })
             });
             while !replaying.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(2));

@@ -242,9 +242,8 @@ fn fleet_for(
     faction: &FactionId,
     spec: &[(&str, usize)],
 ) -> Vec<(UnitTypeId, usize)> {
-    let resolve = |kind: &str| {
-        factions::resolve_unit(content, faction.as_str(), &UnitTypeId::new(kind), POK)
-    };
+    let resolve =
+        |kind: &str| factions::resolve_unit(content, faction.as_str(), &UnitTypeId::new(kind), POK);
     let mut fleet: Vec<(UnitTypeId, usize)> = spec
         .iter()
         .map(|(kind, count)| {
@@ -437,7 +436,9 @@ mod tests {
                         "{n}p seed {seed}: the fleet in {system} has no sustaining ship"
                     );
                     assert!(
-                        kinds.iter().any(|k| k.is_ground_force() && k.sustain_damage()),
+                        kinds
+                            .iter()
+                            .any(|k| k.is_ground_force() && k.sustain_damage()),
                         "{n}p seed {seed}: the fleet in {system} has no sustaining mech"
                     );
                 }
@@ -453,7 +454,11 @@ mod tests {
             .iter()
             .find(|(id, _)| id.as_str().contains("dread"))
             .unwrap_or_else(|| panic!("no dreadnought in {fleet:?}"));
-        assert_ne!(dreadnought.0.as_str(), "dreadnought", "L1Z1X has a super-dreadnought");
+        assert_ne!(
+            dreadnought.0.as_str(),
+            "dreadnought",
+            "L1Z1X has a super-dreadnought"
+        );
         assert!(fleet.iter().any(|(id, _)| id.as_str().ends_with("mech")));
     }
 

@@ -2103,12 +2103,15 @@ impl DecisionLog {
 /// ```
 type ObservedOffer = Box<dyn FnMut(&[DecisionRecord], &ti4_model::state::GameState) + Send>;
 
+/// Told about each decision the engine settles without asking.
+type AutoResolvedObserver = Box<dyn FnMut(&AutoResolved) + Send>;
+
 pub struct Table {
     deciders: BTreeMap<PlayerId, Box<dyn Decider>>,
     default: Box<dyn Decider>,
     pub log: DecisionLog,
     observed_offer: Option<ObservedOffer>,
-    auto_resolved_observer: Option<Box<dyn FnMut(&AutoResolved) + Send>>,
+    auto_resolved_observer: Option<AutoResolvedObserver>,
     /// Decisions settled without asking, since the last drain. Never part of the decision log.
     auto_resolved: Vec<AutoResolved>,
     choice_failures: u64,
@@ -2269,7 +2272,8 @@ impl Table {
 
     pub(crate) fn choice_error_since(&self, checkpoint: u64) -> Option<IllegalChoice> {
         (self.choice_failures != checkpoint)
-            .then(|| self.last_choice_error.clone()).flatten()
+            .then(|| self.last_choice_error.clone())
+            .flatten()
     }
 
     fn remember_choice_error(&mut self, outcome: &Result<ChoiceOption, IllegalChoice>) {
@@ -2589,7 +2593,10 @@ mod tests {
         let two = Choice::new(
             PlayerId::new("a"),
             "p",
-            vec![ChoiceOption::labelled("x", "k", "X"), ChoiceOption::labelled("y", "k", "Y")],
+            vec![
+                ChoiceOption::labelled("x", "k", "X"),
+                ChoiceOption::labelled("y", "k", "Y"),
+            ],
         );
         assert!(table.auto_resolve(&two, "r").is_none());
         assert!(table.take_auto_resolved().is_empty());

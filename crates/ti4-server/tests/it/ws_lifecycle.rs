@@ -879,14 +879,18 @@ async fn set_reaction_mode_is_owner_only_and_reaches_only_the_owners_clients() {
         >,
         ti4_server::protocol::server::InitialSnapshotMsg,
     ) {
-        let (mut stream, _) = tokio_tungstenite::connect_async(ws_url).await.expect("connect");
+        let (mut stream, _) = tokio_tungstenite::connect_async(ws_url)
+            .await
+            .expect("connect");
         let subscribe = ClientMessage::Subscribe {
             protocol_version: PROTOCOL_VERSION,
             game_id: game_id.to_owned(),
             player_session: token.map(str::to_owned),
         };
         stream
-            .send(Message::Text(serde_json::to_string(&subscribe).unwrap().into()))
+            .send(Message::Text(
+                serde_json::to_string(&subscribe).unwrap().into(),
+            ))
             .await
             .expect("subscribe");
         let reply = stream.next().await.expect("snapshot").expect("ws ok");

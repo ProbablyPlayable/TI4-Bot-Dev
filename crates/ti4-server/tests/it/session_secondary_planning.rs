@@ -65,11 +65,8 @@ fn session_playing(name: &str, wanted: &str, settled: Option<&str>) -> GameSessi
         state.exhaust_planet(planets[0].clone());
         state.player_mut(&pid(settler)).unwrap().home_system = Some(system);
     }
-    let mut config = SessionConfig::new(name, state).with_player_ids(vec![
-        pid("a"),
-        pid("b"),
-        pid("c"),
-    ]);
+    let mut config =
+        SessionConfig::new(name, state).with_player_ids(vec![pid("a"), pid("b"), pid("c")]);
     if settled.is_some() {
         config = config.with_galaxy(hub.galaxy, Vec::new());
     }
@@ -172,7 +169,9 @@ fn draft(
     player: &PlayerId,
     mut pick: impl FnMut(&Choice) -> String,
 ) -> PlanningEnvelope {
-    session.secondary_planning(player, &Request::Start {}).unwrap();
+    session
+        .secondary_planning(player, &Request::Start {})
+        .unwrap();
     loop {
         let envelope = session
             .recv_secondary_planning_timeout(player, DEADLINE)
@@ -484,7 +483,11 @@ fn a_warfare_draft_records_exactly_the_answers_the_live_window_accepts() {
     let mut offer = asked;
     for answer in &wanted {
         assert_eq!(offer.choice.player, pid("c"));
-        assert!(offer.choice.option(answer).is_some(), "{answer}: {:?}", offer.choice);
+        assert!(
+            offer.choice.option(answer).is_some(),
+            "{answer}: {:?}",
+            offer.choice
+        );
         offer = answer_live(&session, &offer, answer);
     }
     assert!(is_action_menu(&offer.choice), "{:?}", offer.choice);

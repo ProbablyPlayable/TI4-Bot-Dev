@@ -137,4 +137,15 @@ lto = "fat"
 panic = "abort"
 
 [profile.dev]
+# Line numbers in backtraces, nothing else. Full debuginfo was copied into every test executable's
+# .dwp: 6 GB of a 17 GB target directory. For a debugger session use `--profile debugger`.
+debug = "line-tables-only"
 split-debuginfo = "packed"
+
+# Dependencies are never stepped through; their frames still show function names.
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugger]
+inherits = "dev"
+debug = "full"

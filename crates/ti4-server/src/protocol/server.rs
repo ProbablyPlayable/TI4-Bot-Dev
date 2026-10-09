@@ -1468,7 +1468,10 @@ const fn one() -> u32 {
     1
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde skip_serializing_if signature")]
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if signature"
+)]
 const fn is_one(count: &u32) -> bool {
     *count == 1
 }

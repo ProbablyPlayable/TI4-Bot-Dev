@@ -1150,7 +1150,9 @@ mod tests {
         state.round = 4;
         state.objective_deck.clear();
         state.seating_order.clone_from(&players);
-        state.unclaimed_strategy_cards.retain(|card| !cards.contains(card));
+        state
+            .unclaimed_strategy_cards
+            .retain(|card| !cards.contains(card));
         for (seat, card) in players.iter().zip(cards.iter()) {
             let player = state.player_mut(seat).unwrap();
             player.victory_points = 7;
@@ -2126,7 +2128,11 @@ mod tests {
         offered(
             "pay_influence",
             vec![
-                ChoiceOption::labelled("exhaust|arcturus", "pay", "exhaust arcturus for 4 influence"),
+                ChoiceOption::labelled(
+                    "exhaust|arcturus",
+                    "pay",
+                    "exhaust arcturus for 4 influence",
+                ),
                 ChoiceOption::labelled("trade_good", "pay", "spend a trade good"),
             ],
         )
@@ -2211,7 +2217,12 @@ mod tests {
     fn a_purchase_plan_stops_at_a_reaction_window_keeping_the_rest() {
         let mut decider = decider(
             BatchKind::Tokens,
-            vec![buy(true), exhaust("arcturus"), pool("tactic_tokens"), buy(false)],
+            vec![
+                buy(true),
+                exhaust("arcturus"),
+                pool("tactic_tokens"),
+                buy(false),
+            ],
         );
         assert_eq!(decider.choose(&buy_ask()).unwrap().id, "yes");
         assert_eq!(decider.choose(&pay_ask()).unwrap().id, "exhaust|arcturus");

@@ -571,7 +571,10 @@ fn resolve_research(
             Some("A faction ability lets you research this technology without its prerequisites"),
             Some("Choose how, and pay its cost on the next step. Declining researches nothing."),
         ),
-        vec![crate::choice::offer_fact_technology("Technology", technology.as_str())],
+        vec![crate::choice::offer_fact_technology(
+            "Technology",
+            technology.as_str(),
+        )],
         &[(
             "decline",
             crate::choice::offer_caption("Don't use a waiver", Some("Nothing is researched")),
@@ -621,7 +624,10 @@ fn resolve_research(
             Some(&waiver.label),
             Some("Choose what pays for it. Declining researches nothing and pays nothing."),
         ),
-        vec![crate::choice::offer_fact_technology("Technology", technology.as_str())],
+        vec![crate::choice::offer_fact_technology(
+            "Technology",
+            technology.as_str(),
+        )],
         &[(
             "decline",
             crate::choice::offer_caption("Don't pay", Some("Nothing is researched or paid")),
@@ -2677,15 +2683,27 @@ mod tests {
             .technologies
             .insert(technology.clone());
         put(&mut state, &SystemId::new("18"), "infantry", &player, 1);
-        let (decider, seen) = crate::choice::Capturing::new(Box::new(
-            crate::choice::Scripted::new(["waiver|0", "decline"]),
-        ));
+        let (decider, seen) =
+            crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new([
+                "waiver|0", "decline",
+            ])));
         let mut table = Table::with_default(Box::new(decider));
-        resolve_research(&mut state, content, POK, None, &mut table, &player, &technology)
-            .expect("declining the payment");
+        resolve_research(
+            &mut state,
+            content,
+            POK,
+            None,
+            &mut table,
+            &player,
+            &technology,
+        )
+        .expect("declining the payment");
         let asked = seen.borrow();
         assert_eq!(asked.len(), 2);
-        for (choice, title) in [(&asked[0], "Research without prerequisites"), (&asked[1], "Pay for the waiver")] {
+        for (choice, title) in [
+            (&asked[0], "Research without prerequisites"),
+            (&asked[1], "Pay for the waiver"),
+        ] {
             assert_eq!(choice.details["kind"], "offer");
             assert_eq!(choice.details["card"]["title"], title);
             assert_eq!(choice.details["facts"][0]["technology"], "ws");
@@ -3350,11 +3368,16 @@ mod tests {
             .next()
             .expect("a PDS spot")
             .id;
-        let (decider, seen) = crate::choice::Capturing::new(Box::new(
-            crate::choice::Scripted::new([first.as_str(), "pds"]),
-        ));
+        let (decider, seen) =
+            crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new([
+                first.as_str(),
+                "pds",
+            ])));
         let mut table = Table::with_default(Box::new(decider));
-        place_structure(&mut state, content, sources, None, &mut table, &player, true).unwrap();
+        place_structure(
+            &mut state, content, sources, None, &mut table, &player, true,
+        )
+        .unwrap();
         let asked = seen.borrow();
         let offer = asked
             .iter()
@@ -3370,7 +3393,11 @@ mod tests {
         assert!(offer.details["facts"][0]["planet"].is_string());
         assert_eq!(offer.details["captions"]["pds"]["label"], "Place the PDS");
         assert_eq!(
-            offer.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            offer
+                .options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
             ["pds", hecatoncheires::ID]
         );
     }
@@ -3545,9 +3572,10 @@ mod tests {
             &b,
             "deepwroughtcommander"
         ));
-        let (decider, seen) = crate::choice::Capturing::new(Box::new(
-            crate::choice::Scripted::new(["reduce", "gain"]),
-        ));
+        let (decider, seen) =
+            crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new([
+                "reduce", "gain",
+            ])));
         let mut table = Table::with_default(Box::new(decider));
         deepwrought_commander(&mut state, content, POK, None, &mut table, &a, 3).unwrap();
         let asked = seen.borrow();
@@ -3581,9 +3609,16 @@ mod tests {
         assert_eq!(reduce.details["card"]["title"], "Aello");
         assert_eq!(reduce.details["facts"][0]["from"], 3);
         assert_eq!(reduce.details["facts"][0]["to"], 2);
-        assert_eq!(reduce.details["captions"]["decline"]["label"], "Pay in full");
         assert_eq!(
-            offer.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            reduce.details["captions"]["decline"]["label"],
+            "Pay in full"
+        );
+        assert_eq!(
+            offer
+                .options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
             ["gain", "convert"]
         );
     }
@@ -4188,7 +4223,9 @@ mod tests {
         let mut state = game(&["a"]);
         let player = PlayerId::new("a");
         let (system, planet) = a_placed_planet();
-        state.system_mut(&system).set_control(planet, player.clone());
+        state
+            .system_mut(&system)
+            .set_control(planet, player.clone());
         let (capturing, seen) = crate::choice::Capturing::new(Box::new(crate::choice::FirstOption));
         let mut table = Table::with_default(Box::new(capturing));
 
@@ -4227,7 +4264,8 @@ mod tests {
         state.player_mut(&other).unwrap().faction = ti4_model::id::FactionId::new("hacan");
         let limit = commodity_limit(&state, content, &other);
         state.player_mut(&other).unwrap().commodities = 1;
-        let (capturing, seen) = crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
+        let (capturing, seen) =
+            crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
         let mut table = Table::with_default(Box::new(capturing));
 
         trade_primary(&mut state, content, POK, None, &mut table, &player).unwrap();
@@ -4271,7 +4309,16 @@ mod tests {
             let (capturing, seen) =
                 crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
             let mut table = Table::with_default(Box::new(capturing));
-            primary(&mut state, content, POK, None, &mut table, &player, &card("Imperial")).unwrap();
+            primary(
+                &mut state,
+                content,
+                POK,
+                None,
+                &mut table,
+                &player,
+                &card("Imperial"),
+            )
+            .unwrap();
             let asked = seen.borrow();
             asked
                 .iter()
@@ -4692,12 +4739,13 @@ mod tests {
         assert_eq!(seat.trade_goods, before.player(&actor).unwrap().trade_goods);
     }
 
+    /// The (prompt, details) of every question asked.
+    type SeenDetails = Vec<(String, serde_json::Map<String, serde_json::Value>)>;
+
     /// Answers from a queue and keeps each question's `details` for inspection.
     struct DetailRecording {
         wanted: std::collections::VecDeque<String>,
-        seen: std::rc::Rc<
-            std::cell::RefCell<Vec<(String, serde_json::Map<String, serde_json::Value>)>>,
-        >,
+        seen: std::rc::Rc<std::cell::RefCell<SeenDetails>>,
     }
 
     impl crate::choice::Decider for DetailRecording {

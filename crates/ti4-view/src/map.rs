@@ -353,14 +353,20 @@ mod template_tests {
                 .unwrap_or_else(|| panic!("no template builds for {n} players"));
             let (state, galaxy) =
                 create_game_with_template(content, &players(n), 4, Some(&alias)).unwrap();
-            let factions: std::collections::BTreeSet<_> =
-                state.players.iter().map(|player| player.faction.clone()).collect();
+            let factions: std::collections::BTreeSet<_> = state
+                .players
+                .iter()
+                .map(|player| player.faction.clone())
+                .collect();
             assert_eq!(factions.len(), n, "{n} seats, {n} factions");
             for seat in 0..n {
                 let home = ti4_content::factions::get(content, seating::seat_faction(seat))
                     .and_then(|faction| faction.home_system())
                     .expect("home");
-                assert!(galaxy.coord_of(home).is_some(), "{alias}: home {home} is on the board");
+                assert!(
+                    galaxy.coord_of(home).is_some(),
+                    "{alias}: home {home} is on the board"
+                );
             }
         }
     }

@@ -158,3 +158,11 @@ All eight cards use one frame: one list of seats. There are no tabs, no seat col
 - The headers of the attacker and the defender have the same lines, so the unit rows start at the same height.
 - The simulated odds are in these headers (win % and survivors). They have no card of their own.
 - A player can have more than one strategy card (a game of four or fewer players). The player table shows all of them.
+
+## Rust builds
+
+- Work in `web2/` uses six crates: `ti4-model`, `ti4-content`, `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-wasm`. Check them with `cargo c-web` and test them with `cargo t-web` (the aliases are in `.cargo/config.toml`).
+- Do not build or test another crate for this work, and do not use `--workspace`. The other crates (`ti4-policy`, `ti4-sim`, `ti4-training`, the libtorch crates, and the rest) are slow to test and fill the target directory. They are fixed later.
+- Before you commit Rust changes, all three must be clean: `cargo fmt --all -- --check`, `cargo l-web` (Clippy, no warnings), and `cargo t-web`.
+- The server integration tests are one binary. Run one file with `cargo test -p ti4-server --test it <file name>::`.
+- Temporary (2026-10-09): update this section when the other crates are fixed.

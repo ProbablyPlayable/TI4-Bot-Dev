@@ -29,7 +29,7 @@ pub enum Filtered {
     /// Nothing in it concerns a Never card.
     Unchanged,
     /// Some options were Never cards; the rest still need an answer.
-    Narrowed(Choice),
+    Narrowed(Box<Choice>),
     /// Every reaction option was a Never card and a decline exists: answer it, do not ask.
     Declined {
         /// The decline option of the original choice.
@@ -106,7 +106,7 @@ pub fn filter(choice: &Choice, never: &BTreeSet<String>) -> Filtered {
     }
     let mut narrowed = choice.clone();
     narrowed.options = kept;
-    Filtered::Narrowed(narrowed)
+    Filtered::Narrowed(Box::new(narrowed))
 }
 
 /// A decider wrapper that honours a seat's Never set before delegating.
@@ -180,9 +180,13 @@ mod tests {
     use ti4_model::id::PlayerId;
 
     fn card(id: &str, name: &str) -> ChoiceOption {
-        ChoiceOption::labelled(id, crate::reactions::ACTION_CARD_KIND, format!("play {name}"))
-            .with("card", id.to_owned())
-            .with("card_name", name.to_owned())
+        ChoiceOption::labelled(
+            id,
+            crate::reactions::ACTION_CARD_KIND,
+            format!("play {name}"),
+        )
+        .with("card", id.to_owned())
+        .with("card_name", name.to_owned())
     }
 
     fn slot(names: &[&str]) -> ChoiceOption {

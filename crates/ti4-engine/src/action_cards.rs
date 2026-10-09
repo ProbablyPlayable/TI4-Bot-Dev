@@ -1317,17 +1317,38 @@ fn direct_hit(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
     }
     if crate::supply::staging_enabled(context.state) {
         let Some(ship) = crate::combat::ships_of(
-            context.state, context.content, context.sources, &victim, &system,
-        ).into_iter().find(|unit| unit.type_id == unit_type && unit.sustained_damage) else {
+            context.state,
+            context.content,
+            context.sources,
+            &victim,
+            &system,
+        )
+        .into_iter()
+        .find(|unit| unit.type_id == unit_type && unit.sustained_damage) else {
             return;
         };
-        let exact = context.state.faction_marks.get("combat:sustain_target")
+        let exact = context
+            .state
+            .faction_marks
+            .get("combat:sustain_target")
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .filter(|record| record.get("system").and_then(serde_json::Value::as_str) == Some(system.as_str()))
+            .filter(|record| {
+                record.get("system").and_then(serde_json::Value::as_str) == Some(system.as_str())
+            })
             .and_then(|record| {
-                let unit: ti4_model::units::Unit = serde_json::from_value(record.get("unit")?.clone()).ok()?;
-                (unit.owner == victim && unit.type_id == unit_type && unit.sustained_damage)
-                    .then(|| (unit, record.get("planet").and_then(serde_json::Value::as_str).map(ti4_model::id::PlanetId::new)))
+                let unit: ti4_model::units::Unit =
+                    serde_json::from_value(record.get("unit")?.clone()).ok()?;
+                (unit.owner == victim && unit.type_id == unit_type && unit.sustained_damage).then(
+                    || {
+                        (
+                            unit,
+                            record
+                                .get("planet")
+                                .and_then(serde_json::Value::as_str)
+                                .map(ti4_model::id::PlanetId::new),
+                        )
+                    },
+                )
             });
         if let Some((unit, planet)) = exact {
             let board = context.state.system_mut(&system);
@@ -1335,8 +1356,12 @@ fn direct_hit(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
                 Some(planet) => board.planet_units.get_mut(&planet),
                 None => Some(&mut board.units),
             };
-            let Some(units) = units else { return; };
-            let Some(index) = units.iter().position(|candidate| candidate == &unit) else { return; };
+            let Some(units) = units else {
+                return;
+            };
+            let Some(index) = units.iter().position(|candidate| candidate == &unit) else {
+                return;
+            };
             units.remove(index);
         } else {
             crate::combat::remove_combat_ship(context.state, &system, &ship);
@@ -1345,8 +1370,11 @@ fn direct_hit(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
     } else {
         // Preserve the accepted original-six route until its own compatibility correction.
         let board = context.state.system_mut(&system);
-        let Some(index) = board.units.iter()
-            .position(|unit| unit.owner == victim && unit.type_id == unit_type) else {
+        let Some(index) = board
+            .units
+            .iter()
+            .position(|unit| unit.owner == victim && unit.type_id == unit_type)
+        else {
             return;
         };
         board.units.remove(index);
@@ -2491,8 +2519,8 @@ fn bribery(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
 }
 
 fn bribery_spend(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
-    let held = i32::try_from(crate::supply::spendable_goods(context.state, player))
-        .unwrap_or(i32::MAX);
+    let held =
+        i32::try_from(crate::supply::spendable_goods(context.state, player)).unwrap_or(i32::MAX);
     if held == 0 {
         return; // "any number" includes zero, and zero buys nothing
     }
@@ -3885,9 +3913,15 @@ fn unit_pick_details(
 fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
     let types = ti4_content::units::catalogue(context.content, context.sources);
     let mech = ti4_model::id::UnitTypeId::new(
-        if context.state.player(player).is_some_and(|seat| seat.faction.as_str() == "naaz") {
+        if context
+            .state
+            .player(player)
+            .is_some_and(|seat| seat.faction.as_str() == "naaz")
+        {
             "naaz_mech"
-        } else { "mech" },
+        } else {
+            "mech"
+        },
     );
     if crate::supply::allowed(
         context.state,
@@ -3901,8 +3935,17 @@ fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
         return; // the box holds no more mechs
     }
     let max_replacements = if mech.as_str() == "naaz_mech" {
-        crate::supply::allowed(context.state, context.content, context.sources, player, &mech, 2)
-    } else { 2 };
+        crate::supply::allowed(
+            context.state,
+            context.content,
+            context.sources,
+            player,
+            &mech,
+            2,
+        )
+    } else {
+        2
+    };
     // `system|planet|index`, the index into that planet's unit list.
     let mut found: Vec<(String, String, ti4_model::units::Unit)> = Vec::new();
     for (system, board) in &context.state.board {
@@ -3960,28 +4003,28 @@ fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
             )))
             .collect();
         if max_replacements > 1 {
-        let Some(second) = pick_detailed(
-            context,
-            player,
-            "Refit Troops: another infantry or stop",
-            "infantry",
-            &rest,
-            &[("units", units)],
-        ) else {
-            return;
-        };
-        if second != "stop" {
-            let Some(second_index) = found
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != first_index)
-                .find(|(_, (id, _, _))| id == &second)
-                .map(|(i, _)| i)
-            else {
+            let Some(second) = pick_detailed(
+                context,
+                player,
+                "Refit Troops: another infantry or stop",
+                "infantry",
+                &rest,
+                &[("units", units)],
+            ) else {
                 return;
             };
-            taken.push(second_index);
-        }
+            if second != "stop" {
+                let Some(second_index) = found
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != first_index)
+                    .find(|(_, (id, _, _))| id == &second)
+                    .map(|(i, _)| i)
+                else {
+                    return;
+                };
+                taken.push(second_index);
+            }
         }
     }
     let mut by_source: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -4028,7 +4071,10 @@ fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
             units.remove(index);
             units.push(ti4_model::units::Unit::new(mech.clone(), player.clone()));
             crate::supply::stage_naaz_mech_placed(
-                context.state, player, &ti4_model::id::SystemId::new(&source_system), &mech,
+                context.state,
+                player,
+                &ti4_model::id::SystemId::new(&source_system),
+                &mech,
             );
         }
     }
@@ -4766,9 +4812,9 @@ fn pick_detailed(
                     })
                     .collect(),
             );
-            let choice = details
-                .iter()
-                .fold(choice, |choice, (key, value)| choice.detailed(key, value.clone()));
+            let choice = details.iter().fold(choice, |choice, (key, value)| {
+                choice.detailed(key, value.clone())
+            });
             let action_card = active_action_card();
             let source = action_card.as_ref().map_or_else(
                 || DecisionSource::Rule("2".to_owned()),
@@ -6064,9 +6110,14 @@ const FOCUSED_RESEARCH_COST: i32 = 4;
 /// Focused Research: spend four trade goods to research one technology.
 fn focused_research(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
     // Xander Alexin Victori III (Keleres): the agent may let commodities pay the 4 trade goods.
-    crate::supply::with_goods_window(context, player, i64::from(FOCUSED_RESEARCH_COST), |context| {
-        focused_research_spend(context, player);
-    });
+    crate::supply::with_goods_window(
+        context,
+        player,
+        i64::from(FOCUSED_RESEARCH_COST),
+        |context| {
+            focused_research_spend(context, player);
+        },
+    );
 }
 
 fn focused_research_spend(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
@@ -6861,25 +6912,44 @@ mod tests {
     fn direct_hit_removes_a_damaged_maximum_from_its_planet() {
         let content = ContentStore::embedded();
         let mut state = crate::fixtures::seated_game(
-            &[("a", "sol"), ("b", "naaz")], ti4_model::content_types::DEFAULT,
+            &[("a", "sol"), ("b", "naaz")],
+            ti4_model::content_types::DEFAULT,
         );
         let (system, planet) = crate::fixtures::a_placed_planet();
         let player = PlayerId::new("a");
         let victim = PlayerId::new("b");
         crate::fixtures::put(&mut state, &system, "cruiser", &victim, 1);
-        let mut maximum = ti4_model::units::Unit::new(ti4_model::id::UnitTypeId::new("naaz_voltron"), victim.clone());
+        let mut maximum = ti4_model::units::Unit::new(
+            ti4_model::id::UnitTypeId::new("naaz_voltron"),
+            victim.clone(),
+        );
         maximum.sustained_damage = true;
-        state.system_mut(&system).planet_units.entry(planet.clone()).or_default().push(maximum);
-        state.last_sustain = Some((system.clone(), victim.clone(),
-            ti4_model::id::UnitTypeId::new("naaz_voltron"), player.clone(), true));
+        state
+            .system_mut(&system)
+            .planet_units
+            .entry(planet.clone())
+            .or_default()
+            .push(maximum);
+        state.last_sustain = Some((
+            system.clone(),
+            victim.clone(),
+            ti4_model::id::UnitTypeId::new("naaz_voltron"),
+            player.clone(),
+            true,
+        ));
         let mut table = Table::new();
         let mut dice = crate::dice::Dice::new();
         let mut rng = crate::rng::GameRng::new(1);
         let mut sequence = crate::event::EventSequence::new();
         let mut context = crate::timing::TimingContext {
-            state: &mut state, content, sources: ti4_model::content_types::DEFAULT,
-            table: &mut table, dice: &mut dice, rng: &mut rng,
-            event_sequence: &mut sequence, galaxy: None,
+            state: &mut state,
+            content,
+            sources: ti4_model::content_types::DEFAULT,
+            table: &mut table,
+            dice: &mut dice,
+            rng: &mut rng,
+            event_sequence: &mut sequence,
+            galaxy: None,
         };
         direct_hit(&mut context, &player);
         assert!(state.system_state(&system).on_planet(&planet).is_empty());
@@ -6932,7 +7002,11 @@ mod tests {
                 galaxy: None,
             };
             direct_hit(&mut context, &player);
-            assert_eq!(state.pending_destructions.len(), usize::from(destroyed), "{unit}");
+            assert_eq!(
+                state.pending_destructions.len(),
+                usize::from(destroyed),
+                "{unit}"
+            );
             assert_eq!(
                 state
                     .system_state(&system)
@@ -11669,9 +11743,8 @@ mod economy_hooks {
     #[test]
     fn the_placement_question_is_an_offer_card_with_a_caption_per_spot() {
         let (mut state, system, planet) = planet_and_ship();
-        let (decider, seen) = crate::choice::Capturing::new(Box::new(Scripted::new([
-            format!("{system}|{planet}"),
-        ])));
+        let (decider, seen) =
+            crate::choice::Capturing::new(Box::new(Scripted::new([format!("{system}|{planet}")])));
         let mut table = Table::with_default(Box::new(decider));
         with_context(&mut state, POK, None, &mut table, |context| {
             place_units_choosing(
@@ -11701,9 +11774,11 @@ mod economy_hooks {
         assert_eq!(planet_caption["hint"], "Place 2 infantry here");
         // Infantry cannot be placed in space, so the ship space is not a spot: the planet and the
         // optional decline are the only captions.
-        assert!(offer.details["captions"]
-            .as_object()
-            .is_some_and(|captions| captions.len() == 2));
+        assert!(
+            offer.details["captions"]
+                .as_object()
+                .is_some_and(|captions| captions.len() == 2)
+        );
         assert_eq!(offer.details["captions"]["decline"]["label"], "Place none");
     }
 
@@ -12371,35 +12446,54 @@ mod hidden_hands {
     #[test]
     fn refit_troops_places_naaz_mech_and_announces_synergy_placement() {
         let mut state = crate::fixtures::seated_game(
-            &[("a", "naaz"), ("b", "sol")], ti4_model::content_types::DEFAULT,
+            &[("a", "naaz"), ("b", "sol")],
+            ti4_model::content_types::DEFAULT,
         );
         let a = PlayerId::new("a");
         let (system, planet) = crate::fixtures::a_placed_planet();
         state.board.clear();
         crate::fixtures::put_on_planet(&mut state, &system, &planet, "infantry", &a, 1);
         let mut table = crate::choice::Table::new();
-        crate::fixtures::with_context(&mut state, ti4_model::content_types::DEFAULT, None, &mut table, |ctx| {
-            refit_troops(ctx, &a);
-        });
+        crate::fixtures::with_context(
+            &mut state,
+            ti4_model::content_types::DEFAULT,
+            None,
+            &mut table,
+            |ctx| {
+                refit_troops(ctx, &a);
+            },
+        );
         let board = state.system_state(&system);
         assert_eq!(board.on_planet(&planet)[0].type_id.as_str(), "naaz_mech");
-        assert!(crate::supply::staged_event_types(&state).iter().any(|kind| kind == "NAAZ_MECH_PLACED"));
+        assert!(
+            crate::supply::staged_event_types(&state)
+                .iter()
+                .any(|kind| kind == "NAAZ_MECH_PLACED")
+        );
     }
 
     #[test]
     fn refit_troops_cannot_replace_an_infantry_while_maximum_stands() {
-        let mut state = crate::fixtures::seated_game(&[("a", "naaz"), ("b", "sol")], ti4_model::content_types::DEFAULT);
+        let mut state = crate::fixtures::seated_game(
+            &[("a", "naaz"), ("b", "sol")],
+            ti4_model::content_types::DEFAULT,
+        );
         let a = PlayerId::new("a");
         let (system, planet) = crate::fixtures::a_placed_planet();
         crate::fixtures::put_on_planet(&mut state, &system, &planet, "naaz_voltron", &a, 1);
         crate::fixtures::put_on_planet(&mut state, &system, &planet, "infantry", &a, 1);
         let board = state.board.clone();
         let mut table = crate::choice::Table::new();
-        crate::fixtures::with_context(&mut state, ti4_model::content_types::DEFAULT, None, &mut table, |ctx| {
-            refit_troops(ctx, &a);
-        });
+        crate::fixtures::with_context(
+            &mut state,
+            ti4_model::content_types::DEFAULT,
+            None,
+            &mut table,
+            |ctx| {
+                refit_troops(ctx, &a);
+            },
+        );
         assert_eq!(state.board, board);
         assert!(table.log.records.is_empty());
     }
-
 }

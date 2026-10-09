@@ -17,12 +17,21 @@ fn current(session: &GameSession) -> Pending {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some((seat, nonce, version)) = session.current_pending_decision() {
-            let snapshot = session.get_snapshot(
-                &ti4_server::protocol::status::ViewerRole::Player(seat.clone()),
+            let snapshot = session.get_snapshot(&ti4_server::protocol::status::ViewerRole::Player(
+                seat.clone(),
+            ));
+            return (
+                seat,
+                nonce,
+                version,
+                snapshot.pending_choice.unwrap().choice,
             );
-            return (seat, nonce, version, snapshot.pending_choice.unwrap().choice);
         }
-        assert!(Instant::now() < deadline, "timed out: {:?}", session.error());
+        assert!(
+            Instant::now() < deadline,
+            "timed out: {:?}",
+            session.error()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -67,7 +76,9 @@ fn at_leadership(game_id: &str, p2_goods: i32) -> Table {
             .iter()
             .find(|o| o.id == "strategic")
             .unwrap_or(&choice.options[0]);
-        session.submit_choice(&seat, &nonce, version, &pick.id).unwrap();
+        session
+            .submit_choice(&seat, &nonce, version, &pick.id)
+            .unwrap();
     }
     Table {
         registry,
@@ -93,13 +104,21 @@ fn buy(buy: bool) -> MovementStep {
 }
 
 /// What the web panel does: spend the biggest planets first, then trade goods, in order.
-fn payment_for(details: &serde_json::Map<String, serde_json::Value>, tokens: i64) -> Vec<MovementStep> {
+fn payment_for(
+    details: &serde_json::Map<String, serde_json::Value>,
+    tokens: i64,
+) -> Vec<MovementStep> {
     let purchase = &details["purchase"];
     let mut planets: Vec<(String, i64)> = purchase["planets"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|p| (p["id"].as_str().unwrap().to_owned(), p["worth"].as_i64().unwrap()))
+        .map(|p| {
+            (
+                p["id"].as_str().unwrap().to_owned(),
+                p["worth"].as_i64().unwrap(),
+            )
+        })
         .collect();
     planets.sort_by_key(|(_, worth)| std::cmp::Reverse(*worth));
     let mut steps = Vec::new();
@@ -139,7 +158,9 @@ fn two_purchases() -> Vec<MovementStep> {
         pool("fleet_tokens"),
         pool("fleet_tokens"),
         buy(true),
-        MovementStep::Exhaust { planet: "jord".into() },
+        MovementStep::Exhaust {
+            planet: "jord".into(),
+        },
         MovementStep::TradeGood,
         pool("strategic_tokens"),
         buy(true),
@@ -167,7 +188,11 @@ fn a_plan_with_purchases_and_assignments_applies_atomically() {
 
     let result = table
         .registry
-        .submit_batch("lead_ok", &table.p1_token, request("ok", &pending, two_purchases()))
+        .submit_batch(
+            "lead_ok",
+            &table.p1_token,
+            request("ok", &pending, two_purchases()),
+        )
         .expect("a legal plan");
     assert!(result.interrupted.is_none());
 
@@ -177,7 +202,11 @@ fn a_plan_with_purchases_and_assignments_applies_atomically() {
     assert_eq!(a.tactic_tokens, b.tactic_tokens + 1);
     assert_eq!(a.fleet_tokens, b.fleet_tokens + 2);
     assert_eq!(a.strategic_tokens, b.strategic_tokens + 2);
-    assert_eq!(a.trade_goods, b.trade_goods - 4, "one good beside Jord, three for the second");
+    assert_eq!(
+        a.trade_goods,
+        b.trade_goods - 4,
+        "one good beside Jord, three for the second"
+    );
     assert!(after.exhausted_planets.contains("jord"));
     // Free tokens (3), then per purchase: yes, a payment decision or none, pool; and the "no".
     assert!(session.decision_log().len() > log_before + 3 + 2 * 2);
@@ -187,7 +216,10 @@ fn a_plan_with_purchases_and_assignments_applies_atomically() {
     );
     assert_eq!(session.decision_log().last().unwrap().chosen, "no");
     // The turn moved on: nothing of Leadership is left pending.
-    assert_ne!(current(&session).3.prompt, "spend 3 influence for a command token");
+    assert_ne!(
+        current(&session).3.prompt,
+        "spend 3 influence for a command token"
+    );
     table.session.stop();
     std::fs::remove_dir_all(&table.path).unwrap();
 }
@@ -204,7 +236,9 @@ fn plans_the_engine_would_not_accept_change_nothing() {
         pool("tactic_tokens"),
         pool("tactic_tokens"),
         buy(true),
-        MovementStep::Exhaust { planet: "jord".into() },
+        MovementStep::Exhaust {
+            planet: "jord".into(),
+        },
         MovementStep::TradeGood,
         pool("tactic_tokens"),
         buy(true),
@@ -232,7 +266,9 @@ fn plans_the_engine_would_not_accept_change_nothing() {
         pool("tactic_tokens"),
         pool("tactic_tokens"),
         buy(true),
-        MovementStep::Exhaust { planet: "moon_of_nowhere".into() },
+        MovementStep::Exhaust {
+            planet: "moon_of_nowhere".into(),
+        },
         pool("tactic_tokens"),
     ];
     // Three purchases spend all nine influence, so the engine never asks the closing question.
@@ -255,12 +291,21 @@ fn plans_the_engine_would_not_accept_change_nothing() {
         ("wrong_payment", wrong_payment),
         ("trailing_no_never_asked", trailing_no_never_asked),
     ] {
-        let rejected = table
-            .registry
-            .submit_batch("lead_bad", &table.p1_token, request(name, &pending, steps));
+        let rejected = table.registry.submit_batch(
+            "lead_bad",
+            &table.p1_token,
+            request(name, &pending, steps),
+        );
         assert!(rejected.is_err(), "{name} must be rejected");
-        assert!(table.session.current_state().identical(&before), "{name} changed the state");
-        assert_eq!(table.session.decision_log(), log_before, "{name} changed the log");
+        assert!(
+            table.session.current_state().identical(&before),
+            "{name} changed the state"
+        );
+        assert_eq!(
+            table.session.decision_log(),
+            log_before,
+            "{name} changed the log"
+        );
     }
     table.session.stop();
     std::fs::remove_dir_all(&table.path).unwrap();
@@ -272,7 +317,11 @@ fn a_recovered_session_replays_the_purchase_batch() {
     let pending = current(&table.session);
     table
         .registry
-        .submit_batch("lead_replay", &table.p1_token, request("ok", &pending, two_purchases()))
+        .submit_batch(
+            "lead_replay",
+            &table.p1_token,
+            request("ok", &pending, two_purchases()),
+        )
         .unwrap();
     let recovered = table.store.recover_session("lead_replay").unwrap();
     recovered.wait_replayed().unwrap();
@@ -299,7 +348,12 @@ fn the_secondary_window_plans_its_purchase_from_the_one_question() {
             request(
                 "primary",
                 &pending,
-                vec![pool("tactic_tokens"), pool("tactic_tokens"), pool("tactic_tokens"), buy(false)],
+                vec![
+                    pool("tactic_tokens"),
+                    pool("tactic_tokens"),
+                    pool("tactic_tokens"),
+                    buy(false),
+                ],
             ),
         )
         .unwrap();
@@ -319,7 +373,11 @@ fn the_secondary_window_plans_its_purchase_from_the_one_question() {
     }
     table
         .registry
-        .submit_batch("lead_secondary", &table.p2_token, request("secondary", &window, steps))
+        .submit_batch(
+            "lead_secondary",
+            &table.p2_token,
+            request("secondary", &window, steps),
+        )
         .expect("the window's yes, its payment and its pool in one plan");
     let after = live(&table, "lead_secondary").current_state();
     assert_eq!(

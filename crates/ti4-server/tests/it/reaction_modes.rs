@@ -52,7 +52,11 @@ fn pending(session: &GameSession) -> (PlayerId, String, u64, ti4_engine::choice:
 fn play_until(session: &GameSession, seat_wanted: &PlayerId, subtype: &str) {
     for _ in 0..20 {
         let (seat, nonce, version, choice) = pending(session);
-        let current = choice.context.as_ref().map(|c| c.subtype.clone()).unwrap_or_default();
+        let current = choice
+            .context
+            .as_ref()
+            .map(|c| c.subtype.clone())
+            .unwrap_or_default();
         if &seat == seat_wanted && current == subtype {
             return;
         }
@@ -92,7 +96,10 @@ fn skipped_notes(client: &MockClient) -> Vec<String> {
 
 #[test]
 fn never_declines_the_window_unasked_journals_it_and_survives_a_restart() {
-    let dir = std::env::temp_dir().join(format!("ti4_reaction_modes_{:032x}", rand::random::<u128>()));
+    let dir = std::env::temp_dir().join(format!(
+        "ti4_reaction_modes_{:032x}",
+        rand::random::<u128>()
+    ));
     let store = Arc::new(FileGameStore::new(&dir).expect("store"));
     let registry = Arc::new(GameRegistry::new().with_store(store.clone()));
 
@@ -101,28 +108,51 @@ fn never_declines_the_window_unasked_journals_it_and_survives_a_restart() {
         .expect("launch control");
     let control_session = registry.get_game(&control.game_id).unwrap();
     let seats = table(&control_session, &control.player_id);
-    play_until(&control_session, &seats.letnev, "reaction_when_ACTION_CARD_PLAYED");
+    play_until(
+        &control_session,
+        &seats.letnev,
+        "reaction_when_ACTION_CARD_PLAYED",
+    );
 
     // With Never: the same play opens no window for Letnev.
     let launch = execute_launch_scenario(&registry, "ongoing_combat_four_views", Some(54_322))
         .expect("launch");
     let session = registry.get_game(&launch.game_id).unwrap();
     let seats = table(&session, &launch.player_id);
-    let letnev_client = MockClient::connect(session.clone(), ViewerRole::Player(seats.letnev.clone()));
+    let letnev_client =
+        MockClient::connect(session.clone(), ViewerRole::Player(seats.letnev.clone()));
     let sol_client = MockClient::connect(session.clone(), ViewerRole::Player(seats.sol.clone()));
     session
         .set_reaction_mode(&seats.letnev, "Sabotage", ReactionMode::Never)
         .expect("owner may set");
     // View sync: only the owner's clients carry it.
     let mine = session.get_snapshot(&ViewerRole::Player(seats.letnev.clone()));
-    assert_eq!(mine.reaction_modes.get("Sabotage"), Some(&ReactionMode::Never));
-    assert!(session.get_snapshot(&ViewerRole::Player(seats.sol.clone())).reaction_modes.is_empty());
-    assert!(session.get_snapshot(&ViewerRole::Spectator).reaction_modes.is_empty());
+    assert_eq!(
+        mine.reaction_modes.get("Sabotage"),
+        Some(&ReactionMode::Never)
+    );
+    assert!(
+        session
+            .get_snapshot(&ViewerRole::Player(seats.sol.clone()))
+            .reaction_modes
+            .is_empty()
+    );
+    assert!(
+        session
+            .get_snapshot(&ViewerRole::Spectator)
+            .reaction_modes
+            .is_empty()
+    );
 
     play_until(&session, &seats.sol, "reaction_after_SUSTAIN_DAMAGE_USED");
     let (seat, nonce, version, _) = pending(&session);
     session
-        .submit_choice(&seat, &nonce, version, "reaction:sol:SUSTAIN_DAMAGE_USED:after")
+        .submit_choice(
+            &seat,
+            &nonce,
+            version,
+            "reaction:sol:SUSTAIN_DAMAGE_USED:after",
+        )
         .expect("Sol plays Direct Hit");
     wait_for_decisions(&session, 4);
     let (next, _, _, choice) = pending(&session);
@@ -148,10 +178,12 @@ fn never_declines_the_window_unasked_journals_it_and_survives_a_restart() {
     assert!(skipped_notes(&sol_client).is_empty());
 
     // The same play in the control game recorded a question that was answered by the human.
-    assert!(control_session
-        .decision_log()
-        .iter()
-        .all(|record| record.prompt != "when ACTION_CARD_PLAYED" || record.chosen != "decline"));
+    assert!(
+        control_session
+            .decision_log()
+            .iter()
+            .all(|record| record.prompt != "when ACTION_CARD_PLAYED" || record.chosen != "decline")
+    );
 
     // Restart: replay reproduces the game from the journal and the preference is still there.
     let hashes = session.decision_hashes();
@@ -159,7 +191,13 @@ fn never_declines_the_window_unasked_journals_it_and_survives_a_restart() {
     let state = session.current_state();
     let letnev_id = seats.letnev.clone();
     let game_id = launch.game_id.clone();
-    drop((letnev_client, sol_client, session, control_session, registry));
+    drop((
+        letnev_client,
+        sol_client,
+        session,
+        control_session,
+        registry,
+    ));
     let restarted = Arc::new(GameRegistry::new().with_store(store.clone()));
     let report = restarted.recover_all_games_report().expect("recover");
     assert!(report.failed.is_empty(), "{:?}", report.failed);
@@ -169,52 +207,85 @@ fn never_declines_the_window_unasked_journals_it_and_survives_a_restart() {
     assert_eq!(recovered.decision_hashes(), hashes);
     assert_eq!(recovered.current_state(), state);
     let back = recovered.get_snapshot(&ViewerRole::Player(letnev_id.clone()));
-    assert_eq!(back.reaction_modes.get("Sabotage"), Some(&ReactionMode::Never));
-    assert!(recovered
-        .get_snapshot(&ViewerRole::Player(PlayerId::new(&launch.player_id)))
-        .reaction_modes
-        .is_empty());
+    assert_eq!(
+        back.reaction_modes.get("Sabotage"),
+        Some(&ReactionMode::Never)
+    );
+    assert!(
+        recovered
+            .get_snapshot(&ViewerRole::Player(PlayerId::new(&launch.player_id)))
+            .reaction_modes
+            .is_empty()
+    );
 
     // Always puts it back, and that is saved too.
     recovered
         .set_reaction_mode(&letnev_id, "Sabotage", ReactionMode::Always)
         .expect("reset");
-    assert!(recovered.get_snapshot(&ViewerRole::Player(letnev_id)).reaction_modes.is_empty());
-    assert!(store.load_reaction_modes(&game_id).unwrap().never.is_empty());
+    assert!(
+        recovered
+            .get_snapshot(&ViewerRole::Player(letnev_id))
+            .reaction_modes
+            .is_empty()
+    );
+    assert!(
+        store
+            .load_reaction_modes(&game_id)
+            .unwrap()
+            .never
+            .is_empty()
+    );
     let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
 fn only_a_seat_can_set_its_own_known_cards_and_old_saves_have_no_file() {
-    let dir = std::env::temp_dir().join(format!("ti4_reaction_modes_{:032x}", rand::random::<u128>()));
+    let dir = std::env::temp_dir().join(format!(
+        "ti4_reaction_modes_{:032x}",
+        rand::random::<u128>()
+    ));
     let store = Arc::new(FileGameStore::new(&dir).expect("store"));
     let registry = Arc::new(GameRegistry::new().with_store(store.clone()));
     let launch = execute_launch_scenario(&registry, "ongoing_combat_four_views", Some(7)).unwrap();
     let session = registry.get_game(&launch.game_id).unwrap();
     let seats = table(&session, &launch.player_id);
 
-    assert!(session
-        .set_reaction_mode(&seats.sol, "Not A Card", ReactionMode::Never)
-        .is_err());
-    assert!(session
-        .set_reaction_mode(&PlayerId::new("nobody"), "Sabotage", ReactionMode::Never)
-        .is_err());
+    assert!(
+        session
+            .set_reaction_mode(&seats.sol, "Not A Card", ReactionMode::Never)
+            .is_err()
+    );
+    assert!(
+        session
+            .set_reaction_mode(&PlayerId::new("nobody"), "Sabotage", ReactionMode::Never)
+            .is_err()
+    );
     // Nothing was saved by the refusals; a game with no preference has no file at all.
-    assert!(!store
-        .game_dir(&launch.game_id)
-        .unwrap()
-        .join("reaction_modes.json")
-        .exists());
-    assert!(store.load_reaction_modes(&launch.game_id).unwrap().never.is_empty());
+    assert!(
+        !store
+            .game_dir(&launch.game_id)
+            .unwrap()
+            .join("reaction_modes.json")
+            .exists()
+    );
+    assert!(
+        store
+            .load_reaction_modes(&launch.game_id)
+            .unwrap()
+            .never
+            .is_empty()
+    );
 
     session
         .set_reaction_mode(&seats.sol, "Sabotage", ReactionMode::Never)
         .unwrap();
     // The change is the seat's alone.
-    assert!(session
-        .get_snapshot(&ViewerRole::Player(seats.letnev.clone()))
-        .reaction_modes
-        .is_empty());
+    assert!(
+        session
+            .get_snapshot(&ViewerRole::Player(seats.letnev.clone()))
+            .reaction_modes
+            .is_empty()
+    );
     assert_eq!(
         store.load_reaction_modes(&launch.game_id).unwrap().never[&seats.sol]
             .iter()
@@ -222,9 +293,6 @@ fn only_a_seat_can_set_its_own_known_cards_and_old_saves_have_no_file() {
         vec!["Sabotage"]
     );
     // A restarted worker (undo, redo, batch) keeps it.
-    assert_eq!(
-        session.restart_config().reaction_modes[&seats.sol].len(),
-        1
-    );
+    assert_eq!(session.restart_config().reaction_modes[&seats.sol].len(), 1);
     let _ = fs::remove_dir_all(dir);
 }

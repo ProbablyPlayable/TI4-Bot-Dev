@@ -888,6 +888,11 @@ struct TacticalWindow {
     notes_at_start: crate::combat::NoteHoldings,
 }
 
+/// Observes the automatic handoff after movement.
+type AftermathObserver = std::sync::Arc<dyn Fn(&GameState, &ContentStore, SourceSet) + Send + Sync>;
+/// Told which card a strategic action will resolve.
+type StrategicObserver = std::sync::Arc<dyn Fn(&PlayerId, &StrategyCardId) + Send + Sync>;
+
 /// The stateful owner of generated choices, their decision log, and observable events.
 ///
 /// The structure mirrors the oracle's `Game`: state remains public for inspection, while all
@@ -977,10 +982,9 @@ pub struct Game<'a> {
     prepared_turn_seq: Option<u32>,
     blocked: Option<GameError>,
     /// Observe the automatic handoff after movement, before it runs any rules.
-    aftermath_observer:
-        Option<std::sync::Arc<dyn Fn(&GameState, &ContentStore, SourceSet) + Send + Sync>>,
+    aftermath_observer: Option<AftermathObserver>,
     /// Told which card a strategic action will resolve, before its primary runs.
-    strategic_observer: Option<std::sync::Arc<dyn Fn(&PlayerId, &StrategyCardId) + Send + Sync>>,
+    strategic_observer: Option<StrategicObserver>,
 }
 
 impl<'a> Game<'a> {
@@ -4298,14 +4302,13 @@ impl<'a> Game<'a> {
             ["sardakkagent", "nomadagentmercer"].iter().any(|agent| {
                 seat.leaders.get(&ti4_model::id::LeaderId::new(*agent))
                     == Some(&ti4_model::state::LeaderStatus::Readied)
-            })
-                || crate::factions::hooks_cards::borrowable_agents(
-                    &self.state,
-                    self.content,
-                    &seat.id,
-                )
-                .iter()
-                .any(|(_, agent)| agent.as_str() == "sardakkagent")
+            }) || crate::factions::hooks_cards::borrowable_agents(
+                &self.state,
+                self.content,
+                &seat.id,
+            )
+            .iter()
+            .any(|(_, agent)| agent.as_str() == "sardakkagent")
         });
         if tro_window
             && let (Some(player), Some(system)) =
@@ -5779,8 +5782,8 @@ impl<'a> Game<'a> {
         reason = "two seat-bound asks, each spelling out the position it shows"
     )]
     fn imperial_arbiter(&mut self) {
-        let Some(owner) = crate::laws::elected(&self.state, "arbiter")
-            .map(|held| PlayerId::new(held.clone()))
+        let Some(owner) =
+            crate::laws::elected(&self.state, "arbiter").map(|held| PlayerId::new(held.clone()))
         else {
             return;
         };
@@ -8240,7 +8243,11 @@ mod tests {
         assert_eq!(tokens["tactic"], seat.tactic_tokens);
         assert_eq!(tokens["strategy"], seat.strategic_tokens);
         let partners = choice.details["partners"].as_array().unwrap();
-        assert_eq!(partners.len(), 1, "every other seat is listed: {partners:?}");
+        assert_eq!(
+            partners.len(),
+            1,
+            "every other seat is listed: {partners:?}"
+        );
         assert_eq!(partners[0]["seat"], "b");
         assert!(partners[0]["trade_goods"].is_number());
         let offered = choice
@@ -8249,7 +8256,10 @@ mod tests {
             .any(|option| option.kind == crate::transactions::OPEN_KIND);
         assert_eq!(partners[0]["available"], offered);
         if !offered {
-            assert!(partners[0]["reason"].is_string(), "a missing partner says why");
+            assert!(
+                partners[0]["reason"].is_string(),
+                "a missing partner says why"
+            );
         }
     }
 
@@ -8364,7 +8374,9 @@ mod tests {
             }
         }
         assert!(
-            game.events.iter().any(|e| e == "TURN_ENDED_BY_STARLANCER:b"),
+            game.events
+                .iter()
+                .any(|e| e == "TURN_ENDED_BY_STARLANCER:b"),
             "{:?}",
             game.events
         );
@@ -8410,7 +8422,7 @@ mod tests {
             "the hero is a component action"
         );
         let table = Table::with_default(Box::new(Scripted::new([
-            "component|leader|mahacthero".to_owned(),
+            "component|leader|mahacthero".to_owned()
         ])));
         let mut game = Game::with_table(state, ContentStore::embedded(), table)
             .with_sources(ti4_model::content_types::DEFAULT)
@@ -9107,7 +9119,9 @@ mod tests {
         state.active = Some(a.clone());
         state.deal_strategy_card(&a, StrategyCardId::new("leadership"));
         state.deal_strategy_card(&b, StrategyCardId::new("imperial"));
-        let table = Table::with_default(Box::new(TurnDecider::new(&[]).taking_the_strategic_action()));
+        let table = Table::with_default(Box::new(
+            TurnDecider::new(&[]).taking_the_strategic_action(),
+        ));
         let mut game = Game::with_table(state, ContentStore::embedded(), table);
         let mut guard = 0;
         while !game.events.iter().any(|e| e == "STRATEGIC_ACTION_BEGAN") && guard < 100 {
@@ -11460,9 +11474,12 @@ mod tests {
         );
     }
 
+    /// The (prompt, option ids) of every question the decider answered.
+    type RouteQuestions = Vec<(String, Vec<String>)>;
+
     struct NaazCannonRouteDecider {
         system: String,
-        seen: std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<String>)>>>,
+        seen: std::rc::Rc<std::cell::RefCell<RouteQuestions>>,
     }
 
     impl Decider for NaazCannonRouteDecider {
@@ -15450,7 +15467,12 @@ mod tests {
             .count();
         let notes = game.table.take_auto_resolved();
         // Every pick happened, asked or not.
-        let dealt: usize = game.state.players.iter().map(|p| p.strategy_cards.len()).sum();
+        let dealt: usize = game
+            .state
+            .players
+            .iter()
+            .map(|p| p.strategy_cards.len())
+            .sum();
         assert_eq!(asked + notes.len(), dealt, "{count} players, {picks} steps");
         (asked, notes, game.state)
     }
@@ -15463,12 +15485,20 @@ mod tests {
         assert_eq!((asked, notes.len()), (7, 1));
         assert_eq!(notes[0].reason, "only one strategy card left");
         assert_eq!(notes[0].prompt, "choose a strategy card");
-        assert!(notes[0].label.contains(". "), "the card is named: {}", notes[0].label);
+        assert!(
+            notes[0].label.contains(". "),
+            "the card is named: {}",
+            notes[0].label
+        );
         assert!(state.unclaimed_strategy_cards.is_empty());
         let taker = state
             .players
             .iter()
-            .find(|p| p.strategy_cards.iter().any(|c| c.as_str() == notes[0].option_id))
+            .find(|p| {
+                p.strategy_cards
+                    .iter()
+                    .any(|c| c.as_str() == notes[0].option_id)
+            })
             .expect("someone holds the card");
         assert_eq!(taker.id, notes[0].player);
     }

@@ -157,11 +157,7 @@ fn direct_hit_guard(event: &Event, player: &PlayerId, state: &GameState) -> bool
 /// someone else, and the card being played is not one of the four Sabotage copies — Sabotage
 /// cancels other cards being played, not itself (1.15 would otherwise let a chain of
 /// Sabotages spend the whole deck for nothing).
-fn system_contains_player_units(
-    event: &Event,
-    player: &PlayerId,
-    state: &GameState,
-) -> bool {
+fn system_contains_player_units(event: &Event, player: &PlayerId, state: &GameState) -> bool {
     if let Some(system) = event.text("system") {
         let sys = state.system_state(&SystemId::new(system));
         return sys.units.iter().any(|u| u.owner == *player);
@@ -169,11 +165,7 @@ fn system_contains_player_units(
     false
 }
 
-fn system_contains_player_structures(
-    event: &Event,
-    player: &PlayerId,
-    state: &GameState,
-) -> bool {
+fn system_contains_player_structures(event: &Event, player: &PlayerId, state: &GameState) -> bool {
     if let Some(system) = event.text("system") {
         let sys = state.system_state(&SystemId::new(system));
         return sys.units.iter().any(|u| {
@@ -195,30 +187,24 @@ fn system_contains_player_command_token(
     false
 }
 
-fn system_contains_player_ships(
-    event: &Event,
-    player: &PlayerId,
-    state: &GameState,
-) -> bool {
+fn system_contains_player_ships(event: &Event, player: &PlayerId, state: &GameState) -> bool {
     if let Some(system) = event.text("system") {
         let sys = state.system_state(&SystemId::new(system));
-        return sys.units.iter().any(|u| {
-            u.owner == *player && u.type_id.as_str().ends_with("ship")
-        });
+        return sys
+            .units
+            .iter()
+            .any(|u| u.owner == *player && u.type_id.as_str().ends_with("ship"));
     }
     false
 }
 
-fn system_contains_other_player_ships(
-    event: &Event,
-    player: &PlayerId,
-    state: &GameState,
-) -> bool {
+fn system_contains_other_player_ships(event: &Event, player: &PlayerId, state: &GameState) -> bool {
     if let Some(system) = event.text("system") {
         let sys = state.system_state(&SystemId::new(system));
-        return sys.units.iter().any(|u| {
-            u.owner != *player && u.type_id.as_str().ends_with("ship")
-        });
+        return sys
+            .units
+            .iter()
+            .any(|u| u.owner != *player && u.type_id.as_str().ends_with("ship"));
     }
     false
 }
@@ -684,7 +670,8 @@ pub fn playable_now(
         .chain(salvaged.iter())
         .filter(|alias| {
             // Check if the card is set to Never in the player's reaction modes.
-            if seat.reaction_card_modes.get(*alias) == Some(&ti4_model::state::ReactionMode::Never) {
+            if seat.reaction_card_modes.get(*alias) == Some(&ti4_model::state::ReactionMode::Never)
+            {
                 return false;
             }
             window_for(content, alias).is_some_and(|window| {
@@ -954,11 +941,13 @@ fn slot(owner_name: &str, player: &PlayerId, event_type: &str, relation: Relatio
                         context.state.round,
                     )
                     .about_battle(context.state)
-                    .with_trigger(crate::decision_context::DecisionTrigger::from_event(
-                        event,
-                        relation_name(relation),
-                        &resolver.emission_chain(event),
-                    )),
+                    .with_trigger(
+                        crate::decision_context::DecisionTrigger::from_event(
+                            event,
+                            relation_name(relation),
+                            &resolver.emission_chain(event),
+                        ),
+                    ),
                 );
                 match context.ask_seeing(&choice) {
                     Ok(answer) => ActionCardId::new(answer.id),
@@ -1176,11 +1165,13 @@ fn instinct_training(owner_name: &str, player: &PlayerId) -> Ability {
                     context.state.phase,
                     context.state.round,
                 )
-                .with_trigger(crate::decision_context::DecisionTrigger::from_event(
-                    event,
-                    "when",
-                    &resolver.emission_chain(event),
-                )),
+                .with_trigger(
+                    crate::decision_context::DecisionTrigger::from_event(
+                        event,
+                        "when",
+                        &resolver.emission_chain(event),
+                    ),
+                ),
             );
             let Ok(answer) = context.ask_seeing(&choice) else {
                 return Ok(());
@@ -1741,9 +1732,9 @@ mod tests {
         payload: BTreeMap<String, serde_json::Value>,
         answers: &[&str],
     ) -> Vec<crate::choice::Choice> {
-        let (decider, seen) = crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new(
-            answers.iter().map(|answer| (*answer).to_owned()),
-        )));
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(
+            crate::choice::Scripted::new(answers.iter().map(|answer| (*answer).to_owned())),
+        ));
         let mut table = crate::choice::Table::with_default(Box::new(decider));
         let seats: Vec<PlayerId> = state.players.iter().map(|seat| seat.id.clone()).collect();
         let mut resolver = Resolver::new(
@@ -1788,6 +1779,9 @@ mod tests {
             .expect("a reaction decision carries its trigger")
     }
 
+    /// (questions asked, decisions recorded, skip notes)
+    type Asked = (Vec<String>, Vec<(String, String)>, Vec<Vec<String>>);
+
     /// Emit through an armed resolver with seat `reactor` answered by `NeverOffer` over a decider
     /// that records every question it is really asked. Returns (questions asked, decisions
     /// recorded, skip notes).
@@ -1797,7 +1791,7 @@ mod tests {
         never: &[&str],
         event_type: &str,
         payload: BTreeMap<String, serde_json::Value>,
-    ) -> (Vec<String>, Vec<(String, String)>, Vec<Vec<String>>) {
+    ) -> Asked {
         use std::sync::{Arc, Mutex};
         struct Recorder(Arc<Mutex<Vec<String>>>);
         impl crate::choice::Decider for Recorder {
@@ -1815,8 +1809,9 @@ mod tests {
             never.iter().map(|name| (*name).to_owned()).collect(),
         ));
         let sink = skipped.clone();
-        let wrapper = crate::reaction_modes::NeverOffer::new(Box::new(Recorder(asked.clone())), set)
-            .on_skip(move |_, cards| sink.lock().unwrap().push(cards.to_vec()));
+        let wrapper =
+            crate::reaction_modes::NeverOffer::new(Box::new(Recorder(asked.clone())), set)
+                .on_skip(move |_, cards| sink.lock().unwrap().push(cards.to_vec()));
         let mut table = crate::choice::Table::with_default(Box::new(Recorder(asked.clone())));
         table.seat(PlayerId::new(reactor), Box::new(wrapper));
         let seats: Vec<PlayerId> = state.players.iter().map(|seat| seat.id.clone()).collect();
@@ -1858,7 +1853,11 @@ mod tests {
     fn a_never_card_window_is_declined_unasked_and_journaled_as_a_decline() {
         let build = || {
             let mut state = crate::fixtures::game(&["a", "b"]);
-            state.player_mut(&PlayerId::new("a")).unwrap().action_cards.clear();
+            state
+                .player_mut(&PlayerId::new("a"))
+                .unwrap()
+                .action_cards
+                .clear();
             state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
                 vec![ActionCardId::new("sabo1"), ActionCardId::new("sabo2")];
             state
@@ -1891,7 +1890,11 @@ mod tests {
     #[test]
     fn a_never_card_leaves_the_same_seats_other_cards_offered() {
         let mut state = crate::fixtures::game(&["a", "b"]);
-        state.player_mut(&PlayerId::new("b")).unwrap().action_cards.clear();
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
         state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
             vec![ActionCardId::new("silence_space"), ActionCardId::new("fs1")];
         let (asked, _, notes) = asked_with_never(
@@ -1901,7 +1904,10 @@ mod tests {
             "SYSTEM_ACTIVATED",
             payload(&[("player", "a".into()), ("system", "27".into())]),
         );
-        assert!(!asked.is_empty(), "the seat is still asked about its other cards");
+        assert!(
+            !asked.is_empty(),
+            "the seat is still asked about its other cards"
+        );
         assert!(notes.is_empty());
     }
 
@@ -1909,7 +1915,11 @@ mod tests {
     fn a_played_card_opens_sabotage_with_who_played_what() {
         use crate::decision_context::TriggerKind;
         let mut state = crate::fixtures::game(&["a", "b"]);
-        state.player_mut(&PlayerId::new("a")).unwrap().action_cards.clear();
+        state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards
+            .clear();
         state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
             vec![ActionCardId::new("sabo1")];
         let asked = asked_for(
@@ -1927,7 +1937,11 @@ mod tests {
         assert_eq!(trigger.event_id, 1);
         assert!(trigger.chain.is_empty());
         let context = asked[0].context.as_ref().unwrap();
-        assert_eq!(context.actor, PlayerId::new("b"), "the asked seat is the reactor");
+        assert_eq!(
+            context.actor,
+            PlayerId::new("b"),
+            "the asked seat is the reactor"
+        );
     }
 
     #[test]
@@ -1936,7 +1950,11 @@ mod tests {
         let mut state = crate::fixtures::game(&["a", "b"]);
         state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
             vec![ActionCardId::new("silence_space"), ActionCardId::new("fs1")];
-        state.player_mut(&PlayerId::new("b")).unwrap().action_cards.clear();
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
         let asked = asked_for(
             state,
             "SYSTEM_ACTIVATED",
@@ -1970,7 +1988,11 @@ mod tests {
         let mut state = crate::fixtures::game(&["a", "b"]);
         state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
             vec![ActionCardId::new("experimental")];
-        state.player_mut(&PlayerId::new("b")).unwrap().action_cards.clear();
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
         let asked = asked_for(
             state,
             "SHIP_MOVED",
@@ -1996,7 +2018,11 @@ mod tests {
     fn a_strategic_action_names_the_strategy_card() {
         use crate::decision_context::TriggerKind;
         let mut state = crate::fixtures::game(&["a", "b"]);
-        state.player_mut(&PlayerId::new("a")).unwrap().action_cards.clear();
+        state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards
+            .clear();
         state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
             vec![ActionCardId::new("coup")];
         let asked = asked_for(
@@ -2096,7 +2122,8 @@ mod tests {
         hits.insert("player".to_owned(), "victim".into());
         hits.insert("gunner".to_owned(), "shooter".into());
         hits.insert("hits".to_owned(), 3.into());
-        let cannon = DecisionTrigger::from_event(&Event::new(5, "SPACE_CANNON_HITS", hits), "when", &[1, 2]);
+        let cannon =
+            DecisionTrigger::from_event(&Event::new(5, "SPACE_CANNON_HITS", hits), "when", &[1, 2]);
         assert_eq!(cannon.kind, TriggerKind::SpaceCannonHits);
         assert_eq!(cannon.actor, Some(PlayerId::new("shooter")));
         assert_eq!(cannon.subject, Some(PlayerId::new("victim")));
@@ -2108,12 +2135,19 @@ mod tests {
         let cast = DecisionTrigger::from_event(&Event::new(6, "VOTES_CAST", votes), "after", &[]);
         assert_eq!(cast.kind, TriggerKind::VotesCast);
         let json = serde_json::to_string(&cast).unwrap();
-        assert!(!json.contains("outcome") && !json.contains("\"for\""), "{json}");
+        assert!(
+            !json.contains("outcome") && !json.contains("\"for\""),
+            "{json}"
+        );
         let mut agenda = BTreeMap::new();
         agenda.insert("player".to_owned(), "an outcome".into());
         agenda.insert("elected_player".to_owned(), "b".into());
-        let resolved = DecisionTrigger::from_event(&Event::new(7, "AGENDA_RESOLVED", agenda), "when", &[]);
-        assert_eq!(resolved.actor, None, "player here is the outcome, not a seat");
+        let resolved =
+            DecisionTrigger::from_event(&Event::new(7, "AGENDA_RESOLVED", agenda), "when", &[]);
+        assert_eq!(
+            resolved.actor, None,
+            "player here is the outcome, not a seat"
+        );
         assert_eq!(resolved.subject, Some(PlayerId::new("b")));
     }
 
@@ -2139,10 +2173,8 @@ mod tests {
         );
 
         // Place a Space Dock for player B in system 33
-        let spacedock = ti4_model::Unit::new(
-            ti4_model::id::UnitTypeId::new("spacedock"),
-            b.clone(),
-        );
+        let spacedock =
+            ti4_model::Unit::new(ti4_model::id::UnitTypeId::new("spacedock"), b.clone());
         state.system_mut(&SystemId::new("33")).units.push(spacedock);
 
         // Now Decoy Operation should be offered

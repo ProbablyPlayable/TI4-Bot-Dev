@@ -328,7 +328,8 @@ fn construction_drafts_where_the_structure_goes() {
         publication.position.board.systems[&SystemId::new("35")]
             .units
             .iter()
-            .any(|unit| unit.unit_type.as_str() == "pds" && unit.planet.as_ref() == Some(&planets[1]))
+            .any(|unit| unit.unit_type.as_str() == "pds"
+                && unit.planet.as_ref() == Some(&planets[1]))
     );
     assert!(live.state.identical(&before));
 }
@@ -347,7 +348,10 @@ fn warfare_drafts_home_production_with_its_payment() {
         let mut built = false;
         let transcript = collect(&runner, |offer| {
             let choice = offer.choice.as_ref()?;
-            let subtype = choice.context.as_ref().map(|context| context.subtype.as_str());
+            let subtype = choice
+                .context
+                .as_ref()
+                .map(|context| context.subtype.as_str());
             Some(match subtype {
                 _ if is_window(offer) => "yes".to_owned(),
                 Some("produce_unit") if !built => {

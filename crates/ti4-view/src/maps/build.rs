@@ -104,7 +104,9 @@ pub fn build_template_galaxy(
             // hyperlane tile stands in. To undo: when paths are modelled, let a galaxy hold
             // copies of a tile and delete this.
             if placed.iter().any(|(used, _)| *used == id)
-                && catalogue.get(id.as_str()).is_some_and(|system| system.is_hyperlane())
+                && catalogue
+                    .get(id.as_str())
+                    .is_some_and(|system| system.is_hyperlane())
             {
                 let spare = catalogue.iter().find(|(spare, system)| {
                     system.is_hyperlane() && placed.iter().all(|(used, _)| used != *spare)
@@ -135,7 +137,8 @@ pub fn build_template_galaxy(
     let rest: Vec<SystemId> = catalogue
         .keys()
         .filter(|id| {
-            id.parse::<u32>().is_ok_and(|tile| matches!(tile, 19..=50 | 59..=80))
+            id.parse::<u32>()
+                .is_ok_and(|tile| matches!(tile, 19..=50 | 59..=80))
                 && !pool.iter().any(|drawn| drawn.as_str() == **id)
         })
         .map(|id| SystemId::new(*id))

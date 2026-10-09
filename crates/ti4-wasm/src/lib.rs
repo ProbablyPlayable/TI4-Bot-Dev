@@ -68,9 +68,15 @@ fn new_game(
     seed: u64,
     players: usize,
 ) -> Result<Game<'static>, Failure> {
-    let seats = SEATS.get(..players).filter(|seats| seats.len() >= 3).ok_or_else(|| {
-        setup(format_args!("{players} players: a game has 3 to {} seats", SEATS.len()))
-    })?;
+    let seats = SEATS
+        .get(..players)
+        .filter(|seats| seats.len() >= 3)
+        .ok_or_else(|| {
+            setup(format_args!(
+                "{players} players: a game has 3 to {} seats",
+                SEATS.len()
+            ))
+        })?;
     let ids: Vec<PlayerId> = seats.iter().map(|name| PlayerId::new(*name)).collect();
     let loader = TemplateLoader::load().map_err(setup)?;
     let template = default_template_for(content, &loader, players, POK)
@@ -186,7 +192,9 @@ impl HostDecider {
         let stored = offer(choice, seen);
         if let Err(error) = stored {
             *HOST_TOO_LARGE.lock().expect("too large lock") = Some(error);
-            return Err(failed("what the host is shown did not fit its buffer".to_owned()));
+            return Err(failed(
+                "what the host is shown did not fit its buffer".to_owned(),
+            ));
         }
         let index = host_ask();
         PENDING.lock().expect("pending lock").clear();
@@ -314,7 +322,11 @@ fn status(result: Result<usize, Failure>) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn ti4_run_seeded(seed: u32, players: u32, max_steps: u32) -> i32 {
-    status(run_seeded(u64::from(seed), players as usize, max_steps as usize))
+    status(run_seeded(
+        u64::from(seed),
+        players as usize,
+        max_steps as usize,
+    ))
 }
 
 #[unsafe(no_mangle)]

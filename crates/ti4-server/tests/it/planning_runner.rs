@@ -7,9 +7,7 @@ use std::sync::{
 use std::time::Duration;
 
 use ti4_content::{ContentStore, galaxy::all_systems};
-use ti4_engine::choice::{
-    AlwaysDecline, Scripted, Table,
-};
+use ti4_engine::choice::{AlwaysDecline, Scripted, Table};
 use ti4_engine::fixtures::{
     a_system_where, game, hub_with_centre, hub_with_outer, put, put_on_planet,
 };
@@ -777,7 +775,7 @@ fn the_planners_own_ability_is_offered_and_its_hidden_outcome_is_never_shown() {
             .map(ToString::to_string)
             .collect();
         let explored = collect(
-            &crate::runner(&live),
+            &crate::planning_runner::runner(&live),
             &["tactical".into(), target.to_string(), planet.to_string()],
         );
         assert!(matches!(
@@ -785,7 +783,11 @@ fn the_planners_own_ability_is_offered_and_its_hidden_outcome_is_never_shown() {
             StopReason::Uncertainty | StopReason::KnowledgeChanged
         ));
         let text = serde_json::to_string(&explored).unwrap();
-        assert!(cards.iter().all(|card| !text.contains(&format!("\"{card}\""))));
+        assert!(
+            cards
+                .iter()
+                .all(|card| !text.contains(&format!("\"{card}\"")))
+        );
         transcripts.push(
             explored
                 .into_iter()
@@ -1533,4 +1535,3 @@ fn engine_failure_is_sanitized_and_uncertainty_takes_precedence_over_failure() {
         );
     }
 }
-

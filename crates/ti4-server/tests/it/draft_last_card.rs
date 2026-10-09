@@ -15,7 +15,10 @@ use ti4_server::session::{GameSession, MockClient, SeatController, SessionConfig
 
 #[test]
 fn the_lone_last_card_is_taken_for_its_picker_and_only_that_seat_hears_of_it() {
-    let ids: Vec<PlayerId> = ["p1", "p2", "p3", "p4"].iter().map(|id| PlayerId::new(*id)).collect();
+    let ids: Vec<PlayerId> = ["p1", "p2", "p3", "p4"]
+        .iter()
+        .map(|id| PlayerId::new(*id))
+        .collect();
     let state = start_game_seeded(ContentStore::embedded(), &ids, POK, None, 42).expect("game");
     let mut config = SessionConfig::new("draft_last_card", state);
     for id in &ids {
@@ -24,7 +27,12 @@ fn the_lone_last_card_is_taken_for_its_picker_and_only_that_seat_hears_of_it() {
     let session = Arc::new(GameSession::start(config));
     let clients: Vec<(PlayerId, MockClient)> = ids
         .iter()
-        .map(|id| (id.clone(), MockClient::connect(session.clone(), ViewerRole::Player(id.clone()))))
+        .map(|id| {
+            (
+                id.clone(),
+                MockClient::connect(session.clone(), ViewerRole::Player(id.clone())),
+            )
+        })
         .collect();
     let spectator = MockClient::connect(session.clone(), ViewerRole::Spectator);
 
@@ -51,7 +59,10 @@ fn the_lone_last_card_is_taken_for_its_picker_and_only_that_seat_hears_of_it() {
         assert!(Instant::now() < deadline, "the draft stalled");
         if let Some((actor, nonce, version)) = session.current_pending_decision() {
             let option = session.current_state().unclaimed_strategy_cards[0].to_string();
-            if session.submit_choice(&actor, &nonce, version, &option).is_ok() {
+            if session
+                .submit_choice(&actor, &nonce, version, &option)
+                .is_ok()
+            {
                 asked += 1;
             }
         }
@@ -74,7 +85,11 @@ fn the_lone_last_card_is_taken_for_its_picker_and_only_that_seat_hears_of_it() {
     let notes = heard.values().next().unwrap();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].1, "only one strategy card left");
-    assert!(notes[0].0.contains(". "), "the card is named: {}", notes[0].0);
+    assert!(
+        notes[0].0.contains(". "),
+        "the card is named: {}",
+        notes[0].0
+    );
     assert_eq!(spectator_notes, 0);
     let state = session.current_state();
     assert!(state.unclaimed_strategy_cards.is_empty());

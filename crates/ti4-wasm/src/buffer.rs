@@ -161,7 +161,10 @@ mod tests {
     #[test]
     fn a_value_that_fits_is_stored_whole() {
         let mut buffer = Buffer::<16>::new();
-        assert_eq!(store(&mut buffer, "the value", "CAPACITY", &[1, 2, 3]).unwrap(), 7);
+        assert_eq!(
+            store(&mut buffer, "the value", "CAPACITY", &[1, 2, 3]).unwrap(),
+            7
+        );
         assert_eq!(buffer.as_bytes(), b"[1,2,3]");
     }
 

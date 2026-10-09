@@ -909,10 +909,9 @@ fn spawn(
         // abilities and every mandatory one run on the disposable fork. What may
         // be shown is decided only by the publication gate: a question outside
         // the audited offers, new knowledge or a random outcome stops the preview.
-        game.timing
-            .set_participation(Arc::new(move |ability| {
-                ability.owner == planner || !ability.optional
-            }));
+        game.timing.set_participation(Arc::new(move |ability| {
+            ability.owner == planner || !ability.optional
+        }));
         let aftermath_observation = observation.clone();
         game.on_aftermath(move |state, _content, _sources| {
             let (Some(system), Some(player)) = (&state.active_system, &state.active) else {
@@ -1277,10 +1276,11 @@ fn audit_preview(subtype: &str, option: &ChoiceOption) -> Result<(), StopReason>
     // just because it was attached to an otherwise familiar move option.
     let permitted = match option.preview.as_ref() {
         None => {
-            matches!(subtype, "action_menu" | "mid_action_pause") || matches!(
-                option.id.as_str(),
-                "done_moving" | "done_loading" | "done_committing" | "done_producing"
-            )
+            matches!(subtype, "action_menu" | "mid_action_pause")
+                || matches!(
+                    option.id.as_str(),
+                    "done_moving" | "done_loading" | "done_committing" | "done_producing"
+                )
         }
         Some(preview) if !preview.truncated => match &preview.outcome {
             Outcome::Certain { deltas } => {

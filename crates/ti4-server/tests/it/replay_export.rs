@@ -39,7 +39,11 @@ fn answer_first_choice(session: &GameSession) {
                 .expect("submit");
             return;
         }
-        assert!(Instant::now() < deadline, "timed out: {:?}", session.error());
+        assert!(
+            Instant::now() < deadline,
+            "timed out: {:?}",
+            session.error()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }

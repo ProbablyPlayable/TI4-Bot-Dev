@@ -6226,8 +6226,7 @@ mod tests {
         put(&mut state, &system, "cruiser", &player, 2);
         put(&mut state, &system, "fighter", &player, 2);
 
-        let (capturing, seen) =
-            crate::choice::Capturing::new(Box::new(crate::choice::FirstOption));
+        let (capturing, seen) = crate::choice::Capturing::new(Box::new(crate::choice::FirstOption));
         let mut table = Table::with_default(Box::new(capturing));
         let mut dice = Dice::new();
         let mut rng = GameRng::new(1);

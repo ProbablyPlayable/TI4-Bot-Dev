@@ -382,12 +382,11 @@ pub fn project_board_view_full(
             invasion_seq: active.seq,
             invader: active.invader.clone(),
             phase: active.phase.clone(),
-            planets: systems.get(&active.system).map_or_else(
-                Vec::new,
-                |system: &crate::view::SystemView| {
+            planets: systems
+                .get(&active.system)
+                .map_or_else(Vec::new, |system: &crate::view::SystemView| {
                     system.planets.keys().cloned().collect()
-                },
-            ),
+                }),
             current_planet: active.planet.clone(),
             defender: active.defender.clone(),
             ground_round: active.ground_round,
@@ -643,9 +642,7 @@ mod tests {
 
     fn reaction_offer() -> (Choice, String) {
         use ti4_engine::choice::ChoiceOption;
-        use ti4_engine::decision_context::{
-            DecisionContext, DecisionSource, DecisionTrigger,
-        };
+        use ti4_engine::decision_context::{DecisionContext, DecisionSource, DecisionTrigger};
         let mut payload = BTreeMap::new();
         payload.insert("player".to_owned(), "player_1".into());
         payload.insert("card".to_owned(), "fs1".into());
@@ -654,7 +651,11 @@ mod tests {
             PlayerId::new("player_2"),
             "when ACTION_CARD_PLAYED",
             vec![
-                ChoiceOption::labelled("reaction:x:ACTION_CARD_PLAYED:when", "ability", "Play Sabotage"),
+                ChoiceOption::labelled(
+                    "reaction:x:ACTION_CARD_PLAYED:when",
+                    "ability",
+                    "Play Sabotage",
+                ),
                 ChoiceOption::decline(),
             ],
         )
@@ -676,7 +677,8 @@ mod tests {
     fn the_reaction_trigger_reaches_the_asked_seat_and_only_that_seat() {
         let (choice, nonce) = reaction_offer();
         let owner = ViewerRole::Player(PlayerId::new("player_2"));
-        let sent = project_pending_choice(&owner, Some((&choice, &nonce))).expect("the owner is asked");
+        let sent =
+            project_pending_choice(&owner, Some((&choice, &nonce))).expect("the owner is asked");
         let json = serde_json::to_value(&sent).unwrap();
         let trigger = &json["choice"]["context"]["trigger"];
         assert_eq!(trigger["kind"], "action_card_played");
@@ -684,13 +686,19 @@ mod tests {
         assert_eq!(trigger["card"], "fs1");
         assert_eq!(trigger["relation"], "when");
         assert_eq!(trigger["event_id"], 4);
-        assert!(trigger.get("chain").is_none(), "an empty chain stays off the wire");
+        assert!(
+            trigger.get("chain").is_none(),
+            "an empty chain stays off the wire"
+        );
         let other = ViewerRole::Player(PlayerId::new("player_1"));
         assert!(project_pending_choice(&other, Some((&choice, &nonce))).is_none());
         assert!(project_pending_choice(&ViewerRole::Spectator, Some((&choice, &nonce))).is_none());
         // And a message written before triggers existed still decodes, with none.
         let mut old = json.clone();
-        old["choice"]["context"].as_object_mut().unwrap().remove("trigger");
+        old["choice"]["context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("trigger");
         let back: PendingChoiceEnvelope = serde_json::from_value(old).unwrap();
         assert!(back.choice.context.unwrap().trigger.is_none());
     }

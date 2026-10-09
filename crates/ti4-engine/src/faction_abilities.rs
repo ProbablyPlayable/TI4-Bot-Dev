@@ -1874,8 +1874,7 @@ mod tests {
         let content = ContentStore::embedded();
         let (mut state, player) = seated(&letnev);
         state.player_mut(&player).unwrap().trade_goods = 5;
-        let (decider, seen) =
-            crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(crate::choice::AlwaysDecline));
         let mut table = crate::choice::Table::with_default(Box::new(decider));
 
         space_combat_round_started(&mut state, content, POK, &mut table, &player);
