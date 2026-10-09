@@ -449,7 +449,7 @@ mod tests {
     /// One test for everything that plays through the host: the host and the update buffer are
     /// statics, so two such tests would not be independent.
     #[test]
-    fn the_host_is_asked_for_its_seats_and_can_leave() {
+    fn the_host_is_asked_for_its_seats_can_leave_and_a_replay_is_the_same_game() {
         use std::sync::{Arc, Mutex};
         let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let sink = seen.clone();
@@ -488,5 +488,54 @@ mod tests {
         let last: serde_json::Value = serde_json::from_str(&update()).unwrap();
         assert!(last.get("pending_choice").is_none());
         assert_eq!(last["viewer"]["role"], "player");
+        drop(seen);
+
+        // A saved game is the seed and the ids of the host's answers. Played again with them,
+        // the game asks the same choices and reaches the same position.
+        const ANSWERS: usize = 40;
+        let options = |update: &serde_json::Value| -> Vec<String> {
+            update["pending_choice"]["choice"]["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|option| option["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let first = Arc::new(Mutex::new((Vec::<String>::new(), String::new())));
+        let sink = first.clone();
+        set_native_host(move |update| {
+            let (answers, reached) = &mut *sink.lock().unwrap();
+            if answers.len() == ANSWERS {
+                update.clone_into(reached);
+                return -1;
+            }
+            let ids = options(&serde_json::from_str(update).unwrap());
+            let index = (answers.len() * 7) % ids.len();
+            answers.push(ids[index].clone());
+            i32::try_from(index).unwrap()
+        });
+        ti4_play(3, 8, 1);
+        let (answers, reached) = first.lock().unwrap().clone();
+        assert_eq!(answers.len(), ANSWERS);
+
+        let again = Arc::new(Mutex::new((0, String::new())));
+        let sink = again.clone();
+        set_native_host(move |update| {
+            let (asked, reached) = &mut *sink.lock().unwrap();
+            let Some(wanted) = answers.get(*asked) else {
+                update.clone_into(reached);
+                return -1;
+            };
+            *asked += 1;
+            let ids = options(&serde_json::from_str(update).unwrap());
+            let index = ids.iter().position(|id| id == wanted);
+            i32::try_from(index.expect("the replayed game offers the saved answer")).unwrap()
+        });
+        ti4_play(3, 8, 1);
+        assert_eq!(again.lock().unwrap().1, reached);
+        assert!(
+            reached.contains("\"nonce\":\"41\""),
+            "the position after 40 answers"
+        );
     }
 }

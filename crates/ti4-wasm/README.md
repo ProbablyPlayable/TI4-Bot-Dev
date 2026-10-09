@@ -182,7 +182,8 @@ stack is parked until the promise of the answer settles.
 ## Local play in web2
 
 `web2/?local=<seed>&players=8&humans=<mask>` plays a game of this engine in the shell of web2.
-`humans=1` is seat `a` against seven random seats; `humans=255` is hotseat for eight.
+`humans=1` is seat `a` against seven random seats. `humans` is a mask of the seats that are
+played in the page.
 
 - `web2/scripts/build-wasm.sh` builds the file and copies it to `web2/src/session/ti4.wasm`
   (not in the repository).
@@ -194,17 +195,71 @@ stack is parked until the promise of the answer settles.
 - `cargo run -p ti4-wasm --example record -- <seed> <players> <mask> <choice number>` writes the
   update of one choice. The selector tests of web2 use two such files.
 
+### The saved game
+
+A game is not kept as its state. It is kept as what plays it again
+(`web2/src/session/savedGame.ts`): the seed, the number of seats, the human seats, the SHA-256 of
+the engine file, and the option id of each answer of the page. The random seats and the dice
+follow the seed, so the answers are the only input that is missing. The server keeps a game the
+same way: an init record and the decision log.
+
+- Where: `localStorage`, key `ti4.local.<seed>.<players>.<humans>`, written whole after each
+  answer. The bar under the shell has New game, Export and Import (a JSON file).
+- A reload plays the answers again and stops at the first choice without one. Undo plays them
+  again without the last one. The engine waits for an answer in the middle of a step, on its
+  stack, so a position between two answers cannot be stored and resumed.
+- An answer that the replayed game does not offer stops the replay. The error names the number
+  of the answer, its id and the ids that are offered.
+- A saved game of another engine file is not replayed before the player says so: another
+  engine may play the same answers differently, and not every difference gives an illegal id.
+
+### Measurements
+
+`cd web2 && node ../crates/ti4-wasm/js/bench.mjs src/session/ti4.wasm` plays one full game in
+Chromium: seed 3, eight seats, seat `a` answers option `7n mod options` at its n-th choice.
+The game has 296 choices of seat `a` and 2619 decisions in all.
+
+| What | Time |
+| --- | ---: |
+| Random seats between two choices: median | 9 ms |
+| the same, 90% of the choices | under 0.15 s |
+| the same, 99% | under 0.51 s |
+| the same, longest | 0.57 s |
+| Whole game | 14.6 s |
+| of that, reading the 296 updates in JS | 0.14 s |
+| Replay up to answer 50 (resume or undo there) | 1.8 s |
+| Replay up to answer 150 | 5.6 s |
+| Replay up to answer 296 | 14.2 s |
+| Writing the save, 296 answers (3.7 KiB) | 0.08 ms |
+| Writing the save, 5000 answers (59 KiB) | 0.7 ms |
+| Writing the save, 50000 answers (589 KiB) | 6.6 ms |
+
+- Writing the whole save after each answer is not a bottleneck. No game comes near 5000 answers.
+- The replay is the bottleneck: it costs all the engine time of the game so far. The page
+  shows how far it is, but an undo late in a game takes over ten seconds.
+- The time is the engine's, not the boundary's. The same game with random deciders only (2678
+  decisions) takes 8.3 s natively (`--release`), 12.4 s in this file, and 7.9 s in a wasm file
+  built with `opt-level = 3` (6.8 MB before compression in place of 4.5 MB). That is about
+  3 ms for each decision natively.
+- A CPU profile of that game (Node, a build with names) has no single hot function. The time is
+  allocation, `String` and `Vec` clones and `BTreeMap` walks. By caller: `Game::apply_choice`
+  26%, `Game::advance_turn` 25%, `Game::legal_options` 20%;
+  `transactions::may_transact` 18% (it computes the neighbours of a seat each time);
+  `fleet::enforce_everywhere` 12%, nearly all of it `units::catalogue`, which builds its map
+  on each call; `Resolver::checkpoint` 9%; the copy of the state for the host at each offer 6%.
+  The shares overlap.
+
 Limits:
 
 - The random seats play on the main thread between two choices, and the page does not respond
-  in that time. In one full game (seed 3, eight seats, 296 choices of seat `a`, Chromium) the
-  pause was 10 ms in the median, under 0.16 s for 90% of the choices, and 0.6 to 0.75 s at most.
-- Hotseat shows the hand of the asked seat at once. There is no hand-over screen yet.
+  in that time (see the table).
+- An undo or a reload late in a game takes as long as the game took the engine so far.
+- With `humans` naming more than one seat, the page shows the hand of the asked seat at once.
+  There is no hand-over screen.
 - The view has ids, not names. web2 shows technologies by id and has a small table for the
   names and commodity values of the eight factions (`session/select/names.ts`).
 - Systems outside the map (the wormhole nexus, the fracture) are not on the board of web2.
 - The view does not say whose home a system is, and has no combat strength.
-- No saved game, no undo. A reload starts the game again from its seed.
 
 ## Eight players
 
@@ -235,7 +290,8 @@ content does not have.
   `ti4-view`. `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-bot-agent` and `ti4-wasm` pass their
   tests. `ti4-advisor` uses the moved paths through the re-exports of `ti4-server` and was not
   built (it needs libtorch).
-- No UI queries, no saved games, no undo, no bots other than random.
+- No UI queries, no bots other than random. Undo and resume are replays from the seed; a stored
+  position that can be resumed would need the engine to stop at step boundaries only.
 
 ## Commands
 

@@ -109,3 +109,100 @@ test("an inspected system shows its forces", async ({ page }) => {
   await expect(page.getByText("2 Carriers")).toBeVisible();
   await page.screenshot({ path: "shots/local/inspector.png", animations: "disabled" });
 });
+
+const bar = (page: Page) => page.getByRole("navigation", { name: "Local game" });
+const undo = (page: Page) => page.getByRole("button", { name: "Undo" });
+
+test("a reload goes on where the game was, and undo takes back one answer", async ({ page }) => {
+  await page.goto("/?local=3&players=8&humans=1");
+  await expect(send(page)).toBeDisabled();
+  await expect(undo(page)).toHaveCount(0);
+  const prompts: string[] = [];
+  for (let count = 0; count < 20; count++) {
+    prompts.push((await heading(page).textContent()) ?? "");
+    await answer(page);
+  }
+  const open = await heading(page).textContent();
+  const round = await page.getByText(/^Round \d+ · /).textContent();
+  await expect(bar(page)).toContainText("20 answers saved");
+
+  await page.reload();
+  await expect(send(page)).toBeDisabled();
+  await expect(heading(page)).toHaveText(open ?? "");
+  await expect(page.getByText(/^Round \d+ · /)).toHaveText(round ?? "");
+  await expect(bar(page)).toContainText("20 answers saved");
+
+  // Undo opens the choice that was answered last, and the same answer leads to the same game.
+  await undo(page).click();
+  await expect(bar(page)).toContainText("19 answers saved");
+  await expect(heading(page)).toHaveText(prompts[19]);
+  await expect(send(page)).toBeDisabled();
+  await answer(page);
+  await expect(heading(page)).toHaveText(open ?? "");
+
+  await bar(page).getByRole("button", { name: "New game" }).click();
+  await expect(heading(page)).toHaveText(prompts[0]);
+  await expect(bar(page)).toContainText("0 answers saved");
+  await expect(undo(page)).toHaveCount(0);
+});
+
+test("an exported game is imported in another browser and opens at the same choice", async ({
+  page,
+  browser,
+}) => {
+  await page.goto("/?local=5&players=8&humans=1");
+  await expect(send(page)).toBeDisabled();
+  for (let count = 0; count < 6; count++) {
+    await answer(page);
+  }
+  const open = await heading(page).textContent();
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    bar(page).getByRole("button", { name: "Export" }).click(),
+  ]);
+  const path = await download.path();
+
+  const other = await (await browser.newContext()).newPage();
+  // Another game is open: the file says which game it is.
+  await other.goto("/?local=3&players=8&humans=1");
+  await expect(send(other)).toBeDisabled();
+  await other.getByLabel("Saved game file").setInputFiles(path);
+  await expect(bar(other)).toContainText("seed 5");
+  await expect(bar(other)).toContainText("6 answers saved");
+  await expect(heading(other)).toHaveText(open ?? "");
+
+  // A file that is no saved game is refused, and says why.
+  await other
+    .getByLabel("Saved game file")
+    .setInputFiles({ name: "x.json", mimeType: "application/json", buffer: Buffer.from("{}") });
+  await expect(bar(other).getByRole("alert")).toContainText("format undefined");
+  await other.context().close();
+});
+
+test("a saved game of another engine build is not replayed without a word", async ({ page }) => {
+  await page.goto("/?local=3&players=8&humans=1");
+  await expect(send(page)).toBeDisabled();
+  await answer(page);
+  await page.evaluate(() => {
+    const save = JSON.parse(localStorage.getItem("ti4.local.3.8.1") ?? "");
+    localStorage.setItem("ti4.local.3.8.1", JSON.stringify({ ...save, engine: "another" }));
+  });
+  await page.reload();
+  await expect(page.getByText("was played by another build of the engine")).toBeVisible();
+  await page.getByRole("button", { name: "Replay anyway" }).click();
+  await expect(send(page)).toBeDisabled();
+  await expect(bar(page)).toContainText("1 answers saved");
+  // The next answer is saved with this engine.
+  await answer(page);
+  await expect(bar(page)).toContainText("2 answers saved");
+
+  // An answer that the game does not offer stops the replay and names the answer.
+  await page.evaluate(() => {
+    const save = JSON.parse(localStorage.getItem("ti4.local.3.8.1") ?? "");
+    localStorage.setItem("ti4.local.3.8.1", JSON.stringify({ ...save, answers: ["no-such"] }));
+  });
+  await page.reload();
+  await expect(page.getByRole("status")).toContainText(
+    'The saved game does not fit this engine: answer 1 of 1 was "no-such"',
+  );
+});

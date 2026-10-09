@@ -14,11 +14,18 @@ export interface LocalState {
   sent: string | null;
   /** Why the game stopped, if it did. */
   error: string | null;
+  /** The game is played again up to where it was; the update is out of date until it is there. */
+  replaying: { done: number; total: number } | null;
+  /** The last answer can be taken back. */
+  canUndo: boolean;
 }
 
 /** The choice that the viewer can answer now. */
 export const openChoice = (update: SessionUpdate, local: LocalState): Choice | null =>
-  update.pending_choice && update.pending_choice.nonce !== local.sent && !local.error
+  update.pending_choice &&
+  update.pending_choice.nonce !== local.sent &&
+  !local.error &&
+  !local.replaying
     ? update.pending_choice.choice
     : null;
 
@@ -55,9 +62,11 @@ export function selectAction(update: SessionUpdate, local: LocalState): FlowActi
   const status = update.turn_status;
   const idle = local.error
     ? local.error
-    : status.kind === "game_over"
-      ? "The game is over."
-      : "The other seats are playing.";
+    : local.replaying
+      ? `Playing the saved game again: answer ${local.replaying.done} of ${local.replaying.total}.`
+      : status.kind === "game_over"
+        ? "The game is over."
+        : "The other seats are playing.";
   return {
     kind: "flow",
     title: choice ? "Decision" : "Waiting",
@@ -96,27 +105,38 @@ export function selectAction(update: SessionUpdate, local: LocalState): FlowActi
           ? `Selected: ${sentence(staged.label || staged.id)}`
           : `Choose one of ${choice.options.length}.`,
       error: false,
-      actions: choice
-        ? [
-            ...(staged
-              ? [
-                  {
-                    label: "Clear",
-                    tone: "quiet" as const,
-                    key: "Escape",
-                    intent: { type: "clearChoice" as const },
-                  },
-                ]
-              : []),
-            {
-              label: "Send",
-              tone: "primary",
-              disabled: !staged,
-              key: "Enter",
-              intent: { type: "flow", action: "resolve" },
-            },
-          ]
-        : [],
+      actions: [
+        ...(local.canUndo && !local.replaying
+          ? [
+              {
+                label: "Undo",
+                tone: "quiet" as const,
+                intent: { type: "undo" as const },
+              },
+            ]
+          : []),
+        ...(choice
+          ? [
+              ...(staged
+                ? [
+                    {
+                      label: "Clear",
+                      tone: "quiet" as const,
+                      key: "Escape",
+                      intent: { type: "clearChoice" as const },
+                    },
+                  ]
+                : []),
+              {
+                label: "Send",
+                tone: "primary" as const,
+                disabled: !staged,
+                key: "Enter",
+                intent: { type: "flow" as const, action: "resolve" as const },
+              },
+            ]
+          : []),
+      ],
     },
   };
 }

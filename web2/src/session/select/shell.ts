@@ -13,6 +13,9 @@ function status(update: SessionUpdate, local: LocalState): string {
   if (local.error) {
     return "The game stopped";
   }
+  if (local.replaying) {
+    return `Replaying ${local.replaying.done} of ${local.replaying.total}`;
+  }
   if (openChoice(update, local)) {
     return "Your decision";
   }

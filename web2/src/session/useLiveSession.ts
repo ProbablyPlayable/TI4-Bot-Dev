@@ -5,13 +5,22 @@ import { selectShell } from "./select/shell";
 import type { Transport } from "./transport";
 import type { SessionUpdate } from "./wire";
 
-const NOTHING: LocalState = { inspected: null, staged: null, sent: null, error: null };
+const NOTHING: LocalState = {
+  inspected: null,
+  staged: null,
+  sent: null,
+  error: null,
+  replaying: null,
+  canUndo: false,
+};
 
 export interface LiveSession {
   /** Null until the first update. */
   session: GameSession | null;
   /** Why the game stopped, or cannot start. */
   error: string | null;
+  /** A saved game is played again: how many of its answers are done. */
+  replaying: { done: number; total: number } | null;
 }
 
 /**
@@ -27,12 +36,30 @@ export function useLiveSession(transport: Transport | null): LiveSession {
     setLocal(NOTHING);
     return transport?.subscribe((event) => {
       if (event.kind === "error") {
-        setLocal((now) => ({ ...now, staged: null, error: event.message }));
+        setLocal((now) => ({ ...now, staged: null, replaying: null, error: event.message }));
+        return;
+      }
+      if (event.kind === "replaying") {
+        const { done, total } = event;
+        setLocal((now) => ({
+          ...now,
+          staged: null,
+          sent: null,
+          error: null,
+          replaying: { done, total },
+        }));
         return;
       }
       setUpdate(event.update);
       // A new choice starts with nothing staged. The inspector stays where the player left it.
-      setLocal((now) => ({ ...now, staged: null, sent: null }));
+      setLocal((now) => ({
+        ...now,
+        staged: null,
+        sent: null,
+        error: null,
+        replaying: null,
+        canUndo: event.canUndo,
+      }));
     });
   }, [transport]);
 
@@ -58,6 +85,8 @@ export function useLiveSession(transport: Transport | null): LiveSession {
           return stage(intent.system);
         case "clearChoice":
           return setLocal((now) => ({ ...now, staged: null }));
+        case "undo":
+          return transport.undo();
         case "flow":
           if (intent.action === "resolve" && pending && local.staged) {
             transport.submitChoice(pending.nonce, local.staged);
@@ -72,5 +101,5 @@ export function useLiveSession(transport: Transport | null): LiveSession {
     return { view: selectShell(update, local), dispatch };
   }, [update, local, transport]);
 
-  return { session, error: local.error };
+  return { session, error: local.error, replaying: local.replaying };
 }

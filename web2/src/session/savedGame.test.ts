@@ -1,0 +1,54 @@
+import { expect, it } from "vitest";
+import {
+  type SavedGame,
+  clearSavedGame,
+  loadSavedGame,
+  parseSavedGame,
+  saveKey,
+  storeSavedGame,
+} from "./savedGame";
+
+const game = { seed: 3, players: 8, humans: 1 };
+const save: SavedGame = { format: 1, engine: "ab12", ...game, answers: ["sol", "pass", "18"] };
+
+function storage() {
+  const items = new Map<string, string>();
+  return {
+    items,
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+}
+
+it("keeps a game under the key of its seed, seats and human seats", () => {
+  const store = storage();
+  expect(loadSavedGame(store, game)).toBeNull();
+  storeSavedGame(store, save);
+  expect([...store.items.keys()]).toEqual(["ti4.local.3.8.1"]);
+  expect(loadSavedGame(store, game)).toEqual(save);
+  expect(loadSavedGame(store, { ...game, seed: 4 })).toBeNull();
+  clearSavedGame(store, game);
+  expect(loadSavedGame(store, game)).toBeNull();
+});
+
+it("drops fields that are not part of a saved game", () => {
+  expect(parseSavedGame(JSON.stringify({ ...save, extra: 1 }))).toEqual(save);
+});
+
+it("says which part of a saved game is wrong", () => {
+  const broken = (change: object) => () => parseSavedGame(JSON.stringify({ ...save, ...change }));
+  expect(() => parseSavedGame("{")).toThrow(/^The saved game is not JSON: /);
+  expect(() => parseSavedGame("null")).toThrow("The saved game is not a JSON object.");
+  expect(broken({ format: 2 })).toThrow("The saved game has format 2; this page reads format 1.");
+  expect(broken({ seed: "3" })).toThrow('The saved game has no whole number in "seed".');
+  expect(broken({ humans: -1 })).toThrow('The saved game has no whole number in "humans".');
+  expect(broken({ engine: undefined })).toThrow('The saved game has no text in "engine".');
+  expect(broken({ answers: ["a", 2] })).toThrow(
+    'The saved game has no list of option ids in "answers".',
+  );
+});
+
+it("makes the key from the game alone", () => {
+  expect(saveKey(save)).toBe(saveKey(game));
+});

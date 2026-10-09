@@ -15,6 +15,8 @@ const local = (change: Partial<LocalState> = {}): LocalState => ({
   staged: null,
   sent: null,
   error: null,
+  replaying: null,
+  canUndo: false,
   ...change,
 });
 const flow = (update: SessionUpdate, state: LocalState) => {
@@ -123,4 +125,18 @@ it("shows the forces of an inspected system", () => {
 it("says why the game stopped", () => {
   const view = selectShell(menu, local({ error: "run: the engine failed" }));
   expect(view.toolbar.status).toBe("The game stopped");
+});
+
+it("offers undo once there is an answer to take back", () => {
+  const labels = (state: LocalState) => flow(menu, state).footer.actions.map((item) => item.label);
+  expect(labels(local())).toEqual(["Send"]);
+  expect(labels(local({ canUndo: true }))).toEqual(["Undo", "Send"]);
+  expect(flow(menu, local({ canUndo: true })).footer.actions[0].intent).toEqual({ type: "undo" });
+});
+
+it("has no choice while a saved game is played again: the update is out of date", () => {
+  const replaying = local({ canUndo: true, replaying: { done: 12, total: 40 } });
+  expect(rows(menu, replaying)).toEqual([]);
+  expect(flow(menu, replaying).footer.actions).toEqual([]);
+  expect(selectShell(menu, replaying).toolbar.status).toBe("Replaying 12 of 40");
 });
