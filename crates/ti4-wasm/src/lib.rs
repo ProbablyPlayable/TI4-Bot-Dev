@@ -14,12 +14,13 @@
 
 pub mod buffer;
 
+use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::sync::Mutex;
 
 use serde::Serialize;
 use ti4_content::ContentStore;
-use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice};
+use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice, SeededRandom, Table};
 use ti4_engine::game::{Game, RunError};
 use ti4_model::content_types::POK;
 use ti4_model::id::PlayerId;
@@ -172,6 +173,27 @@ struct Host {
     /// An update did not fit its buffer. The engine's decider error carries text only, and the
     /// size must reach the host intact.
     too_large: Option<TooLarge>,
+    /// The host takes back its last answer. Every later choice fails without asking, so the
+    /// step unwinds, and the run goes back to a checkpoint.
+    undo: bool,
+    /// After an undo: the answers between the checkpoint and the choice that is open again.
+    /// They are given without asking. (The engine's `Scripted` owns a boxed decider, which a
+    /// static cannot hold.)
+    script: VecDeque<String>,
+    /// The answers that a checkpoint can still take back: the number of the choice and the id
+    /// of the chosen option.
+    recent: VecDeque<(u64, String)>,
+    /// How many choices the host had been asked at the oldest checkpoint.
+    oldest: Option<u64>,
+}
+
+impl Host {
+    /// Whether the answer before the pending choice can be taken back from a checkpoint.
+    fn can_undo(&self) -> bool {
+        // The pending choice has the number `asked`, so the answer before it is `asked - 1`.
+        self.oldest
+            .is_some_and(|oldest| oldest + 1 < self.asked && !self.left)
+    }
 }
 
 static HOST: Mutex<Host> = Mutex::new(Host {
@@ -179,7 +201,65 @@ static HOST: Mutex<Host> = Mutex::new(Host {
     viewer: None,
     left: false,
     too_large: None,
+    undo: false,
+    script: VecDeque::new(),
+    recent: VecDeque::new(),
+    oldest: None,
 });
+
+/// The answer of the host that takes back its last answer. See [`ti4_can_undo`].
+pub const UNDO: i32 = -2;
+
+/// How many checkpoints are kept: one after each step that asked the host. An answer older than
+/// these is taken back by playing the game again from its seed, which the host does itself.
+const CHECKPOINTS: usize = 32;
+
+/// The stream of the seats that decide at random. It is here, not inside the table, so that a
+/// checkpoint can keep its position.
+static RANDOM: Mutex<Option<SeededRandom>> = Mutex::new(None);
+
+/// A seat that draws from [`RANDOM`]: all random seats share one stream, in decision order.
+struct RandomSeat;
+
+impl Decider for RandomSeat {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        RANDOM
+            .lock()
+            .expect("random lock")
+            .as_mut()
+            .expect("a played game has a random stream")
+            .choose(choice)
+    }
+}
+
+/// The game between two steps, with what the game does not hold itself.
+struct Checkpoint {
+    game: Game<'static>,
+    random: Option<SeededRandom>,
+    /// How many choices the host had been asked.
+    asked: u64,
+    /// How many decisions the log had.
+    decisions: usize,
+}
+
+/// The table of a played game: the host's seats, random seats, and the hook that keeps
+/// [`LATEST`] current inside a step.
+fn host_table(players: usize, human_mask: u32) -> Table {
+    let mut table = Table::with_default(Box::new(RandomSeat));
+    for (index, seat) in SEATS.iter().take(players).enumerate() {
+        if human_mask >> index & 1 == 1 {
+            table.seat(PlayerId::new(*seat), Box::new(HostDecider));
+        }
+    }
+    // A choice inside a step is offered on the position it is asked in, not on the one the step
+    // began with.
+    table.on_observed_offer(|_, state| {
+        if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
+            latest.state.clone_from(state);
+        }
+    });
+    table
+}
 
 fn host() -> std::sync::MutexGuard<'static, Host> {
     HOST.lock().expect("host lock")
@@ -200,7 +280,19 @@ impl Decider for HostDecider {
             if host.left {
                 return Err(failed(LEFT));
             }
+            if host.undo {
+                return Err(failed(TAKEN_BACK));
+            }
             host.asked += 1;
+            if let Some(wanted) = host.script.pop_front() {
+                return choice.option(&wanted).cloned().ok_or_else(|| {
+                    IllegalChoice::ScriptDiverged {
+                        player: choice.player.clone(),
+                        wanted,
+                        offered: choice.ids().into_iter().map(str::to_owned).collect(),
+                    }
+                });
+            }
             host.viewer = Some(choice.player.clone());
             host.asked
         };
@@ -213,19 +305,31 @@ impl Decider for HostDecider {
         // No lock is held while the host is asked: it reads the update while this stack is parked.
         let index = host_ask();
         UPDATE.lock().expect("update lock").clear();
+        let mut host = host();
+        if index == UNDO && host.can_undo() {
+            host.undo = true;
+            return Err(failed(TAKEN_BACK));
+        }
         let Ok(index) = usize::try_from(index) else {
-            host().left = true;
-            return Err(failed(LEFT));
+            host.left = true;
+            return Err(failed(if index == UNDO {
+                "the host took back an answer that no checkpoint holds; ti4_can_undo says when one does"
+            } else {
+                LEFT
+            }));
         };
-        choice
+        let option = choice
             .options
             .get(index)
             .cloned()
-            .ok_or_else(|| failed("the host answered with an index that is no option"))
+            .ok_or_else(|| failed("the host answered with an index that is no option"))?;
+        host.recent.push_back((nonce, option.id.clone()));
+        Ok(option)
     }
 }
 
 const LEFT: &str = "the host left the game";
+const TAKEN_BACK: &str = "the host took back its last answer";
 
 /// Write what the asked seat is shown, and its choice, into the update buffer.
 fn offer(choice: &Choice, nonce: u64) -> Result<(), TooLarge> {
@@ -314,24 +418,49 @@ fn host_ask() -> i32 {
 fn play(seed: u64, players: usize, human_mask: u32) -> Result<usize, Failure> {
     let content = ContentStore::embedded();
     let mut game = new_game(content, seed, players)?;
-    for (index, seat) in SEATS.iter().take(players).enumerate() {
-        if human_mask >> index & 1 == 1 {
-            game.table.seat(PlayerId::new(*seat), Box::new(HostDecider));
-        }
-    }
+    game.table = host_table(players, human_mask);
+    *RANDOM.lock().expect("random lock") = Some(SeededRandom::new(seed));
     *host() = Host::default();
     *LATEST.lock().expect("latest lock") = Some(latest_of(&game, content));
-    // A choice inside a step is offered on the position it is asked in, not on the one the step
-    // began with.
-    game.table.on_observed_offer(|_, state| {
-        if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
-            latest.state.clone_from(state);
-        }
-    });
     let target = game.state.round.saturating_add(ROUNDS);
     let mut stopped = None;
+    // The game after each step that asked the host, oldest first; at first, the game at its start.
+    // A copy after every step would cost a third of the run. With these, an undo plays the steps
+    // of the random seats since the checkpoint again, which is the wait before any choice.
+    let mut checkpoints: VecDeque<Checkpoint> = VecDeque::with_capacity(CHECKPOINTS + 1);
+    let mut marked = None;
     while stopped.is_none() && game.state.round < target && !game.state.finished && !host().left {
-        stopped = game.step().error.map(RunError::from);
+        let asked = host().asked;
+        if marked != Some(asked) {
+            checkpoints.push_back(Checkpoint {
+                game: game.fork(),
+                random: RANDOM.lock().expect("random lock").clone(),
+                asked,
+                decisions: game.table.log.records.len(),
+            });
+            if checkpoints.len() > CHECKPOINTS {
+                checkpoints.pop_front();
+            }
+            marked = Some(asked);
+            let mut host = host();
+            // An answer from before the oldest checkpoint cannot be taken back from one.
+            let oldest = checkpoints.front().map_or(asked, |first| first.asked);
+            host.oldest = Some(oldest);
+            while host
+                .recent
+                .front()
+                .is_some_and(|(number, _)| *number <= oldest)
+            {
+                host.recent.pop_front();
+            }
+        }
+        let error = game.step().error;
+        if std::mem::take(&mut host().undo) {
+            game = take_back(&mut checkpoints, game, players, human_mask);
+            marked = Some(host().asked);
+        } else {
+            stopped = error.map(RunError::from);
+        }
         if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
             latest.state.clone_from(&game.state);
         }
@@ -365,6 +494,48 @@ fn play(seed: u64, players: usize, human_mask: u32) -> Result<usize, Failure> {
     )
 }
 
+/// Go back to the choice before the pending one: the game of the last checkpoint before it, and
+/// the answers between the two, which are given again without asking.
+fn take_back(
+    checkpoints: &mut VecDeque<Checkpoint>,
+    mut left: Game<'static>,
+    players: usize,
+    human_mask: u32,
+) -> Game<'static> {
+    let mut host = host();
+    // The pending choice has the number `asked`; the one to open again is the one before it.
+    let again = host.asked - 1;
+    while checkpoints.len() > 1
+        && checkpoints
+            .back()
+            .is_some_and(|checkpoint| checkpoint.asked >= again)
+    {
+        checkpoints.pop_back();
+    }
+    let checkpoint = checkpoints
+        .back()
+        .expect("the oldest checkpoint is before the choice: Host::can_undo");
+    let mut game = checkpoint.game.fork();
+    game.table = host_table(players, human_mask);
+    // The log goes on from where the checkpoint was taken.
+    let mut records = std::mem::take(&mut left.table.log.records);
+    records.truncate(checkpoint.decisions);
+    game.table.log.records = records;
+    RANDOM
+        .lock()
+        .expect("random lock")
+        .clone_from(&checkpoint.random);
+    host.recent.retain(|(number, _)| *number < again);
+    host.script = host
+        .recent
+        .iter()
+        .filter(|(number, _)| *number > checkpoint.asked)
+        .map(|(_, id)| id.clone())
+        .collect();
+    host.asked = checkpoint.asked;
+    game
+}
+
 /// The status of an export: a length, negated when the response buffer holds an error text.
 fn status(result: Result<usize, Failure>) -> i32 {
     let length = |bytes: usize| i32::try_from(bytes).expect("a buffer is smaller than 2 GiB");
@@ -393,6 +564,13 @@ pub extern "C" fn ti4_run_seeded(seed: u32, players: u32, max_steps: u32) -> i32
 #[unsafe(no_mangle)]
 pub extern "C" fn ti4_play(seed: u32, players: u32, human_mask: u32) -> i32 {
     status(play(u64::from(seed), players as usize, human_mask))
+}
+
+/// Whether the host may answer the pending choice with [`UNDO`]: 1 when a checkpoint holds the
+/// answer before it, else 0. Then that choice is asked again, as it was.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_can_undo() -> u32 {
+    u32::from(host().can_undo())
 }
 
 /// Where every export leaves its result or its error. Constant for the life of the instance.
@@ -444,6 +622,140 @@ mod tests {
             Err(error) => panic!("{error}"),
         }
         assert!(game.state.round > 1, "the game left its first round");
+    }
+
+    /// A seat that draws from a stream which a checkpoint can copy.
+    struct Shared(std::sync::Arc<Mutex<ti4_engine::choice::SeededRandom>>);
+
+    impl Decider for Shared {
+        fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+            self.0.lock().unwrap().choose(choice)
+        }
+    }
+
+    /// `Game::fork` at a step boundary, with a copy of the random seats' stream, is a full
+    /// checkpoint: played on, it makes the decisions of the game it was taken from and reaches
+    /// the same state. A game made again from the state alone does not.
+    ///
+    /// Prints how often a window is open at a step boundary and what a fork costs:
+    /// `cargo test -p ti4-wasm fork -- --nocapture`. The numbers in the README are from seeds 3
+    /// and 11 with 700 steps, a copy every 7 steps, played 30 steps on.
+    #[test]
+    fn a_fork_at_a_step_boundary_plays_the_same_game() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use ti4_engine::choice::{SeededRandom, Table};
+
+        const STEPS: usize = 300;
+        const EVERY: usize = 10;
+        const AHEAD: usize = 20;
+        /// A copy of the game at one step, played `AHEAD` steps on.
+        struct Probe {
+            step: usize,
+            from: usize,
+            decisions: Vec<ti4_engine::choice::DecisionRecord>,
+            state: String,
+        }
+        let content = ContentStore::embedded();
+        let state_of =
+            |game: &Game<'_>| serde_json::to_string(&game.state).expect("a state serializes");
+        let ahead = |mut copy: Game<'static>, step: usize, from: usize| {
+            for _ in 0..AHEAD {
+                if copy.state.finished || copy.step().error.is_some() {
+                    break;
+                }
+            }
+            Probe {
+                step,
+                from,
+                decisions: copy.table.log.records.clone(),
+                state: state_of(&copy),
+            }
+        };
+
+        for seed in [3] {
+            let mut game = new_game(content, seed, 8).unwrap();
+            let stream = Arc::new(Mutex::new(SeededRandom::new(seed)));
+            game.table = Table::with_default(Box::new(Shared(stream.clone())));
+            let table = || {
+                let copy = stream.lock().unwrap().clone();
+                Table::with_default(Box::new(Shared(Arc::new(Mutex::new(copy)))))
+            };
+
+            let (mut forks, mut remade) = (Vec::new(), Vec::new());
+            let (mut quiet, mut open) = (0, std::collections::BTreeMap::new());
+            let (mut fork_time, mut largest) = (Duration::ZERO, 0);
+            let mut states = Vec::new();
+            for step in 0..STEPS {
+                if game.state.finished {
+                    break;
+                }
+                states.push(state_of(&game));
+                let windows = game.open_windows();
+                if windows.is_empty() {
+                    quiet += 1;
+                }
+                for window in &windows {
+                    *open.entry(*window).or_insert(0) += 1;
+                }
+                // A copy is compared over `AHEAD` steps, so the run must go that far.
+                if step % EVERY == 0 && step + AHEAD < STEPS {
+                    let from = game.table.log.records.len();
+                    let start = Instant::now();
+                    let mut fork = game.fork();
+                    fork_time += start.elapsed();
+                    largest = largest.max(states[step].len());
+                    fork.table = table();
+                    forks.push(ahead(fork, step, from));
+                    // What the server's snapshot holds: the state, and nothing else of the game.
+                    let again = Game::with_table(game.state.clone(), content, table())
+                        .with_sources(POK)
+                        .with_galaxy(game.galaxy().unwrap().clone());
+                    remade.push((ahead(again, step, from), windows.is_empty()));
+                }
+                assert!(game.step().error.is_none());
+            }
+            states.push(state_of(&game));
+
+            let log = &game.table.log.records;
+            let same = |probe: &Probe| {
+                let end = probe.from + probe.decisions.len();
+                log.get(probe.from..end) == Some(&probe.decisions[..])
+                    && states.get(probe.step + AHEAD) == Some(&probe.state)
+            };
+            let wrong: Vec<usize> = forks
+                .iter()
+                .filter(|probe| !same(probe))
+                .map(|probe| probe.step)
+                .collect();
+            let count = |quiet_only: bool| {
+                let of: Vec<_> = remade
+                    .iter()
+                    .filter(|(_, quiet)| *quiet || !quiet_only)
+                    .collect();
+                (of.iter().filter(|(probe, _)| same(probe)).count(), of.len())
+            };
+            println!(
+                "seed {seed}: {} steps, {} decisions; no window open at {quiet} boundaries; open: {open:?}",
+                states.len() - 1,
+                log.len()
+            );
+            println!(
+                "  forks: {} of {} play the same game; one fork takes {:?}; the state is up to {largest} bytes of JSON",
+                forks.len() - wrong.len(),
+                forks.len(),
+                fork_time / u32::try_from(forks.len()).unwrap()
+            );
+            println!(
+                "  made again from the state alone: {:?} the same; at boundaries with no window open: {:?}",
+                count(false),
+                count(true)
+            );
+            assert!(
+                wrong.is_empty(),
+                "forks at steps {wrong:?} played another game"
+            );
+        }
     }
 
     /// One test for everything that plays through the host: the host and the update buffer are
@@ -537,5 +849,59 @@ mod tests {
             reached.contains("\"nonce\":\"41\""),
             "the position after 40 answers"
         );
+
+        // An undo opens the choice before the pending one exactly as it was shown, and the same
+        // answers lead to the same choices again. Five in a row go back over several steps.
+        #[derive(Default)]
+        struct Undoing {
+            shown: std::collections::BTreeMap<u64, String>,
+            shown_again: usize,
+            left: usize,
+            active: bool,
+        }
+        let undoing = Arc::new(Mutex::new(Undoing {
+            left: 5,
+            ..Undoing::default()
+        }));
+        let sink = undoing.clone();
+        set_native_host(move |update| {
+            let mut undoing = sink.lock().unwrap();
+            let value: serde_json::Value = serde_json::from_str(update).unwrap();
+            let number: u64 = value["pending_choice"]["nonce"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            if let Some(before) = undoing.shown.get(&number) {
+                assert_eq!(before, update, "choice {number} is shown as before");
+                undoing.shown_again += 1;
+            } else {
+                undoing.shown.insert(number, update.to_owned());
+            }
+            if number == 1 {
+                assert_eq!(ti4_can_undo(), 0, "there is no answer to take back yet");
+            }
+            if number == 41 && undoing.left > 0 {
+                undoing.active = true;
+            }
+            if undoing.active && undoing.left > 0 {
+                assert_eq!(ti4_can_undo(), 1);
+                undoing.left -= 1;
+                return UNDO;
+            }
+            undoing.active = false;
+            if number == 42 {
+                return -1;
+            }
+            let count = options(&value).len();
+            i32::try_from(usize::try_from(number).unwrap() * 7 % count).unwrap()
+        });
+        let status = ti4_play(3, 8, 1);
+        let report = response(status).unwrap();
+        assert!(report.contains(LEFT), "{report}");
+        let undoing = undoing.lock().unwrap();
+        // Choices 40 down to 36 after each undo, then 37 to 41 after the same answers.
+        assert_eq!(undoing.shown_again, 10);
+        assert_eq!(undoing.shown.len(), 42);
     }
 }

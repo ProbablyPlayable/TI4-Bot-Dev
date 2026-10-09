@@ -6,6 +6,7 @@ import type { SessionUpdate } from "./wire";
 interface Exports {
   memory: WebAssembly.Memory;
   ti4_play(seed: number, players: number, humans: number): number;
+  ti4_can_undo(): number;
   ti4_response_ptr(): number;
   ti4_update_ptr(): number;
   ti4_update_len(): number;
@@ -22,6 +23,8 @@ interface Jspi {
 
 /** Leaves the game: the engine unwinds and `ti4_play` returns. */
 const LEAVE = -1;
+/** Takes back the answer before the pending choice, when `ti4_can_undo` says the engine can. */
+const UNDO = -2;
 
 /** A replay gives the page a turn this often, so it can show how far the replay is. */
 const REPLAY_SLICE_MS = 50;
@@ -83,7 +86,13 @@ export function createWasmTransport(
   const answers = [...(play.answers ?? [])];
   let latest: TransportEvent | null = null;
   /** The pending choice: its nonce, its option ids in order, and how to answer the engine. */
-  let pending: { nonce: string; options: string[]; answer: (index: number) => void } | null = null;
+  let pending: {
+    nonce: string;
+    options: string[];
+    answer: (index: number) => void;
+    /** The engine has a checkpoint for the answer before this choice. */
+    canGoBack: boolean;
+  } | null = null;
   /** The number of the run that is the game. An undo starts a new run; the old one leaves. */
   let current = 0;
 
@@ -133,7 +142,7 @@ export function createWasmTransport(
         return index;
       }
       return new Promise<number>((answer) => {
-        pending = { nonce, options, answer };
+        pending = { nonce, options, answer, canGoBack: exports.ti4_can_undo() === 1 };
         tell({ kind: "update", update, canUndo: answers.length > 0 });
       });
     });
@@ -209,6 +218,14 @@ export function createWasmTransport(
       }
       answers.pop();
       play.onAnswers?.(answers);
+      if (pending?.canGoBack) {
+        // The engine goes back to its checkpoint and asks the choice before this one again.
+        const { answer } = pending;
+        pending = null;
+        answer(UNDO);
+        return;
+      }
+      // No checkpoint holds that answer, or the game is over: the game is played again.
       leave();
       start();
     },

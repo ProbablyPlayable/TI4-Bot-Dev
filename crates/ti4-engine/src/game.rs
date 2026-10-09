@@ -1144,6 +1144,41 @@ impl<'a> Game<'a> {
         }
     }
 
+    /// The names of the windows that are open now: rules state that is not in [`GameState`].
+    ///
+    /// Empty at a step boundary means that the state, the dice and the counters are all that a
+    /// stored copy of this game would need. [`Game::fork`] copies the open windows too.
+    #[must_use]
+    pub fn open_windows(&self) -> Vec<&'static str> {
+        [
+            ("secondary", self.secondary.is_some()),
+            (
+                "secondary_after_tactical",
+                self.secondary_after_tactical.is_some(),
+            ),
+            ("leader_strategy", self.leader_strategy.is_some()),
+            ("leader_followers", self.leader_followers.is_some()),
+            ("scoring", self.scoring.is_some()),
+            ("event_scoring", self.event_scoring.is_some()),
+            ("tokens", self.tokens.is_some()),
+            ("voting", self.voting.is_some()),
+            ("executive_order", self.executive_order.is_some()),
+            (
+                "agenda_queue_after_event_scoring",
+                self.agenda_queue_after_event_scoring.is_some(),
+            ),
+            ("tactical", self.tactical.is_some()),
+            ("aftermath", self.aftermath.is_some()),
+            ("trade", self.trade.is_some()),
+            ("diplomacy", self.diplomacy.is_some()),
+            ("agenda_talks", self.agenda_talks.is_some()),
+            ("turn_closing", self.turn_closing.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, open)| open.then_some(name))
+        .collect()
+    }
+
     /// Make the same fork on another thread, with fresh input bindings there.
     ///
     /// A Game itself is not Send: some bot deciders keep thread-local data. This

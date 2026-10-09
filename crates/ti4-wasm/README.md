@@ -130,6 +130,9 @@ have to be migrated when the engine changes.
   and refreshes it after each step and at each choice that the engine offers with its position,
   and `ti4-view` builds a `GameView` of maps and vectors from it. Both are shaped by the engine's types and change with them. The view is then serialized
   directly into its buffer.
+- The checkpoints for undo are a fixed number (`CHECKPOINTS`, 32), not a fixed size: each is a
+  copy of the game made by the engine's `Game::fork`, on the heap. The oldest is dropped when
+  a new one is made. This is not an error: the host then takes an answer back by a replay.
 - Serializing goes through `dyn Write`. One copy of every serializer for each writer type cost
   39 KB.
 
@@ -142,6 +145,7 @@ Plain C ABI, no `wasm-bindgen`. The crate has its own `[lints]` because the boun
 |---|---|
 | `ti4_run_seeded(seed, players, max_steps) -> status` | Random deciders on all seats; the result is the state. |
 | `ti4_play(seed, players, human_mask) -> status` | Plays a game to its end. A seat whose bit is set in the mask (bit 0 is seat `a`) is answered by the host through `host.ask`; the others decide at random. |
+| `ti4_can_undo() -> 0 or 1` | While the game waits in a choice: whether the host may answer it with `-2`. |
 | `ti4_response_ptr()` | The address of the result or the error of the last export. |
 | `ti4_update_ptr()`, `ti4_update_len()` | The update for the host: while the game waits in a choice, and after `ti4_play` has returned. Length 0 when there is none. |
 
@@ -155,8 +159,9 @@ same fields of the server's `StateUpdateMsg`. A test of `ti4-server` keeps them 
 (`a_session_update_is_the_shared_part_of_a_state_update`). The viewer is the seat that is asked.
 The nonce of a choice is its number in the game.
 
-The import `host.ask() -> i32` returns the index of the chosen option. A negative answer leaves
-the game: every later choice fails without asking, the run unwinds, and `ti4_play` returns with
+The import `host.ask() -> i32` returns the index of the chosen option. `-2` takes back the
+answer before this choice, when `ti4_can_undo` returns 1: that choice is asked again, with the
+same number and the same update. Any other negative answer leaves the game: every later choice fails without asking, the run unwinds, and `ti4_play` returns with
 `stopped` set. A choice with one option is asked like any other, as on the server: the engine
 itself skips the choices that need no answer.
 
@@ -205,9 +210,15 @@ same way: an init record and the decision log.
 
 - Where: `localStorage`, key `ti4.local.<seed>.<players>.<humans>`, written whole after each
   answer. The bar under the shell has New game, Export and Import (a JSON file).
-- A reload plays the answers again and stops at the first choice without one. Undo plays them
-  again without the last one. The engine waits for an answer in the middle of a step, on its
-  stack, so a position between two answers cannot be stored and resumed.
+- A reload plays the answers again and stops at the first choice without one. The engine waits
+  for an answer in the middle of a step, on its stack, so a position between two answers
+  cannot be stored and resumed.
+- Undo does not play the game again. The engine keeps a checkpoint (`Game::fork` and the
+  position of the random seats' stream) after each step that asked the page, the last 32 of
+  them. The page answers the pending choice with `-2`; the engine goes back to the last
+  checkpoint before the answer, plays the random seats' steps since then again, and asks that
+  choice again. `ti4_can_undo` says whether a checkpoint holds the answer. For an older answer,
+  and when the game is over, the page plays the game again from its seed without that answer.
 - An answer that the replayed game does not offer stops the replay. The error names the number
   of the answer, its id and the ids that are offered.
 - A saved game of another engine file is not replayed before the player says so: another
@@ -230,13 +241,19 @@ The game has 296 choices of seat `a` and 2619 decisions in all.
 | Replay up to answer 50 (resume or undo there) | 1.8 s |
 | Replay up to answer 150 | 5.6 s |
 | Replay up to answer 296 | 14.2 s |
+| Undo at answer 50, from a checkpoint | 8 ms |
+| Undo at answer 150 | 25 ms |
+| Undo at answer 290 | 42 ms |
 | Writing the save, 296 answers (3.7 KiB) | 0.08 ms |
 | Writing the save, 5000 answers (59 KiB) | 0.7 ms |
 | Writing the save, 50000 answers (589 KiB) | 6.6 ms |
 
 - Writing the whole save after each answer is not a bottleneck. No game comes near 5000 answers.
 - The replay is the bottleneck: it costs all the engine time of the game so far. The page
-  shows how far it is, but an undo late in a game takes over ten seconds.
+  shows how far it is. Only a reload pays it; an undo comes from a checkpoint.
+- A checkpoint after every step would make the game a third slower (19.7 s in place of
+  14.7 s). After the steps that asked the page it costs nothing that can be measured, and an
+  undo then costs what the wait for that choice cost.
 - The time is the engine's, not the boundary's. The same game with random deciders only (2678
   decisions) takes 8.3 s natively (`--release`), 12.4 s in this file, and 7.9 s in a wasm file
   built with `opt-level = 3` (6.8 MB before compression in place of 4.5 MB). That is about
@@ -249,11 +266,36 @@ The game has 296 choices of seat `a` and 2619 decisions in all.
   on each call; `Resolver::checkpoint` 9%; the copy of the state for the host at each offer 6%.
   The shares overlap.
 
+### What a checkpoint is
+
+`Game::fork` in the engine copies a game at a step boundary: the state, the open windows, the
+dice streams, the counters and the resolver. The planning runner of the server uses it. The
+test `a_fork_at_a_step_boundary_plays_the_same_game` checks it as a checkpoint for local play,
+on eight seats, seeds 3 and 11, 700 steps each, a copy every 7 steps, each played 30 steps on
+with a copy of the random seats' stream:
+
+| A copy of the game | Plays the same game |
+| --- | ---: |
+| `Game::fork` | 192 of 192 |
+| Made again from the `GameState` alone, at any step boundary | 54 of 192 |
+| the same, only where no window is open | 54 of 61 |
+
+- A window is open at 72% of the step boundaries (no window at 390 of 1400): mostly a trade,
+  the end of a turn, a strategy secondary or a tactical action.
+- The state alone is not a checkpoint, also where no window is open: the dice streams start
+  again. This is what the server's `snapshot.json` holds, so it can check a replay but not
+  replace one.
+- One fork takes 2.6 ms in a debug build. The state is 37 KiB as JSON.
+- A fork lives in memory only. A checkpoint that outlasts a reload, or the server process,
+  needs the same parts stored: of the window types only `DiplomacyWindow` can be serialized
+  today. Not done: a reload pays the replay once.
+
 Limits:
 
 - The random seats play on the main thread between two choices, and the page does not respond
   in that time (see the table).
-- An undo or a reload late in a game takes as long as the game took the engine so far.
+- A reload late in a game takes as long as the game took the engine so far. So does an undo
+  of an answer older than the 32 checkpoints, or after the game is over.
 - With `humans` naming more than one seat, the page shows the hand of the asked seat at once.
   There is no hand-over screen.
 - The view has ids, not names. web2 shows technologies by id and has a small table for the

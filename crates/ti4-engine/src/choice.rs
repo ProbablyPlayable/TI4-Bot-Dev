@@ -1994,6 +1994,12 @@ impl Decider for Capturing {
 /// Rust versions in a way Python's is not. The same seed therefore plays a *different* legal
 /// game. Reproducing an oracle game needs its decision log replayed through [`Scripted`],
 /// or the legacy entropy translator planned in M03-007.
+///
+/// A clone continues the same stream from the same position: with [`Game::fork`] it is what a
+/// checkpoint of a game with random seats keeps.
+///
+/// [`Game::fork`]: crate::game::Game::fork
+#[derive(Clone)]
 pub struct SeededRandom {
     rng: ChaCha8Rng,
 }

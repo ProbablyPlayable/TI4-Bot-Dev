@@ -140,6 +140,14 @@ test("a reload goes on where the game was, and undo takes back one answer", asyn
   await answer(page);
   await expect(heading(page)).toHaveText(open ?? "");
 
+  // Three in a row, without waiting for a replay: the engine goes back to its checkpoints.
+  for (const left of [19, 18, 17]) {
+    await undo(page).click();
+    await expect(bar(page)).toContainText(`${left} answers saved`);
+    await expect(heading(page)).toHaveText(prompts[left]);
+  }
+  await expect(page.getByText(/^Replaying /)).toHaveCount(0);
+
   await bar(page).getByRole("button", { name: "New game" }).click();
   await expect(heading(page)).toHaveText(prompts[0]);
   await expect(bar(page)).toContainText("0 answers saved");

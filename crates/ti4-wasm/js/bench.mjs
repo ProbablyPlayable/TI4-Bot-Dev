@@ -1,5 +1,5 @@
 // Timing of a local game in Chromium: the random seats between two answers, a replay up to
-// answer n, and the rewrite of a saved game in localStorage.
+// answer n, an undo from a checkpoint, and the rewrite of a saved game in localStorage.
 // Usage (from web2/): node ../crates/ti4-wasm/js/bench.mjs <file.wasm> [seed] [players] [humans]
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -28,6 +28,10 @@ const report = await page.evaluate(
       const gaps = [];
       const answers = [];
       let inAsk = 0;
+      // An undo at these answers: the time until the choice before is asked again.
+      const undoAt = new Set([50, 150, 290]);
+      const undos = {};
+      let undone = null;
       let largest = 0;
       let mark = performance.now();
       const ask = new WebAssembly.Suspending(async () => {
@@ -37,8 +41,19 @@ const report = await page.evaluate(
         largest = Math.max(largest, length);
         let index = 0;
         if (read) {
-          const { choice } = JSON.parse(text(exports.ti4_update_ptr(), length)).pending_choice;
-          index = (gaps.length * 7) % choice.options.length;
+          const { nonce, choice } = JSON.parse(text(exports.ti4_update_ptr(), length)).pending_choice;
+          if (undone !== null) {
+            undos[undone.at] = start - undone.start;
+            gaps.pop();
+            undone = null;
+          } else if (undoAt.delete(Number(nonce)) && exports.ti4_can_undo()) {
+            answers.pop();
+            gaps.pop();
+            undone = { at: Number(nonce), start: performance.now() };
+            mark = undone.start;
+            return -2;
+          }
+          index = (Number(nonce) * 7) % choice.options.length;
           answers.push(choice.options[index].id);
         }
         mark = performance.now();
@@ -50,7 +65,7 @@ const report = await page.evaluate(
       const start = performance.now();
       const status = await WebAssembly.promising(exports.ti4_play)(seed, players, humans);
       const result = text(exports.ti4_response_ptr(), Math.abs(status));
-      return { gaps, answers, inAsk, largest, total: performance.now() - start, status, result };
+      return { gaps, answers, inAsk, largest, undos, total: performance.now() - start, status, result };
     };
     const game = await play(true);
     const sorted = [...game.gaps].sort((a, b) => a - b);
@@ -85,6 +100,7 @@ const report = await page.evaluate(
       replayMs: Object.fromEntries(
         [50, 150, 300, game.answers.length].map((n) => [Math.min(n, game.answers.length), upTo(n)]),
       ),
+      undoMs: game.undos,
       storage: counts.map(write),
     };
   },
