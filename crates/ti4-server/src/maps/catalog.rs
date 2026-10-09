@@ -102,10 +102,8 @@ pub fn preview(choice: &MapChoice, player_count: usize, seed: u64) -> Result<Map
         },
     )?;
     let tiles = crate::map::build_board_tiles(content, &galaxy);
-    let seats = seating::IN_SCOPE_FACTIONS
-        .iter()
-        .cycle()
-        .take(player_count)
+    let seats = (0..player_count)
+        .map(seating::seat_faction)
         .zip(super::placeholder_homes(content, player_count))
         .enumerate()
         .map(|(index, (faction, home))| SeatPreview {

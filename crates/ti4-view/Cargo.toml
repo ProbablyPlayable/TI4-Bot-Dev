@@ -12,6 +12,5 @@ ti4-model = { workspace = true }
 ti4-content = { workspace = true }
 ti4-engine = { workspace = true }
 serde = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
+thiserror = { workspace = true }

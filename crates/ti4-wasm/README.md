@@ -11,7 +11,7 @@ yet the interface that `web2` will use.
 - The engine compiles to `wasm32-unknown-unknown` with one change: `rand` without default
   features in `ti4-engine` (`getrandom` has no backend for this target).
 - The file is **4.30 MB, 0.80 MB with brotli**, with the projections of `ti4-view` included.
-- A seeded six-player game gives the same state in wasm and natively.
+- A seeded game of three to eight players gives the same state in wasm and natively.
 - A decision of a player can suspend the engine and wait for a promise (JSPI). The engine needs
   no change for it.
 - The host gets the same redacted view as online play (`GameView` from `ti4-view`), also while
@@ -34,6 +34,8 @@ The size of `ti4_wasm.wasm`; brotli at quality 11.
   `wasm-release` row was 4.22 MB then, so the rows compare.
 - The projections cost 0.10 MB raw and 0.02 MB of download. The first three rows and the
   breakdown below are without them.
+- With the map templates and their builder the file is 4.52 MB raw and 1.13 MB with gzip
+  (brotli not measured). The table and the numbers above are from before that.
 - Speed: 2000 steps take about 7–12 s with `wasm-release` and about 6 s with `--release`, in
   Node. That is 3–6 ms for a step.
 
@@ -138,7 +140,7 @@ Plain C ABI, no `wasm-bindgen`. The crate has its own `[lints]` because the boun
 
 | Export | |
 |---|---|
-| `ti4_run_seeded(seed, max_steps) -> status` | Random deciders on all seats; the result is the state. |
+| `ti4_run_seeded(seed, players, max_steps) -> status` | Random deciders on all seats; the result is the state. |
 | `ti4_play_hosted(seed, choices) -> status` | Seat `a` is answered by the host through `host.ask`. |
 | `ti4_response_ptr()` | The address of the result or the error of the last export. |
 | `ti4_pending_ptr()`, `ti4_pending_len()` | The choice the game waits in; length 0 when it does not wait. |
@@ -168,6 +170,21 @@ stack is parked until the promise of the answer settles.
   that blocks in `Atomics.wait`; it needs cross-origin isolation, and a blocked worker cannot
   answer queries.
 
+## Eight players
+
+A game is set up on the recommended map template for its player count (`ti4-view`, source set
+Prophecy of Kings). Seven and eight players work through three marked hacks (search for `HACK`):
+
+- `ti4-engine/src/seating.rs`, `EXTRA_SEAT_FACTIONS`: seats seven and eight play Sardakk N'orr
+  and Yin, which are not fully ported. They are not in `IN_SCOPE_FACTIONS`.
+- `ti4-view/src/maps/build.rs`: a hyperlane tile that a template places a second time is
+  replaced by another hyperlane tile. Hyperlane paths are not modelled, so nothing is lost today.
+- `ti4-view/src/maps/build.rs`: when the filler pool (planet systems) is empty, the open slots
+  get the other numbered tiles (anomalies, empty space, wormholes) in tile order.
+
+The templates `7pStaticEq` and `8pStaticEq` still do not build: they name a tile `0g` that the
+content does not have.
+
 ## Not done
 
 - `ti4-server` does not compile to wasm (tokio, axum, threads, files). The views and the code
@@ -193,8 +210,9 @@ rustup target add wasm32-unknown-unknown
 cargo build -p ti4-wasm --target wasm32-unknown-unknown --profile wasm-release
 
 # The same seed and step count must print the same line in wasm and natively
-node crates/ti4-wasm/js/run.mjs target/wasm32-unknown-unknown/wasm-release/ti4_wasm.wasm 3 2000
-cargo run -p ti4-wasm --example run -- 3 2000
+# (arguments: seed, steps, players)
+node crates/ti4-wasm/js/run.mjs target/wasm32-unknown-unknown/wasm-release/ti4_wasm.wasm 3 2000 8
+cargo run -p ti4-wasm --example run -- 3 2000 8
 
 # JSPI in Chromium (from web2/, which has Playwright)
 cd web2 && node ../crates/ti4-wasm/js/jspi.mjs ../target/wasm32-unknown-unknown/wasm-release/ti4_wasm.wasm

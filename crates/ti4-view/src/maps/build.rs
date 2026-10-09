@@ -98,7 +98,22 @@ pub fn build_template_galaxy(
     for tile in &template.template_tiles {
         let hex = hex_of(&tile.pos).ok_or_else(|| bad(&tile.pos))?;
         if let Some(id) = &tile.static_tile_id {
-            placed.push((resolve_static(&known, id).into_owned(), hex));
+            let mut id = resolve_static(&known, id).into_owned();
+            // HACK (2026-10-09): the large templates place one hyperlane tile several times, and
+            // a galaxy holds a system once. Hyperlane paths are not modelled, so any other
+            // hyperlane tile stands in. To undo: when paths are modelled, let a galaxy hold
+            // copies of a tile and delete this.
+            if placed.iter().any(|(used, _)| *used == id)
+                && catalogue.get(id.as_str()).is_some_and(|system| system.is_hyperlane())
+            {
+                let spare = catalogue.iter().find(|(spare, system)| {
+                    system.is_hyperlane() && placed.iter().all(|(used, _)| used != *spare)
+                });
+                if let Some((spare, _)) = spare {
+                    id = (*spare).to_owned();
+                }
+            }
+            placed.push((id, hex));
         } else if tile.home {
             let seat = tile.player_number.ok_or_else(|| bad(&tile.pos))?;
             let home = seat
@@ -113,7 +128,22 @@ pub fn build_template_galaxy(
 
     let used: BTreeSet<String> = placed.iter().map(|(id, _)| id.clone()).collect();
     let pool = seating::map_filler(content, usize::MAX, sources, seed);
-    let mut fill = pool.iter().filter(|id| !used.contains(id.as_str()));
+    // HACK (2026-10-09): the filler pool is planet systems only and is too small for seven or
+    // more players. When it is empty, the rest comes from the other numbered tiles of the base
+    // game and Prophecy of Kings (anomalies, empty space, wormholes), in tile order. To undo: let
+    // `seating::map_filler` draw red tiles in the printed proportion and delete `rest`.
+    let rest: Vec<SystemId> = catalogue
+        .keys()
+        .filter(|id| {
+            id.parse::<u32>().is_ok_and(|tile| matches!(tile, 19..=50 | 59..=80))
+                && !pool.iter().any(|drawn| drawn.as_str() == **id)
+        })
+        .map(|id| SystemId::new(*id))
+        .collect();
+    let mut fill = pool
+        .iter()
+        .chain(&rest)
+        .filter(|id| !used.contains(id.as_str()));
     for hex in open {
         let id = fill.next().ok_or_else(|| TemplateError::OutOfFiller {
             alias: alias.clone(),
@@ -131,12 +161,10 @@ pub fn build_template_galaxy(
 /// cycling), which is what every game of that size seats.
 #[must_use]
 pub fn placeholder_homes(content: &ContentStore, player_count: usize) -> Vec<SystemId> {
-    seating::IN_SCOPE_FACTIONS
-        .iter()
-        .cycle()
-        .take(player_count)
-        .filter_map(|f| {
-            ti4_content::factions::get(content, f).and_then(|f| f.home_system().map(SystemId::new))
+    (0..player_count)
+        .filter_map(|seat| {
+            ti4_content::factions::get(content, seating::seat_faction(seat))
+                .and_then(|f| f.home_system().map(SystemId::new))
         })
         .collect()
 }
@@ -175,13 +203,10 @@ mod tests {
     use super::*;
 
     fn homes(content: &ContentStore, n: usize) -> Vec<SystemId> {
-        seating::IN_SCOPE_FACTIONS
-            .iter()
-            .cycle()
-            .take(n)
-            .map(|f| {
+        (0..n)
+            .map(|seat| {
                 SystemId::new(
-                    ti4_content::factions::get(content, f)
+                    ti4_content::factions::get(content, seating::seat_faction(seat))
                         .and_then(|f| f.home_system())
                         .expect("home"),
                 )

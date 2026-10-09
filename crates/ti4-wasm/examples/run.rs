@@ -7,7 +7,9 @@ fn main() -> Result<(), String> {
     let seed = args.next().map_or(Ok(7), |text| text.parse()).map_err(|e| format!("seed: {e}"))?;
     let max_steps =
         args.next().map_or(Ok(300), |text| text.parse()).map_err(|e| format!("steps: {e}"))?;
-    let text = ti4_wasm::response(ti4_wasm::ti4_run_seeded(seed, max_steps))?;
+    let players =
+        args.next().map_or(Ok(8), |text| text.parse()).map_err(|e| format!("players: {e}"))?;
+    let text = ti4_wasm::response(ti4_wasm::ti4_run_seeded(seed, players, max_steps))?;
     let result: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     println!(
         "decisions={} round={} sha256={}",

@@ -361,9 +361,9 @@ async fn card_previews_are_stable_per_variant_and_a_wrong_alias_is_a_404() {
 
 #[tokio::test]
 async fn every_startable_player_count_has_a_working_random_board() {
-    // Seven and eight seats reuse a faction (six are in scope), so two homes would be the same
-    // tile: such a table cannot start today, and the picker rejects the choice for it.
-    for n in 2..=6 {
+    // Seats seven and eight have factions of their own (`seating::EXTRA_SEAT_FACTIONS`), so
+    // every table size the lobby allows has distinct homes.
+    for n in 2..=8 {
         ti4_server::maps::catalog::validate(&ti4_server::maps::MapChoice::Random, n)
             .unwrap_or_else(|e| panic!("random for {n}: {e}"));
     }
@@ -492,18 +492,20 @@ fn an_old_lobby_record_without_the_new_fields_loads() {
 }
 
 #[tokio::test]
-async fn a_table_that_cannot_build_any_map_is_told_so_instead_of_failing_at_start() {
+async fn a_seven_and_an_eight_player_table_have_a_random_board_and_templates() {
     let base = spawn(Arc::new(GameRegistry::new())).await;
-    let made = lobby(&base, 7).await;
-    let (status, _) = made.choose(&made.host, json!({"kind": "random"})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let list: Vec<Value> = reqwest::get(format!("{base}/api/maps?player_count=7"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(list.is_empty(), "{list:?}");
+    for n in [7, 8] {
+        let made = lobby(&base, n).await;
+        let (status, _) = made.choose(&made.host, json!({"kind": "random"})).await;
+        assert_eq!(status, StatusCode::OK, "random for {n}");
+        let list: Vec<Value> = reqwest::get(format!("{base}/api/maps?player_count={n}"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!list.is_empty(), "templates for {n}");
+    }
 }
 
 #[tokio::test]

@@ -78,6 +78,46 @@ fn active_source_names(sources: SourceSet) -> Vec<String> {
     .collect()
 }
 
+/// Like [`create_game_with_map`], but lays the board out from the predefined map template
+/// `template` when one is named; `None` keeps the seeded random-filler board.
+///
+/// # Errors
+///
+/// A message for an unknown template, a seat-count mismatch, or any seating/galaxy failure.
+pub fn create_game_with_template(
+    content: &ContentStore,
+    player_ids: &[PlayerId],
+    seed: u64,
+    template: Option<&str>,
+) -> Result<(GameState, Galaxy), String> {
+    let Some(alias) = template else {
+        return create_game_with_map(content, player_ids, seed).map_err(|e| e.to_string());
+    };
+    let loader = crate::maps::TemplateLoader::load()?;
+    let template = loader
+        .get(alias)
+        .ok_or_else(|| crate::maps::TemplateError::Unknown(alias.to_owned()).to_string())?;
+
+    let mut state =
+        start_game_seeded(content, player_ids, POK, None, seed).map_err(|e| e.to_string())?;
+    let assignments = seating::seat_in_scope(player_ids);
+    for (player, faction) in &assignments {
+        seating::deploy(&mut state, content, player, faction, POK).map_err(|e| e.to_string())?;
+    }
+    let homes: Vec<SystemId> = player_ids
+        .iter()
+        .map(|player| {
+            let one =
+                std::collections::BTreeMap::from([(player.clone(), assignments[player].clone())]);
+            seating::home_systems(content, &one).map(|mut homes| homes.remove(0))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let galaxy = crate::maps::build_template_galaxy(content, template, &homes, seed, POK)
+        .map_err(|e| e.to_string())?;
+    Ok((state, galaxy))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,4 +302,66 @@ pub fn create_game_with_map(
     let galaxy = seating::build_board(content, &by_seat, &filler_refs, POK)?;
 
     Ok((state, galaxy))
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    fn players(n: usize) -> Vec<PlayerId> {
+        (1..=n).map(|i| PlayerId::new(format!("p{i}"))).collect()
+    }
+
+    #[test]
+    fn an_unknown_template_is_an_error() {
+        let err = create_game_with_template(ContentStore::embedded(), &players(6), 1, Some("nope"))
+            .unwrap_err();
+        assert!(err.contains("unknown map template"), "{err}");
+    }
+
+    #[test]
+    fn no_template_keeps_the_random_board() {
+        let content = ContentStore::embedded();
+        let (_, a) = create_game_with_template(content, &players(6), 9, None).unwrap();
+        let (_, b) = create_game_with_map(content, &players(6), 9).unwrap();
+        assert_eq!(
+            build_board_tiles(content, &a),
+            build_board_tiles(content, &b)
+        );
+    }
+
+    #[test]
+    fn a_template_game_seats_every_player_on_their_home() {
+        let content = ContentStore::embedded();
+        let (state, galaxy) =
+            create_game_with_template(content, &players(6), 4, Some("6pStandard")).unwrap();
+        assert_eq!(state.players.len(), 6);
+        assert!(galaxy.coord_of("18").is_some());
+        let (_, random) = create_game_with_map(content, &players(6), 4).unwrap();
+        assert_eq!(
+            build_board_tiles(content, &galaxy).len(),
+            build_board_tiles(content, &random).len()
+        );
+    }
+
+    #[test]
+    fn seven_and_eight_players_get_a_board_with_a_home_for_every_seat() {
+        let content = ContentStore::embedded();
+        let loader = crate::maps::TemplateLoader::load().unwrap();
+        for n in [7, 8] {
+            let alias = crate::maps::default_template_for(content, &loader, n, POK)
+                .unwrap_or_else(|| panic!("no template builds for {n} players"));
+            let (state, galaxy) =
+                create_game_with_template(content, &players(n), 4, Some(&alias)).unwrap();
+            let factions: std::collections::BTreeSet<_> =
+                state.players.iter().map(|player| player.faction.clone()).collect();
+            assert_eq!(factions.len(), n, "{n} seats, {n} factions");
+            for seat in 0..n {
+                let home = ti4_content::factions::get(content, seating::seat_faction(seat))
+                    .and_then(|faction| faction.home_system())
+                    .expect("home");
+                assert!(galaxy.coord_of(home).is_some(), "{alias}: home {home} is on the board");
+            }
+        }
+    }
 }

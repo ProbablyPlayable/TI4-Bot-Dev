@@ -21,18 +21,18 @@ use serde::Serialize;
 use ti4_content::ContentStore;
 use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice, SeatObservation};
 use ti4_engine::game::{Game, RunError};
-use ti4_engine::setup::start_game_seeded;
-use ti4_model::content_types::DEFAULT;
+use ti4_model::content_types::POK;
 use ti4_model::id::PlayerId;
 use ti4_model::state::GameState;
-use ti4_view::map::build_board_tiles;
+use ti4_view::map::{build_board_tiles, create_game_with_template};
+use ti4_view::maps::{TemplateLoader, default_template_for};
 use ti4_view::projection::project_game_view_full;
 use ti4_view::status::ViewerRole;
 use ti4_view::view::{BoardTileView, GameView};
 
 use crate::buffer::{PENDING, RESPONSE, TooLarge, VIEW, store};
 
-const SEATS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
+const SEATS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const ROUNDS: u32 = 50;
 
 #[derive(Debug)]
@@ -62,31 +62,23 @@ fn setup(error: impl fmt::Display) -> Failure {
     Failure::Setup(error.to_string())
 }
 
-fn new_game(content: &'static ContentStore, seed: u64) -> Result<Game<'static>, Failure> {
-    let players: Vec<PlayerId> = SEATS.iter().map(|name| PlayerId::new(*name)).collect();
-    let assignments = ti4_engine::seating::seat_in_scope(&players);
-    let mut state = start_game_seeded(content, &players, DEFAULT, None, seed).map_err(setup)?;
-    for (player, assigned) in &assignments {
-        state
-            .player_mut(player)
-            .ok_or_else(|| setup(format_args!("missing seat {player}")))?
-            .faction = assigned.clone();
-    }
-    ti4_engine::promissory::deal(&mut state, content, DEFAULT);
-
-    let filler: Vec<String> = ti4_engine::seating::map_filler(content, 30, DEFAULT, seed)
-        .into_iter()
-        .map(|system| system.to_string())
-        .collect();
-    let borrowed: Vec<&str> = filler.iter().map(String::as_str).collect();
-    let galaxy = ti4_engine::seating::build_board(content, &assignments, &borrowed, DEFAULT)
-        .map_err(setup)?;
-    for (player, assigned) in &assignments {
-        ti4_engine::seating::deploy(&mut state, content, player, assigned, DEFAULT)
-            .map_err(setup)?;
-    }
+/// A seeded game for `players` seats on the recommended map template for that count.
+fn new_game(
+    content: &'static ContentStore,
+    seed: u64,
+    players: usize,
+) -> Result<Game<'static>, Failure> {
+    let seats = SEATS.get(..players).filter(|seats| seats.len() >= 3).ok_or_else(|| {
+        setup(format_args!("{players} players: a game has 3 to {} seats", SEATS.len()))
+    })?;
+    let ids: Vec<PlayerId> = seats.iter().map(|name| PlayerId::new(*name)).collect();
+    let loader = TemplateLoader::load().map_err(setup)?;
+    let template = default_template_for(content, &loader, players, POK)
+        .ok_or_else(|| setup(format_args!("no map template builds for {players} players")))?;
+    let (state, galaxy) =
+        create_game_with_template(content, &ids, seed, Some(&template)).map_err(setup)?;
     Ok(Game::with_seeded_random(state, content, seed)
-        .with_sources(DEFAULT)
+        .with_sources(POK)
         .with_galaxy(galaxy))
 }
 
@@ -133,11 +125,11 @@ fn respond(what: &'static str, report: &Report<'_>) -> Result<usize, Failure> {
     Ok(store(&mut response, what, "RESPONSE_CAPACITY", report)?)
 }
 
-/// Play a seeded six-player game with random deciders for at most `max_steps` steps. The result
+/// Play a seeded game of `players` seats with random deciders for at most `max_steps` steps. The result
 /// is the state reached and the number of decisions taken.
-fn run_seeded(seed: u64, max_steps: usize) -> Result<usize, Failure> {
+fn run_seeded(seed: u64, players: usize, max_steps: usize) -> Result<usize, Failure> {
     let content = ContentStore::embedded();
-    let mut game = new_game(content, seed)?;
+    let mut game = new_game(content, seed, players)?;
     match game.run(ROUNDS, max_steps) {
         Ok(_) | Err(RunError::StepLimit { .. }) => {}
         Err(error) => return Err(Failure::Run(error)),
@@ -273,7 +265,7 @@ fn host_ask() -> i32 {
 /// Play with seat `a` on the host until it has answered `choices` choices.
 fn play_hosted(seed: u64, choices: usize) -> Result<usize, Failure> {
     let content = ContentStore::embedded();
-    let mut game = new_game(content, seed)?;
+    let mut game = new_game(content, seed, 6)?;
     game.table.seat(
         PlayerId::new("a"),
         Box::new(HostDecider {
@@ -321,8 +313,8 @@ fn status(result: Result<usize, Failure>) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn ti4_run_seeded(seed: u32, max_steps: u32) -> i32 {
-    status(run_seeded(u64::from(seed), max_steps as usize))
+pub extern "C" fn ti4_run_seeded(seed: u32, players: u32, max_steps: u32) -> i32 {
+    status(run_seeded(u64::from(seed), players as usize, max_steps as usize))
 }
 
 #[unsafe(no_mangle)]
@@ -369,4 +361,21 @@ pub fn response(status: i32) -> Result<String, String> {
     let response = RESPONSE.lock().expect("response lock");
     let text = String::from_utf8_lossy(response.as_bytes()).into_owned();
     if status < 0 { Err(text) } else { Ok(text) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_eight_player_game_runs_with_random_deciders() {
+        let content = ContentStore::embedded();
+        let mut game = new_game(content, 3, 8).unwrap();
+        assert_eq!(game.state.players.len(), 8);
+        match game.run(ROUNDS, 2000) {
+            Ok(_) | Err(RunError::StepLimit { .. }) => {}
+            Err(error) => panic!("{error}"),
+        }
+        assert!(game.state.round > 1, "the game left its first round");
+    }
 }
