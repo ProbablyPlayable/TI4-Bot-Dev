@@ -22,6 +22,7 @@ const report = await page.evaluate(async (base64) => {
     return JSON.parse(body);
   };
   const asked = [];
+  const views = [];
   // The engine calls this synchronously; JSPI parks the wasm stack until the promise settles.
   const ask = new WebAssembly.Suspending(async () => {
     // A real timer tick: the event loop runs while the game is parked.
@@ -29,6 +30,21 @@ const report = await page.evaluate(async (base64) => {
     // A query into the same instance while its game is suspended.
     const choice = JSON.parse(text(exports.ti4_pending_ptr(), exports.ti4_pending_len()));
     asked.push(`${choice.player}: ${choice.prompt} [${choice.options.length}]`);
+    // The view of the asked seat: its own hand is listed, another seat's is only a count. Nobody
+    // holds a card this early (`otherCards` is 0), so this shows the shape, not the redaction.
+    const view = JSON.parse(text(exports.ti4_view_ptr(), exports.ti4_view_len()));
+    // An empty list is left out of the JSON.
+    const held = (player) => player.held_action_cards ?? [];
+    const own = view.players.find((player) => player.id === choice.player);
+    const others = view.players.filter((player) => player.id !== choice.player);
+    views.push({
+      bytes: exports.ti4_view_len(),
+      players: view.players.length,
+      tiles: (view.board.map_tiles ?? []).length,
+      ownHandListed: held(own).length === own.action_cards_count,
+      otherHandsHidden: others.every((player) => held(player).length === 0),
+      otherCards: others.reduce((sum, player) => sum + player.action_cards_count, 0),
+    });
     return choice.options.length - 1;
   });
   ({ exports } = (await WebAssembly.instantiate(bytes, { host: { ask } })).instance);
@@ -37,9 +53,12 @@ const report = await page.evaluate(async (base64) => {
   const running = play(7, 10);
   const pendingBeforeFirstAnswer = running instanceof Promise;
   const result = response(await running);
-  return { pendingBeforeFirstAnswer, asked, result, ms: Math.round(performance.now() - started) };
+  return { pendingBeforeFirstAnswer, asked, views, result, ms: Math.round(performance.now() - started) };
 }, wasm);
 console.log(`chromium ${browser.version()}`);
 console.log(JSON.stringify(report, null, 2));
 await browser.close();
-if (report.error || report.asked.length !== 10) process.exit(1);
+const viewsHold = report.views?.every(
+  (view) => view.players === 6 && view.tiles > 0 && view.ownHandListed && view.otherHandsHidden,
+);
+if (report.error || report.asked.length !== 10 || !viewsHold) process.exit(1);

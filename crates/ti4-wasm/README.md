@@ -10,10 +10,12 @@ yet the interface that `web2` will use.
 
 - The engine compiles to `wasm32-unknown-unknown` with one change: `rand` without default
   features in `ti4-engine` (`getrandom` has no backend for this target).
-- The file is **4.20 MB, 0.78 MB with brotli**.
+- The file is **4.30 MB, 0.80 MB with brotli**, with the projections of `ti4-view` included.
 - A seeded six-player game gives the same state in wasm and natively.
 - A decision of a player can suspend the engine and wait for a promise (JSPI). The engine needs
   no change for it.
+- The host gets the same redacted view as online play (`GameView` from `ti4-view`), also while
+  the game waits in a choice.
 
 ## Size
 
@@ -22,13 +24,16 @@ The size of `ti4_wasm.wasm`; brotli at quality 11.
 | Build | raw | gzip | brotli |
 |---|---|---|---|
 | `--release` (the workspace profile) | 6.19 MB | 1.89 MB | 1.23 MB |
-| `--profile wasm-release` | **4.20 MB** | 1.08 MB | **0.78 MB** |
+| `--profile wasm-release` | 4.20 MB | 1.08 MB | 0.78 MB |
 | `--profile wasm-release`, then `wasm-opt -Oz` | 3.49 MB | 1.14 MB | 0.83 MB |
+| `--profile wasm-release`, with `ti4-view` | **4.30 MB** | 1.11 MB | **0.80 MB** |
 
 - `wasm-release` is `opt-level = "z"`, `lto = "fat"`, `panic = "abort"` (workspace `Cargo.toml`).
 - `wasm-opt` makes the file smaller but the download larger. Do not use it.
 - The `--release` and `wasm-opt` rows were measured before the fixed buffers (see Memory); the
   `wasm-release` row was 4.22 MB then, so the rows compare.
+- The projections cost 0.10 MB raw and 0.02 MB of download. The first three rows and the
+  breakdown below are without them.
 - Speed: 2000 steps take about 7–12 s with `wasm-release` and about 6 s with `--release`, in
   Node. That is 3–6 ms for a step.
 
@@ -100,8 +105,9 @@ New code uses data structures that fit the use, with fixed or arena memory, so t
 have to be migrated when the engine changes.
 
 - Everything that crosses the boundary is in a fixed static buffer (`src/buffer.rs`): the result
-  of an export (`RESPONSE_CAPACITY`, 256 KiB) and the pending choice (`PENDING_CAPACITY`,
-  64 KiB). A full game state is about 40 KiB and a choice about 1 KiB, as of this spike.
+  of an export (`RESPONSE_CAPACITY`, 256 KiB), the pending choice (`PENDING_CAPACITY`, 64 KiB)
+  and the view of the asked seat (`VIEW_CAPACITY`, 128 KiB). A full game state is about 40 KiB,
+  a choice about 1 KiB and a view early in a game about 20 KiB, as of this spike.
 - A buffer never grows and never moves. The host reads every result at the same address.
 - A value is serialized directly into its buffer. No intermediate `String` or `Value` is built.
 - A value that does not fit fails the call at once. The error says what was too large, its size,
@@ -118,6 +124,10 @@ have to be migrated when the engine changes.
 - What still allocates in this crate is what the engine's interface asks for (owned ids, the
   boxed decider, the setup lists) and the text of an error. The engine itself allocates on every
   step, so the global allocator stays for now.
+- The views allocate too. A decider is given no game state, so the run keeps a copy of the state
+  and refreshes it after each step, and `ti4-view` builds a `GameView` of maps and vectors from
+  it. Both are shaped by the engine's types and change with them. The view is then serialized
+  directly into its buffer.
 - Serializing goes through `dyn Write`. One copy of every serializer for each writer type cost
   39 KB.
 
@@ -132,6 +142,9 @@ Plain C ABI, no `wasm-bindgen`. The crate has its own `[lints]` because the boun
 | `ti4_play_hosted(seed, choices) -> status` | Seat `a` is answered by the host through `host.ask`. |
 | `ti4_response_ptr()` | The address of the result or the error of the last export. |
 | `ti4_pending_ptr()`, `ti4_pending_len()` | The choice the game waits in; length 0 when it does not wait. |
+| `ti4_view_ptr()`, `ti4_view_len()` | The `GameView` of the seat that is asked; length 0 when the game does not wait. |
+
+The result of `ti4_run_seeded` has the state and, as `view`, what seat `a` is shown of it.
 
 A status of 0 or more is the length of a JSON result. A status below 0 is the negated length of
 an error text. The import `host.ask() -> i32` returns the index of the chosen option.
@@ -147,7 +160,7 @@ stack is parked until the promise of the answer settles.
 - The glue is about ten lines of JS, written by hand.
 - While the game is parked, other exports of the same instance can be called. They must not
   touch the game, which the parked stack has borrowed. They read a copy that was stored when the
-  choice was offered: this is what the pending buffer is.
+  choice was offered: this is what the pending buffer and the view buffer are.
 - Such a call must return before the game is resumed. Rust keeps a second stack in linear
   memory, and the calls share it.
 - Undo cannot rewind a parked stack. It is a replay from the seed and the decision log.
@@ -157,11 +170,18 @@ stack is parked until the promise of the answer settles.
 
 ## Not done
 
-- `ti4-server` does not compile to wasm (tokio, axum, threads, files). Its `protocol/`,
-  `projection.rs`, `preset.rs` and `maps/` use none of these and could move to a crate that both
-  sides use, if hotseat should show the same redacted view as online play.
-- The other workspace crates were not rebuilt after the `rand` change. `ti4-engine`,
-  `ti4-server` and `ti4-wasm` pass their tests.
+- `ti4-server` does not compile to wasm (tokio, axum, threads, files). The views and the code
+  that makes them from a state are in `ti4-view`, which both sides use. Still in the server: the
+  messages (`protocol/`, which needs the planning runner), the decision facts and event history,
+  `preset.rs` and `maps/`.
+- The view of a seat is as old as the last finished step, apart from the combat and invasion
+  boundary, which is current. The server has the same limit.
+- The JSPI check reads the view at each choice, but nobody holds an action card that early, so
+  it does not show the redaction. The tests of `ti4-server` do (`tests/projection_redaction.rs`).
+- The other workspace crates were not rebuilt after the `rand` change or the move to
+  `ti4-view`. `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-bot-agent` and `ti4-wasm` pass their
+  tests. `ti4-advisor` uses the moved paths through the re-exports of `ti4-server` and was not
+  built (it needs libtorch).
 - No UI queries, no saved games, no undo.
 
 ## Commands

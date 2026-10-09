@@ -13,9 +13,12 @@ use std::sync::Mutex;
 pub const RESPONSE_CAPACITY: usize = 256 * 1024;
 /// The largest pending choice, in bytes.
 pub const PENDING_CAPACITY: usize = 64 * 1024;
+/// The largest view of a seat, in bytes. A view early in a game is about 20 KiB (2026-10-09).
+pub const VIEW_CAPACITY: usize = 128 * 1024;
 
 pub static RESPONSE: Mutex<Buffer<RESPONSE_CAPACITY>> = Mutex::new(Buffer::new());
 pub static PENDING: Mutex<Buffer<PENDING_CAPACITY>> = Mutex::new(Buffer::new());
+pub static VIEW: Mutex<Buffer<VIEW_CAPACITY>> = Mutex::new(Buffer::new());
 
 pub struct Buffer<const N: usize> {
     bytes: [u8; N],

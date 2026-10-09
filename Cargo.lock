@@ -4424,6 +4424,7 @@ dependencies = [
  "ti4-content",
  "ti4-engine",
  "ti4-model",
+ "ti4-view",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower-http",
@@ -4491,6 +4492,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ti4-view"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ti4-content",
+ "ti4-engine",
+ "ti4-model",
+]
+
+[[package]]
 name = "ti4-wasm"
 version = "0.1.0"
 dependencies = [
@@ -4501,6 +4513,7 @@ dependencies = [
  "ti4-content",
  "ti4-engine",
  "ti4-model",
+ "ti4-view",
 ]
 
 [[package]]

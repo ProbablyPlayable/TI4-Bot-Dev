@@ -7,9 +7,10 @@
 //!
 //! # Memory
 //!
-//! This crate does not allocate for its own data: results and the pending choice are written
-//! straight into the fixed buffers of [`buffer`]. What still allocates here is what the engine's
-//! interface asks for (owned ids, the decider box) and the text of an error.
+//! This crate does not allocate for its own data: results, the pending choice and the view of the
+//! asked seat are written straight into the fixed buffers of [`buffer`]. What still allocates
+//! here is what the interfaces of the engine and of `ti4-view` ask for (owned ids, the decider
+//! box, the copy of the state, a projected view) and the text of an error.
 
 pub mod buffer;
 
@@ -18,14 +19,18 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use ti4_content::ContentStore;
-use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice};
+use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice, SeatObservation};
 use ti4_engine::game::{Game, RunError};
 use ti4_engine::setup::start_game_seeded;
 use ti4_model::content_types::DEFAULT;
 use ti4_model::id::PlayerId;
 use ti4_model::state::GameState;
+use ti4_view::map::build_board_tiles;
+use ti4_view::projection::project_game_view_full;
+use ti4_view::status::ViewerRole;
+use ti4_view::view::{BoardTileView, GameView};
 
-use crate::buffer::{PENDING, RESPONSE, TooLarge, store};
+use crate::buffer::{PENDING, RESPONSE, TooLarge, VIEW, store};
 
 const SEATS: [&str; 6] = ["a", "b", "c", "d", "e", "f"];
 const ROUNDS: u32 = 50;
@@ -85,6 +90,24 @@ fn new_game(content: &'static ContentStore, seed: u64) -> Result<Game<'static>, 
         .with_galaxy(galaxy))
 }
 
+/// What a view is made from while the game itself is borrowed by its run: a decider is given no
+/// state, so the run leaves a copy here after each step.
+struct Latest {
+    state: GameState,
+    tiles: Vec<BoardTileView>,
+}
+
+static LATEST: Mutex<Option<Latest>> = Mutex::new(None);
+
+fn latest_of(game: &Game<'_>, content: &ContentStore) -> Latest {
+    Latest {
+        state: game.state.clone(),
+        tiles: game
+            .galaxy()
+            .map_or_else(Vec::new, |galaxy| build_board_tiles(content, galaxy)),
+    }
+}
+
 /// Serializes as the text a value displays as, without building that text first.
 struct Shown<T>(T);
 
@@ -101,6 +124,8 @@ struct Report<'a> {
     /// Why the game stopped before its last round, when it did.
     stopped: Option<Shown<&'a RunError>>,
     state: Option<&'a GameState>,
+    /// What seat `a` is shown of `state`.
+    view: Option<GameView>,
 }
 
 fn respond(what: &'static str, report: &Report<'_>) -> Result<usize, Failure> {
@@ -111,11 +136,14 @@ fn respond(what: &'static str, report: &Report<'_>) -> Result<usize, Failure> {
 /// Play a seeded six-player game with random deciders for at most `max_steps` steps. The result
 /// is the state reached and the number of decisions taken.
 fn run_seeded(seed: u64, max_steps: usize) -> Result<usize, Failure> {
-    let mut game = new_game(ContentStore::embedded(), seed)?;
+    let content = ContentStore::embedded();
+    let mut game = new_game(content, seed)?;
     match game.run(ROUNDS, max_steps) {
         Ok(_) | Err(RunError::StepLimit { .. }) => {}
         Err(error) => return Err(Failure::Run(error)),
     }
+    let latest = latest_of(&game, content);
+    let viewer = ViewerRole::Player(PlayerId::new("a"));
     respond(
         "the result of ti4_run_seeded",
         &Report {
@@ -123,13 +151,20 @@ fn run_seeded(seed: u64, max_steps: usize) -> Result<usize, Failure> {
             round: game.state.round,
             stopped: None,
             state: Some(&game.state),
+            view: Some(project_game_view_full(
+                &latest.state,
+                &viewer,
+                &latest.tiles,
+                None,
+                &[],
+            )),
         },
     )
 }
 
-/// Set by [`HostDecider`] when a choice did not fit, because the engine's decider error carries
+/// Set by [`HostDecider`] when a choice or a view did not fit, because the engine's decider error carries
 /// text only and the size must reach the host intact.
-static PENDING_TOO_LARGE: Mutex<Option<TooLarge>> = Mutex::new(None);
+static HOST_TOO_LARGE: Mutex<Option<TooLarge>> = Mutex::new(None);
 
 /// Seat `a` answered by the host: each choice is handed out and the game waits for the answer.
 struct HostDecider {
@@ -137,8 +172,14 @@ struct HostDecider {
     limit: usize,
 }
 
-impl Decider for HostDecider {
-    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+impl HostDecider {
+    /// Hand the choice and the view of its seat to the host and wait for the answer. `seen` is
+    /// absent at the few sites where the engine has no position to offer.
+    fn ask(
+        &mut self,
+        choice: &Choice,
+        seen: Option<&SeatObservation<'_>>,
+    ) -> Result<ChoiceOption, IllegalChoice> {
         let failed = |reason: String| IllegalChoice::DeciderFailed {
             player: choice.player.clone(),
             prompt: choice.prompt.clone(),
@@ -148,25 +189,69 @@ impl Decider for HostDecider {
             return Err(failed("host choice limit reached".to_owned()));
         }
         self.asked += 1;
-        // The lock is released before the host is asked: the host reads the pending choice while
-        // this stack is parked.
-        let stored = store(
-            &mut PENDING.lock().expect("pending lock"),
-            "the pending choice",
-            "PENDING_CAPACITY",
-            choice,
-        );
+        // The locks are released before the host is asked: the host reads the pending choice and
+        // the view while this stack is parked.
+        let stored = offer(choice, seen);
         if let Err(error) = stored {
-            *PENDING_TOO_LARGE.lock().expect("pending lock") = Some(error);
-            return Err(failed("the pending choice did not fit its buffer".to_owned()));
+            *HOST_TOO_LARGE.lock().expect("too large lock") = Some(error);
+            return Err(failed("what the host is shown did not fit its buffer".to_owned()));
         }
         let index = host_ask();
         PENDING.lock().expect("pending lock").clear();
+        VIEW.lock().expect("view lock").clear();
         usize::try_from(index)
             .ok()
             .and_then(|index| choice.options.get(index))
             .cloned()
             .ok_or_else(|| failed(format!("the host answered {index}, which is no option")))
+    }
+}
+
+/// Write the choice and the view of its seat into their buffers.
+fn offer(choice: &Choice, seen: Option<&SeatObservation<'_>>) -> Result<(), TooLarge> {
+    store(
+        &mut PENDING.lock().expect("pending lock"),
+        "the pending choice",
+        "PENDING_CAPACITY",
+        choice,
+    )?;
+    let mut latest = LATEST.lock().expect("latest lock");
+    let Some(latest) = latest.as_mut() else {
+        return Ok(());
+    };
+    // A nested choice can pause a step before the run has copied the new state. The public
+    // combat boundary is kept current all the same, as the server does.
+    if let Some(seen) = seen {
+        latest.state.active_space_combat = seen.space_battle();
+        latest.state.active_invasion = seen.invasion();
+    }
+    let view = project_game_view_full(
+        &latest.state,
+        &ViewerRole::Player(choice.player.clone()),
+        &latest.tiles,
+        Some(choice),
+        &[],
+    );
+    store(
+        &mut VIEW.lock().expect("view lock"),
+        "the view of the asked seat",
+        "VIEW_CAPACITY",
+        &view,
+    )?;
+    Ok(())
+}
+
+impl Decider for HostDecider {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        self.ask(choice, None)
+    }
+
+    fn choose_seeing(
+        &mut self,
+        choice: &Choice,
+        seen: &SeatObservation<'_>,
+    ) -> Result<ChoiceOption, IllegalChoice> {
+        self.ask(choice, Some(seen))
     }
 }
 
@@ -187,7 +272,8 @@ fn host_ask() -> i32 {
 
 /// Play with seat `a` on the host until it has answered `choices` choices.
 fn play_hosted(seed: u64, choices: usize) -> Result<usize, Failure> {
-    let mut game = new_game(ContentStore::embedded(), seed)?;
+    let content = ContentStore::embedded();
+    let mut game = new_game(content, seed)?;
     game.table.seat(
         PlayerId::new("a"),
         Box::new(HostDecider {
@@ -195,9 +281,17 @@ fn play_hosted(seed: u64, choices: usize) -> Result<usize, Failure> {
             limit: choices,
         }),
     );
-    let stopped = game.run(ROUNDS, 100_000).err();
+    *LATEST.lock().expect("latest lock") = Some(latest_of(&game, content));
+    let target = game.state.round.saturating_add(ROUNDS);
+    let mut stopped = None;
+    while stopped.is_none() && game.state.round < target && !game.state.finished {
+        stopped = game.step().error.map(RunError::from);
+        if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
+            latest.state.clone_from(&game.state);
+        }
+    }
     // A buffer that was too small fails the call. It must not sit in a field of a result.
-    if let Some(error) = PENDING_TOO_LARGE.lock().expect("pending lock").take() {
+    if let Some(error) = HOST_TOO_LARGE.lock().expect("too large lock").take() {
         return Err(error.into());
     }
     respond(
@@ -207,6 +301,7 @@ fn play_hosted(seed: u64, choices: usize) -> Result<usize, Failure> {
             round: game.state.round,
             stopped: stopped.as_ref().map(Shown),
             state: None,
+            view: None,
         },
     )
 }
@@ -251,6 +346,19 @@ pub extern "C" fn ti4_pending_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn ti4_pending_len() -> u32 {
     u32::try_from(PENDING.lock().expect("pending lock").len()).expect("a buffer is small")
+}
+
+/// Where the view of the asked seat is kept while the game is suspended in a choice. Constant for
+/// the life of the instance.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_view_ptr() -> *const u8 {
+    VIEW.lock().expect("view lock").as_ptr()
+}
+
+/// The length of that view, or zero when the game is not waiting for the host.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_view_len() -> u32 {
+    u32::try_from(VIEW.lock().expect("view lock").len()).expect("a buffer is small")
 }
 
 /// The response of the last export, for callers on the native side.

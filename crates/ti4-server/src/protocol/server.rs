@@ -13,13 +13,7 @@ use ti4_model::state::GameState;
 use ti4_model::state::Phase;
 use ti4_model::state::ReactionMode;
 
-/// Server submission metadata around the engine's wire-serialized choice.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PendingChoiceEnvelope {
-    pub nonce: String,
-    pub choice: Choice,
-}
+pub use ti4_view::projection::PendingChoiceEnvelope;
 
 /// Initial per-viewer snapshot sent upon subscription or reconnection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
