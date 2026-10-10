@@ -92,6 +92,8 @@ pub fn project_state_update_with_map(
         view,
         pending_choice: pending,
         turn_status,
+        // The server does not send these yet.
+        tactical: _,
     } = project_session_update(state, viewer, pending_choice, map_tiles);
     StateUpdateMsg {
         history: crate::protocol::server::HistoryStatus::default(),

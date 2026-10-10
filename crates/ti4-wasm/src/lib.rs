@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use ti4_content::ContentStore;
+use ti4_content::galaxy::Galaxy;
 use ti4_engine::choice::{Choice, ChoiceOption, Decider, IllegalChoice, SeededRandom, Table};
 use ti4_engine::game::{Game, RunError};
 use ti4_model::content_types::POK;
@@ -29,6 +30,7 @@ use ti4_view::map::{build_board_tiles, create_game_with_template};
 use ti4_view::maps::{TemplateLoader, default_template_for};
 use ti4_view::projection::{project_game_view_full, project_session_update};
 use ti4_view::status::ViewerRole;
+use ti4_view::tactical::project_tactical_facts;
 use ti4_view::view::{BoardTileView, GameView};
 
 use crate::buffer::{RESPONSE, TooLarge, UPDATE, store};
@@ -94,6 +96,9 @@ fn new_game(
 struct Latest {
     state: GameState,
     tiles: Vec<BoardTileView>,
+    /// The map, for the facts of a tactical action. It is copied once: a game of this host is
+    /// played on the map it began with.
+    galaxy: Option<Galaxy>,
 }
 
 static LATEST: Mutex<Option<Latest>> = Mutex::new(None);
@@ -104,6 +109,7 @@ fn latest_of(game: &Game<'_>, content: &ContentStore) -> Latest {
         tiles: game
             .galaxy()
             .map_or_else(Vec::new, |galaxy| build_board_tiles(content, galaxy)),
+        galaxy: game.galaxy().cloned(),
     }
 }
 
@@ -339,12 +345,16 @@ fn offer(choice: &Choice, nonce: u64) -> Result<(), TooLarge> {
     };
     let mut number = NonceText::default();
     let _ = write!(number, "{nonce}");
-    let update = project_session_update(
+    let mut update = project_session_update(
         &latest.state,
         &ViewerRole::Player(choice.player.clone()),
         Some((choice, number.as_str())),
         &latest.tiles,
     );
+    // Only a seat of the host is shown these, so the random seats do not pay for them.
+    update.tactical = latest.galaxy.as_ref().and_then(|galaxy| {
+        project_tactical_facts(&latest.state, ContentStore::embedded(), POK, galaxy, choice)
+    });
     store(
         &mut UPDATE.lock().expect("update lock"),
         "the update for the host",
@@ -903,5 +913,101 @@ mod tests {
         // Choices 40 down to 36 after each undo, then 37 to 41 after the same answers.
         assert_eq!(undoing.shown_again, 10);
         assert_eq!(undoing.shown.len(), 42);
+        drop(undoing);
+
+        // The facts of a tactical action say what the engine then offers: seat a activates the
+        // system next to its home, moves a carrier, and is offered the cargo of the facts.
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink = seen.clone();
+        set_native_host(move |update| {
+            let value: serde_json::Value = serde_json::from_str(update).unwrap();
+            let mut seen = sink.lock().unwrap();
+            let script = ["pok8imperial", "no", "tactical", "23", "move|01|0"];
+            let wanted = script.get(seen.len()).copied();
+            let index = wanted.and_then(|id| options(&value).iter().position(|have| have == id));
+            seen.push(value);
+            index.map_or(-1, |index| i32::try_from(index).unwrap())
+        });
+        let status = ti4_play(3, 8, 1);
+        assert!(response(status).unwrap().contains(LEFT));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        assert!(
+            seen[2].get("tactical").is_none(),
+            "the turn menu has no facts"
+        );
+
+        let activation = &seen[3]["tactical"];
+        assert_eq!(activation["kind"], "activation");
+        assert_eq!(activation["tactic_tokens"], 3);
+        let reach = activation["systems"].as_array().unwrap();
+        assert_eq!(reach.len(), options(&seen[3]).len());
+        let next_to_home = reach.iter().find(|fact| fact["system"] == "23").unwrap();
+        // Two carriers and a destroyer; the fighters do not move on their own.
+        assert_eq!(next_to_home["ships"], 3);
+        assert_eq!(next_to_home["origins"], 1);
+
+        let movement = &seen[4]["tactical"];
+        assert_eq!(movement["kind"], "movement");
+        assert_eq!(movement["active"], "23");
+        assert_eq!(movement["moved"], 0);
+        let ships = movement["ships"].as_array().unwrap();
+        assert_eq!(ships.len(), 3, "{ships:?}");
+        // Every ship that the engine offers is a ship of the facts that can move.
+        let offered = seen[4]["pending_choice"]["choice"]["options"]
+            .as_array()
+            .unwrap();
+        for option in offered.iter().filter(|option| option["kind"] == "move") {
+            let (_, place) = option["id"].as_str().unwrap().split_once('|').unwrap();
+            let (origin, index) = place.split_once('|').unwrap();
+            let ship = ships
+                .iter()
+                .find(|ship| {
+                    ship["origin"] == origin && ship["index"].as_u64() == index.parse().ok()
+                })
+                .unwrap_or_else(|| panic!("no ship for {option}"));
+            assert_eq!(ship["unit"], option["payload"]["unit"]);
+            assert_eq!(ship["capacity"], option["payload"]["capacity"]);
+            assert_eq!(ship["move"]["path"], serde_json::json!(["01", "23"]));
+        }
+        // The hold of the carrier is offered the pools that the facts name for it.
+        let carrier = &ships[0];
+        let pools = movement["cargo"].as_array().unwrap();
+        let mut named: Vec<_> = carrier["loads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|place| {
+                let pool = &pools[usize::try_from(place.as_u64().unwrap()).unwrap()];
+                assert!(pool["count"].as_u64().unwrap() > 0, "{pool}");
+                (
+                    pool["system"].clone(),
+                    pool["source"].clone(),
+                    pool["unit"].clone(),
+                )
+            })
+            .collect();
+        let mut loads: Vec<_> = seen[5]["pending_choice"]["choice"]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|option| option["kind"] == "load")
+            .map(|option| {
+                let payload = &option["payload"];
+                (
+                    payload["pickup_system"].clone(),
+                    payload["source"].clone(),
+                    payload["unit"].clone(),
+                )
+            })
+            .collect();
+        let text = |value: &(serde_json::Value, serde_json::Value, serde_json::Value)| {
+            format!("{value:?}")
+        };
+        named.sort_by_key(text);
+        loads.sort_by_key(text);
+        assert!(!loads.is_empty());
+        assert_eq!(named, loads);
+        assert!(seen[5].get("tactical").is_none(), "a hold has no facts");
     }
 }

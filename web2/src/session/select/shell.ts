@@ -5,6 +5,7 @@ import { type LocalState, boardTask, openChoice, selectAction } from "./action";
 import { selectBoard } from "./board";
 import { factionName, phaseName } from "./names";
 import { selectPlayers, selectSeats } from "./players";
+import { selectTactical, tacticalFacts } from "./tactical";
 
 function status(update: SessionUpdate, local: LocalState): string {
   const turn = update.turn_status;
@@ -32,9 +33,13 @@ function status(update: SessionUpdate, local: LocalState): string {
 }
 
 export function selectShell(update: SessionUpdate, local: LocalState): ShellView {
+  // The activation and the movement have their own screens; every other decision is a list.
+  const facts = tacticalFacts(update, local);
+  const movement =
+    facts?.kind === "movement" && local.step === null ? { facts, draft: local.movement } : null;
   return {
     seats: selectSeats(update),
-    accent: local.staged ? "draft" : "live",
+    accent: local.staged || (movement && Object.keys(local.movement).length) ? "draft" : "live",
     toolbar: {
       round: update.view.round,
       phase: phaseName(update.view.phase),
@@ -45,8 +50,8 @@ export function selectShell(update: SessionUpdate, local: LocalState): ShellView
       draft: null,
     },
     players: selectPlayers(update),
-    board: selectBoard(update, local.inspected, boardTask(update, local)),
-    action: selectAction(update, local),
+    board: selectBoard(update, local.inspected, boardTask(update, local), movement),
+    action: facts ? selectTactical(update, local, facts) : selectAction(update, local),
     reference: { objectives: [], technology: [], cards: [], offerCards: [], log: [] },
     apply: null,
     reveal: null,

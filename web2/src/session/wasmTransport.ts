@@ -1,6 +1,7 @@
 // The engine in this page: `crates/ti4-wasm`, built by `scripts/build-wasm.sh`.
 import type { LocalGame } from "./savedGame";
-import type { Transport, TransportEvent } from "./transport";
+import { type MovementStep, planAnswer } from "./movementPlan";
+import type { PlanStopped, Transport, TransportEvent } from "./transport";
 import type { SessionUpdate } from "./wire";
 
 interface Exports {
@@ -85,14 +86,32 @@ export function createWasmTransport(
   const listeners = new Set<(event: TransportEvent) => void>();
   const answers = [...(play.answers ?? [])];
   let latest: TransportEvent | null = null;
-  /** The pending choice: its nonce, its option ids in order, and how to answer the engine. */
+  /** The pending choice: its update, its option ids in order, and how to answer the engine. */
   let pending: {
     nonce: string;
+    update: SessionUpdate;
     options: string[];
     answer: (index: number) => void;
     /** The engine has a checkpoint for the answer before this choice. */
     canGoBack: boolean;
   } | null = null;
+  /** The plan that is being sent: the choices of the game are answered from its steps. */
+  let plan: {
+    destination: string;
+    steps: MovementStep[];
+    next: number;
+    actor: string;
+    /** How many answers the game had before the plan. */
+    start: number;
+    /** The game refused a step: the answers of the plan are taken back, down to `start`. */
+    refused: string | null;
+  } | null = null;
+  /** Told with the next update: where the last plan stopped. */
+  let planStopped: PlanStopped | null = null;
+  /** An undo goes on while the choice that is open again is in the middle of a movement. */
+  let undoing = false;
+  /** The answers of each plan of this visit, as a range of `answers`: an undo takes them back whole. */
+  let groups: { start: number; end: number }[] = [];
   /** The number of the run that is the game. An undo starts a new run; the old one leaves. */
   let current = 0;
 
@@ -141,9 +160,20 @@ export function createWasmTransport(
         }
         return index;
       }
+      const canGoBack = exports.ti4_can_undo() === 1;
+      const index = decide(update, canGoBack);
+      if (index !== null) {
+        return index;
+      }
       return new Promise<number>((answer) => {
-        pending = { nonce, options, answer, canGoBack: exports.ti4_can_undo() === 1 };
-        tell({ kind: "update", update, canUndo: answers.length > 0 });
+        pending = { nonce, update, options, answer, canGoBack };
+        tell({
+          kind: "update",
+          update,
+          canUndo: answers.length > 0,
+          plan: planStopped ?? undefined,
+        });
+        planStopped = null;
       });
     });
     const instance = await WebAssembly.instantiate(engine.module, { host: { ask } });
@@ -182,6 +212,94 @@ export function createWasmTransport(
       }
     });
   };
+  /**
+   * Takes back the answer before the open choice: the engine asks that choice again, from a
+   * checkpoint when it has one, or else the game is played again without the answer.
+   */
+  const back = (canGoBack: boolean): number => {
+    if (canGoBack) {
+      answers.pop();
+      play.onAnswers?.(answers);
+      return UNDO;
+    }
+    // A game that is played again costs the same for one answer and for many: the answers of a
+    // plan go at once.
+    const group = groups.findLast(
+      (item) => item.start < answers.length && answers.length <= item.end,
+    );
+    answers.length = group ? group.start : answers.length - 1;
+    groups = groups.filter((item) => item.start < answers.length);
+    play.onAnswers?.(answers);
+    current += 1;
+    start();
+    return LEAVE;
+  };
+  /** A choice in the middle of a movement: a ship has moved, or a hold is open. */
+  const insideMovement = (update: SessionUpdate) => {
+    const subtype = update.pending_choice?.choice.context?.subtype;
+    return (
+      subtype === "load_cargo" ||
+      (subtype === "movement_step" &&
+        update.tactical?.kind === "movement" &&
+        update.tactical.moved > 0)
+    );
+  };
+  /**
+   * The answer to a choice that needs none from the player: the next step of the plan, or one
+   * more step back. Null when the player is asked.
+   */
+  const decide = (update: SessionUpdate, canGoBack: boolean): number | null => {
+    const choice = update.pending_choice!.choice;
+    if (plan) {
+      const sent = plan;
+      const result: ReturnType<typeof planAnswer> = sent.refused
+        ? { kind: "mismatch", reason: sent.refused }
+        : planAnswer(sent.steps, sent.next, choice, sent.actor);
+      if (result.kind === "answer") {
+        sent.next = result.next;
+        answers.push(choice.options[result.index].id);
+        play.onAnswers?.(answers);
+        return result.index;
+      }
+      if (result.kind === "mismatch") {
+        // All or nothing: the answers of the plan are taken back before the player is asked.
+        if (!sent.refused) {
+          sent.refused = result.reason;
+          groups.push({ start: sent.start, end: Number.POSITIVE_INFINITY });
+        }
+        if (answers.length > sent.start) {
+          return back(canGoBack);
+        }
+        groups = groups.filter((item) => item.end !== Number.POSITIVE_INFINITY);
+        planStopped = {
+          destination: sent.destination,
+          applied: 0,
+          remaining: sent.steps,
+          interrupted: false,
+          reason: result.reason,
+        };
+      } else if (result.kind === "interrupted") {
+        planStopped = {
+          destination: sent.destination,
+          applied: sent.next,
+          remaining: sent.steps.slice(sent.next),
+          interrupted: true,
+          reason: result.reason,
+        };
+      }
+      if (answers.length > sent.start) {
+        groups.push({ start: sent.start, end: answers.length });
+      }
+      plan = null;
+    }
+    if (undoing) {
+      if (answers.length > 0 && insideMovement(update)) {
+        return back(canGoBack);
+      }
+      undoing = false;
+    }
+    return null;
+  };
   /** The run that is the game now is no longer it. Where it waits for an answer, it leaves. */
   const leave = () => {
     current += 1;
@@ -212,22 +330,46 @@ export function createWasmTransport(
       play.onAnswers?.(answers);
       answer(index);
     },
+    submitPlan(nonce, sent) {
+      if (pending?.nonce !== nonce || pending.update.viewer.role !== "player") {
+        return;
+      }
+      plan = {
+        destination: sent.destination,
+        steps: sent.steps,
+        next: 0,
+        actor: pending.update.viewer.seat,
+        start: answers.length,
+        refused: null,
+      };
+      const { update, answer, canGoBack } = pending;
+      const index = decide(update, canGoBack);
+      if (index === null) {
+        // The first step was refused: nothing was sent, and the same choice is open.
+        tell({
+          kind: "update",
+          update,
+          canUndo: answers.length > 0,
+          plan: planStopped ?? undefined,
+        });
+        planStopped = null;
+        return;
+      }
+      pending = null;
+      answer(index);
+    },
     undo() {
       if (answers.length === 0) {
         return;
       }
-      answers.pop();
-      play.onAnswers?.(answers);
-      if (pending?.canGoBack) {
-        // The engine goes back to its checkpoint and asks the choice before this one again.
-        const { answer } = pending;
-        pending = null;
-        answer(UNDO);
-        return;
+      undoing = true;
+      // With no choice open the game is over: it is played again without the answer.
+      const { answer = null, canGoBack = false } = pending ?? {};
+      pending = null;
+      answer?.(back(canGoBack));
+      if (!answer) {
+        back(false);
       }
-      // No checkpoint holds that answer, or the game is over: the game is played again.
-      leave();
-      start();
     },
     close() {
       leave();

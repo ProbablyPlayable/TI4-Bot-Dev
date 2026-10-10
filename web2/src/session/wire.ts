@@ -23,12 +23,19 @@ export interface ChoiceOption {
   auto_resolved?: boolean;
 }
 
-/** `ti4_engine::choice::Choice`. `context` and `details` are not read yet. */
+/** `ti4_engine::decision_context::DecisionContext`: the fields that web2 reads. */
+export interface DecisionContext {
+  /** What is asked: "activate_system", "movement_step", "load_cargo", "reaction_…". */
+  subtype: string;
+  actor: string;
+}
+
+/** `ti4_engine::choice::Choice`. `details` is not read yet. */
 export interface Choice {
   player: string;
   prompt: string;
   options: ChoiceOption[];
-  context?: unknown;
+  context?: DecisionContext | null;
   details?: Record<string, unknown>;
 }
 
@@ -146,10 +153,73 @@ export interface GameView {
   table: TableView;
 }
 
+/** `ti4_view::tactical::MoveFact` */
+export interface MoveFact {
+  /** The ship cannot arrive without Gravity Drive. */
+  gravity_drive: boolean;
+  ionian: boolean;
+  /** The systems of the way, from the system of the ship to the active system. */
+  path: string[];
+  /** The gravity rifts that the ship leaves: one roll for each. */
+  rifts: string[];
+}
+
+/** `ti4_view::tactical::ShipFact` */
+export interface ShipFact {
+  origin: string;
+  index: number;
+  unit: string;
+  damaged: boolean;
+  capacity: number;
+  /** The ship counts against the fleet pool. */
+  fleet: boolean;
+  move?: MoveFact;
+  blocked?: "command_token" | "range";
+  /** What the ship can load: places in `MovementFacts.cargo`. */
+  loads?: number[];
+}
+
+/** `ti4_view::tactical::CargoPool` */
+export interface CargoPool {
+  system: string;
+  /** The planet, or null for the space area. */
+  source: string | null;
+  unit: string;
+  damaged: boolean;
+  galvanized: boolean;
+  count: number;
+}
+
+/** `ti4_view::tactical::ActivationFacts` */
+export interface ActivationFacts {
+  kind: "activation";
+  tactic_tokens: number;
+  systems: { system: string; ships: number; origins: number }[];
+}
+
+/** `ti4_view::tactical::MovementFacts` */
+export interface MovementFacts {
+  kind: "movement";
+  active: string;
+  ships: ShipFact[];
+  cargo: CargoPool[];
+  /** Gravity Drive can still give one ship of this action its move. */
+  gravity_drive: boolean;
+  ionian: boolean;
+  fleet_supply: { limit: number; charged: number };
+  /** How many ships already moved in this activation. */
+  moved: number;
+}
+
+/** `ti4_view::tactical::TacticalFacts` */
+export type TacticalFacts = ActivationFacts | MovementFacts;
+
 /** `ti4_view::projection::SessionUpdate`: the fields of `StateUpdateMsg` that web2 reads. */
 export interface SessionUpdate {
   viewer: ViewerRole;
   view: GameView;
   pending_choice?: PendingChoiceEnvelope;
   turn_status: PublicTurnStatus;
+  /** What the engine says about the pending choice of a tactical action. The wasm host fills it. */
+  tactical?: TacticalFacts;
 }

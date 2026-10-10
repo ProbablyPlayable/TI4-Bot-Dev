@@ -11,19 +11,29 @@ test.use({ viewport: { width: 1920, height: 1080 } });
 test.setTimeout(120_000);
 
 const panel = (page: Page) => page.locator("#step-panel");
-const send = (page: Page) => page.getByRole("button", { name: "Send" });
+/** The main button of the footer: "Send", "Activate system", "Move fleet". Enter does what it says. */
+const send = (page: Page) => page.locator('footer button[aria-keyshortcuts="Enter"]');
 const heading = (page: Page) => panel(page).getByRole("heading").first();
+const bar = (page: Page) => page.getByRole("navigation", { name: "Local game" });
+const undo = (page: Page) => page.getByRole("button", { name: "Undo" });
 
-/** Answers the open choice with its first row, or with the first system when it is on the board. */
+/**
+ * Answers the open choice: with the first system when it is on the board, with nothing when the
+ * main button already has something to send (a movement of no ship), or else with its first row.
+ */
 async function answer(page: Page) {
+  const saved = (await bar(page).textContent()) ?? "";
   const system = page.locator("g.system.target");
-  await ((await system.count()) ? system : panel(page).getByRole("button", { pressed: false }))
-    .first()
-    .click();
+  if (await system.count()) {
+    await system.first().click();
+  } else if (await send(page).isDisabled()) {
+    await panel(page).getByRole("button", { pressed: false }).first().click();
+  }
   await expect(send(page)).toBeEnabled();
   await send(page).click();
-  // The next choice has nothing staged.
-  await expect(send(page)).toBeDisabled();
+  // The answer is saved, and the next choice is open.
+  await expect(bar(page)).not.toHaveText(saved);
+  await expect(send(page)).toBeVisible();
 }
 
 test("a game of eight is played through the decision list", async ({ page }) => {
@@ -56,34 +66,77 @@ test("a game of eight is played through the decision list", async ({ page }) => 
   expect(errors).toEqual([]);
 });
 
-test("a choice of systems is also made on the board", async ({ page }) => {
+test("a tactical action: the system and the movement are staged on the map", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+  page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/?local=3&players=8&humans=1");
   await expect(send(page)).toBeDisabled();
-  // Play until the game asks for a system.
-  for (let count = 0; count < 40; count++) {
-    if ((await heading(page).textContent()) === "Activate a system") {
-      break;
-    }
-    const tactical = panel(page).getByRole("button", { name: "Take a tactical action" });
-    if (await tactical.count()) {
-      await tactical.click();
-      await send(page).click();
-      await expect(heading(page)).toHaveText("Activate a system");
-    } else {
-      await answer(page);
-    }
-  }
-  await expect(heading(page)).toHaveText("Activate a system");
-  const target = page.locator("g.system.target").first();
-  await target.click();
-  await expect(page.locator("g.system.chosen")).toHaveCount(1);
-  await expect(send(page)).toBeEnabled();
-  // The board is the picker: the panel has no list of the systems.
-  await expect(panel(page).getByRole("button", { name: /^Activate / })).toHaveCount(0);
-  await expect(panel(page).getByText("Selected on the board.")).toBeVisible();
-  await page.screenshot({ path: "shots/local/system-choice.png", animations: "disabled" });
+  const row = (name: string) => panel(page).getByRole("button", { name });
+  await row("8. Imperial").click();
   await send(page).click();
-  await expect(page.locator("g.system.target")).toHaveCount(0);
+  await row("Decline").click();
+  await send(page).click();
+  await row("Take a tactical action").click();
+  await send(page).click();
+
+  // Activation: the board is the picker, and the panel has the choice, not a list of systems.
+  await expect(heading(page)).toHaveText("Activation");
+  await expect(send(page)).toHaveText(/Activate system/);
+  await expect(send(page)).toBeDisabled();
+  await expect(panel(page).getByRole("button", { name: /^Activate \d/ })).toHaveCount(0);
+  const system = (id: string) => page.locator("g.system").filter({ hasText: `#${id}` });
+  await system("23").click();
+  await expect(page.locator("g.system.chosen")).toHaveCount(1);
+  await expect(panel(page).getByText("3 ships in range")).toBeVisible();
+  await expect(panel(page).getByText("From 1 system")).toBeVisible();
+  await page.screenshot({ path: "shots/local/activation.png", animations: "disabled" });
+  await page.keyboard.press("Enter");
+
+  // Movement: nothing is staged, and moving nothing is what the main button says.
+  await expect(heading(page)).toHaveText("Movement");
+  await expect(send(page)).toHaveText(/Move nothing/);
+  await expect(bar(page)).toContainText("4 answers saved");
+  // The system with the ships opens its fleet on the map.
+  await system("01").click();
+  const sheet = page.getByRole("group", { name: /^Move from Jord/ });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Carrier 1 of 2" }).click();
+  await sheet.getByRole("button", { name: /^Load Infantry, Planet Jord, 5 left/ }).click();
+  await sheet.getByRole("button", { name: "Load Infantry on Carrier 1 of 2" }).first().click();
+  await sheet.getByRole("button", { name: "Load Infantry on Carrier 1 of 2" }).first().click();
+  await sheet.getByRole("button", { name: "Destroyer 1 of 1" }).click();
+  await expect(sheet.getByText("2 ships · 2 cargo")).toBeVisible();
+  await expect(
+    sheet.getByRole("button", { name: /^Load Infantry, Planet Jord, 3 left/ }),
+  ).toBeVisible();
+  await expect(panel(page).getByText("Fleet supply")).toBeVisible();
+  await expect(send(page)).toHaveText(/Move fleet/);
+  // The board shows what the movement leaves and what arrives.
+  await expect(system("01")).toHaveAttribute("aria-label", /movement staged, 4 Sol ships/);
+  await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
+  await page.screenshot({ path: "shots/local/movement.png", animations: "disabled" });
+  // Nothing was sent yet.
+  await expect(bar(page)).toContainText("4 answers saved");
+
+  // "Move fleet" sends the whole movement: each ship and each unit is one answer of the game.
+  await send(page).click();
+  await expect(bar(page)).toContainText("10 answers saved");
+  await expect(heading(page)).not.toHaveText("Movement");
+  await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
+  await expect(system("01")).toHaveAttribute("aria-label", /4 Sol ships/);
+  await page.screenshot({ path: "shots/local/after-movement.png", animations: "disabled" });
+
+  // One undo takes the movement back whole; one more opens the activation again.
+  await undo(page).click();
+  await expect(heading(page)).toHaveText("Movement");
+  await expect(bar(page)).toContainText("4 answers saved");
+  await expect(send(page)).toHaveText(/Move nothing/);
+  await expect(system("23")).not.toHaveAttribute("aria-label", /Sol ship/);
+  await undo(page).click();
+  await expect(heading(page)).toHaveText("Activation");
+  await expect(bar(page)).toContainText("3 answers saved");
+  expect(errors).toEqual([]);
 });
 
 test("hotseat: the viewer is the seat that is asked", async ({ page }) => {
@@ -109,9 +162,6 @@ test("an inspected system shows its forces", async ({ page }) => {
   await expect(page.getByText("2 Carriers")).toBeVisible();
   await page.screenshot({ path: "shots/local/inspector.png", animations: "disabled" });
 });
-
-const bar = (page: Page) => page.getByRole("navigation", { name: "Local game" });
-const undo = (page: Page) => page.getByRole("button", { name: "Undo" });
 
 test("a reload goes on where the game was, and undo takes back one answer", async ({ page }) => {
   await page.goto("/?local=3&players=8&humans=1");

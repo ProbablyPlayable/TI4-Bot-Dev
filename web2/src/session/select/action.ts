@@ -1,6 +1,8 @@
 // The action panel: every decision as one list. A dedicated screen later takes one kind of
 // decision out of this list; the list stays for every kind that has none.
 import type { BoardTaskView, FlowActionView, MenuRowView } from "../../model";
+import type { MovementDraft } from "../movementDraft";
+import type { MovementPlan } from "../movementPlan";
 import type { Choice, SessionUpdate } from "../wire";
 import { sentence } from "./names";
 
@@ -18,6 +20,14 @@ export interface LocalState {
   replaying: { done: number; total: number } | null;
   /** The last answer can be taken back. */
   canUndo: boolean;
+  /** The staged movement of the open movement step. */
+  movement: MovementDraft;
+  /** The step of the tactical action that is in view, when it is not the open one. */
+  step: number | null;
+  /** The steps of a movement that another decision stopped. They are staged again when the movement goes on. */
+  remaining: MovementPlan | null;
+  /** What the last movement that was sent came to, when it did not reach its end. */
+  planNote: { text: string; error: boolean } | null;
 }
 
 /** The choice that the viewer can answer now. */
@@ -41,7 +51,7 @@ export function boardTask(update: SessionUpdate, local: LocalState): BoardTaskVi
     interactive: true,
     values: Object.fromEntries(choice.options.map((option) => [option.id, 0])),
     chosen: local.staged ? { [local.staged]: true } : {},
-    verb: "Choose",
+    verb: "Activate",
     unit: "system",
   };
 }

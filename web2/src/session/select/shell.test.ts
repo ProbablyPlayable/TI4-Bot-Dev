@@ -1,13 +1,13 @@
 import { expect, it } from "vitest";
 import menuUpdate from "../fixtures/update-menu.json";
-import systemsUpdate from "../fixtures/update-systems.json";
+import systemsUpdate from "../fixtures/update-load.json";
 import type { SessionUpdate } from "../wire";
 import type { LocalState } from "./action";
 import { selectShell } from "./shell";
 
 // The fixtures are updates of a real game, written by the engine:
 //   cargo run -p ti4-wasm --example record -- 3 8 1 20 > web2/src/session/fixtures/update-menu.json
-//   cargo run -p ti4-wasm --example record -- 3 8 1 44 > web2/src/session/fixtures/update-systems.json
+//   cargo run -p ti4-wasm --example record -- 3 8 1 6 pok8imperial no tactical 23 'move|01|0' > web2/src/session/fixtures/update-load.json
 const menu = menuUpdate as unknown as SessionUpdate;
 const systems = systemsUpdate as unknown as SessionUpdate;
 const local = (change: Partial<LocalState> = {}): LocalState => ({
@@ -17,6 +17,10 @@ const local = (change: Partial<LocalState> = {}): LocalState => ({
   error: null,
   replaying: null,
   canUndo: false,
+  movement: {},
+  step: null,
+  remaining: null,
+  planNote: null,
   ...change,
 });
 const flow = (update: SessionUpdate, state: LocalState) => {
@@ -101,18 +105,13 @@ it("has no choice after the answer is sent, until the next update", () => {
   expect(selectShell(menu, sent).toolbar.status).toBe("Sent · the game goes on");
 });
 
-it("makes a choice of systems on the board, with no list in the panel", () => {
+it("shows a decision without a screen of its own as a list, also inside a tactical action", () => {
   const choice = systems.pending_choice!.choice;
-  const view = selectShell(systems, local({ staged: choice.options[0].id }));
-  expect(Object.keys(view.board.task!.values).sort()).toEqual(
-    choice.options.map((option) => option.id).sort(),
+  expect(choice.context?.subtype).toBe("load_cargo");
+  expect(rows(systems, local()).map((row) => row.intent)).toEqual(
+    choice.options.map((option) => ({ type: "chooseOption", option: option.id })),
   );
-  expect(view.board.task).toMatchObject({ target: "system", kind: "pick", interactive: true });
-  expect(view.board.task!.chosen).toEqual({ [choice.options[0].id]: true });
-  expect(rows(systems, local())).toEqual([]);
-  // Every system that can be chosen is on the board.
-  const ids = new Set(view.board.tiles.map((tile) => tile.id));
-  expect(choice.options.filter((option) => !ids.has(option.id))).toEqual([]);
+  expect(selectShell(systems, local()).board.task).toBeNull();
 });
 
 it("shows the forces of an inspected system", () => {

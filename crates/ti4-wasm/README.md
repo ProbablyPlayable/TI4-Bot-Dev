@@ -195,10 +195,59 @@ played in the page.
 - `web2/src/session/` is the client side: `Transport` (updates in, `submitChoice` out),
   `wasmTransport.ts` (the JSPI glue), the selectors from an update to the view models of web2,
   and `useLiveSession`. A websocket transport for the server needs the same two things.
-- Every decision is one list in the action panel. A choice of systems is made on the board.
-  The dedicated screens of web2 are not connected yet.
-- `cargo run -p ti4-wasm --example record -- <seed> <players> <mask> <choice number>` writes the
-  update of one choice. The selector tests of web2 use two such files.
+- The activation and the movement of a tactical action have their screens (see "A tactical
+  action" below). Every other decision is one list in the action panel.
+- `cargo run -p ti4-wasm --example record -- <seed> <players> <mask> <choice number> [option id ...]`
+  writes the update of one choice. The option ids answer the first choices, so that the game
+  reaches the choice that is wanted. The tests of web2 use four such files
+  (`web2/src/session/fixtures/`).
+
+### A tactical action
+
+The engine asks for one ship at a time (`move|<system>|<index>`), then for each unit that the
+ship loads, and it moves the ship before it asks for the next one. The screen of web2 stages the
+whole movement first. Two things connect them.
+
+**Facts.** For the choice of a system to activate and for the choice of a ship to move, the
+update has one more field, `tactical` (`ti4-view/src/tactical.rs`). It says what the choice
+itself does not: for the activation, how many ships are in range of each system; for the
+movement, each ship of the seat with its path, the gravity rifts on it, why it cannot move (a
+command token, or the range), and the units that it can load, also on its way. `ti4-wasm` fills
+the field when it offers a choice to a seat of the page; the random seats do not pay for it.
+
+- Nothing in `ti4-engine` was changed for this. Every fact is the answer of a public function
+  of the engine, asked as `Game::begin_one_move` asks it. What a ship can load is read from the
+  `load` options of the engine's own `CargoWindow`. A test plays a move and compares the two.
+- The server does not send the field yet (`project_session_update` leaves it empty).
+
+**A plan.** "Move fleet" sends the staged movement as steps that name what is moved and
+loaded, not option ids (`web2/src/session/movementPlan.ts`). `Transport.submitPlan` takes them;
+this is the contract of the server's batch (`ti4-server/src/session/batch.rs`), so the
+websocket transport can post the same steps. The wasm transport answers each choice of the
+engine with the option whose payload matches the next step, with the three rules of the
+batch: a hold that closed itself needs no "done loading"; a hold that the plan does not load
+is declined; a reaction window or a choice of another seat stops the plan, and the rest is
+staged again when the movement goes on.
+
+- A step that the engine does not offer takes the whole plan back, from the checkpoints. The
+  server gets the same by playing the game again for each batch; here that would cost up to
+  the whole engine time of the game.
+- Each answer of a plan is an answer of the saved game, so the save, the replay and the
+  checkpoints did not change.
+- One undo takes a movement back whole: after an undo, the transport goes on while the choice
+  that is open again is inside a movement (a hold, or a ship has already moved). It needs no
+  stored groups, so it also holds after a reload.
+
+Limits:
+
+- The engine uses Gravity Drive only for a ship that cannot arrive without it, and it chooses
+  the path. The screen shows that; the player cannot give Gravity Drive to another ship.
+- The matching of a step to an option is in TypeScript here and in Rust in the server. One
+  shared implementation means taking the movement part out of `batch.rs`.
+- Not shown yet, because they need the event history: the roll at a gravity rift, units that
+  are removed after the movement, space cannon, and the read-only view of a past movement.
+  Units that stay behind with no ship that carries them get no warning.
+- The later steps (space cannon, combat, invasion, production) are still lists.
 
 ### The saved game
 
@@ -332,7 +381,7 @@ content does not have.
   `ti4-view`. `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-bot-agent` and `ti4-wasm` pass their
   tests. `ti4-advisor` uses the moved paths through the re-exports of `ti4-server` and was not
   built (it needs libtorch).
-- No UI queries, no bots other than random. Undo and resume are replays from the seed; a stored
+- The only UI query is the `tactical` field of the update. No bots other than random. Undo and resume are replays from the seed; a stored
   position that can be resumed would need the engine to stop at step boundaries only.
 
 ## Commands

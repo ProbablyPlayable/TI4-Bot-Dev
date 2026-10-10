@@ -646,6 +646,10 @@ pub struct SessionUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_choice: Option<PendingChoiceEnvelope>,
     pub turn_status: PublicTurnStatus,
+    /// What the viewer needs to stage the pending choice of a tactical action. The projection
+    /// leaves it empty: a host that has the map fills it ([`crate::tactical`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tactical: Option<crate::tactical::TacticalFacts>,
 }
 
 /// Projects what `viewer` is shown of `state` while the game waits in `pending_choice`.
@@ -662,6 +666,7 @@ pub fn project_session_update(
         view: project_game_view_full(state, viewer, map_tiles, choice, &[]),
         pending_choice: project_pending_choice(viewer, pending_choice),
         turn_status: project_turn_status(state, choice),
+        tactical: None,
     }
 }
 

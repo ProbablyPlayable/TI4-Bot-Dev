@@ -9,4 +9,5 @@ pub mod map;
 pub mod maps;
 pub mod projection;
 pub mod status;
+pub mod tactical;
 pub mod view;

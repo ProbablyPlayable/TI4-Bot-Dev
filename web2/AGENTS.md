@@ -192,6 +192,8 @@ The owner chose this design on 2026-10-10, from three that were compared.
 
 - `?local=<seed>&players=8&humans=<mask>` plays a real game of the engine in the page (`src/dev/LocalApp.tsx`). Build the engine first: `scripts/build-wasm.sh`.
 - `src/session/` turns an update of the game into the view models. It imports `model` only, and it decides no rule: a value that needs a rule comes from the engine.
-- A decision without a dedicated screen is one list in the action panel. A choice of systems is made on the board.
+- A decision without a dedicated screen is one list in the action panel.
+- The activation and the movement of a tactical action use the screens of these steps. The facts come from the engine with the update (`tactical`), and "Move fleet" sends the staged movement as one plan (`Transport.submitPlan`). A plan that the game refuses is taken back whole; one undo takes a movement back whole.
+- In local play the game decides when a ship uses Gravity Drive: only when the ship cannot arrive without it. The toggle is then on and locked. The free toggle of the Movement section is not offered there.
 - The game is saved in `localStorage` as its seed and the ids of the answers (`src/session/savedGame.ts`). A reload and an undo play it again from the seed.
 - The details, the measurements and the limits are in `crates/ti4-wasm/README.md`.

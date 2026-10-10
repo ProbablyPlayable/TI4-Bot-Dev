@@ -10,7 +10,15 @@ import type {
   TileView,
   UnitType,
 } from "../../model";
-import type { BoardTileView, PlacedUnitView, SessionUpdate, SystemView } from "../wire";
+import type { MovementDraft } from "../movementDraft";
+import type {
+  BoardTileView,
+  MovementFacts,
+  PlacedUnitView,
+  SessionUpdate,
+  SystemView,
+} from "../wire";
+import { selectArrival, selectMovementBoard, selectOrigin, withMovement } from "./movement";
 import {
   ANOMALIES,
   TECH_COLORS,
@@ -141,6 +149,8 @@ export function selectBoard(
   update: SessionUpdate,
   inspected: string | null,
   task: BoardTaskView | null,
+  /** The open movement step: the board shows what is staged, and a system opens its fleet. */
+  movement: { facts: MovementFacts; draft: MovementDraft } | null = null,
 ): BoardView {
   const viewer = viewerSeat(update);
   const board = update.view.board;
@@ -149,21 +159,37 @@ export function selectBoard(
   const marks = map.flatMap((tile) =>
     (tile.wormholes ?? []).map((kind) => [kind, tile.system_id] as const),
   );
+  const move =
+    movement &&
+    selectMovementBoard(update, movement.facts, movement.draft, open?.system_id ?? null);
+  const origin =
+    movement && selectOrigin(update, movement.facts, movement.draft, open?.system_id ?? null);
+  const tiles = map.map((tile) => tileView(tile, board.systems[tile.system_id], viewer));
   return {
-    tiles: map.map((tile) => tileView(tile, board.systems[tile.system_id], viewer)),
+    tiles: move ? tiles.map((tile) => withMovement(tile, move)) : tiles,
     wormholes: marks.flatMap(([kind, id]) =>
       marks
         .filter(([other, otherId]) => other === kind && otherId > id)
         .map(([, otherId]): [string, string] => [id, otherId]),
     ),
-    routes: [],
+    routes: move?.routes ?? [],
     activeSystem: board.active_system ?? null,
     inspected: open ? open.system_id : null,
     targeting: false,
     task,
-    inspector: open ? inspector(open, board.systems[open.system_id], viewer) : null,
-    origin: null,
-    taskSystems: task ? Object.keys(task.values) : [],
-    fitKey: "local",
+    // The fleet with its controls takes the place of the inspector of that system.
+    inspector:
+      open && !origin
+        ? {
+            ...inspector(open, board.systems[open.system_id], viewer),
+            ...(movement && open.system_id === movement.facts.active
+              ? { arriving: selectArrival(update, movement.facts, movement.draft) }
+              : {}),
+          }
+        : null,
+    origin: origin ?? null,
+    taskSystems: move ? move.systems : task ? Object.keys(task.values) : [],
+    // The board is framed again for each movement: its systems are the task.
+    fitKey: movement ? `movement:${movement.facts.active}` : "local",
   };
 }
