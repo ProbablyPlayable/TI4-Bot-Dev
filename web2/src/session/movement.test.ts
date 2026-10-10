@@ -12,7 +12,7 @@ import {
   loadKey,
   shipKey,
 } from "./movementDraft";
-import { type MovementStep, draftOf, planAnswer, stepsOf } from "./movementPlan";
+import { type MovementStep, draftOf, matches, planAnswer, stepOf, stepsOf } from "./movementPlan";
 import type { Choice, MovementFacts, SessionUpdate } from "./wire";
 
 // Updates of a real game, written by the engine (seat a is Sol; it activated the system next
@@ -155,6 +155,17 @@ it("answers each choice of the game with the option that the step names", () => 
   expect(idOf(moveChoice, planAnswer(steps, 5, moveChoice, "a"))).toBe("move|01|2");
   expect(idOf(moveChoice, planAnswer(steps, 6, moveChoice, "a"))).toBe("done_moving");
   expect(planAnswer(steps, 7, moveChoice, "a")).toEqual({ kind: "done" });
+});
+
+it("reads the step back from the option that answered it", () => {
+  // Every option of a movement is a step that matches that option and no other.
+  for (const choice of [moveChoice, loadChoice]) {
+    for (const option of choice.options) {
+      const step = stepOf(option);
+      expect(choice.options.filter((other) => step && matches(step, other))).toEqual([option]);
+    }
+  }
+  expect(stepOf({ id: "tactical", kind: "action", payload: {} })).toBeNull();
 });
 
 it("follows the three rules of the server's batch", () => {

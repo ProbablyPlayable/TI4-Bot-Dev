@@ -96,6 +96,14 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
           stopped?.interrupted && stopped.remaining.length
             ? { destination: stopped.destination, steps: stopped.remaining }
             : now.remaining;
+        // A movement that an undo took back is staged again, in front of what was still to move.
+        const undone = event.undone;
+        const active =
+          facts?.kind === "movement" ? facts.active : event.update.view.board.active_system;
+        if (undone && active) {
+          const rest = remaining?.destination === active ? remaining.steps : [];
+          remaining = { destination: active, steps: [...undone, ...rest] };
+        }
         let movement = {};
         let planNote =
           stopped && !stopped.interrupted ? { text: stopped.reason, error: true } : null;
@@ -103,10 +111,12 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
           const again = stopped && !stopped.interrupted ? stopped.remaining : remaining?.steps;
           if (again && (stopped?.destination ?? remaining?.destination) === facts.active) {
             movement = draftOf(facts, again);
-            planNote ??= {
-              text: "Another decision stopped the movement. What did not move is staged again.",
-              error: false,
-            };
+            if (!undone) {
+              planNote ??= {
+                text: "Another decision stopped the movement. What did not move is staged again.",
+                error: false,
+              };
+            }
           }
           // The movement that was staged for this choice before a reload.
           const saved = again ? null : readDraft(drafts);

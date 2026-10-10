@@ -159,12 +159,25 @@ test("a tactical action: the system and the movement are staged on the map", asy
   await expect(system("01")).toHaveAttribute("aria-label", /4 Sol ships/);
   await page.screenshot({ path: "shots/local/after-movement.png", animations: "disabled" });
 
-  // One undo takes the movement back whole; one more opens the activation again.
+  // One undo takes the movement back whole, and it is staged again as it was sent.
   await undo(page).click();
   await expect(heading(page)).toHaveText("Movement");
   await expect.poll(() => savedLine(page)).toContain("4 answers saved");
-  await expect(send(page)).toHaveText(/Move nothing/);
-  await expect(system("23")).not.toHaveAttribute("aria-label", /Sol ship/);
+  await expect(send(page)).toHaveText(/Move fleet/);
+  await expect(system("01")).toHaveAttribute("aria-label", /handled, 4 Sol ships/);
+  // The sheet of the system is still open, where the player left it.
+  await expect(sheet.getByText("2 ships · 2 cargo")).toBeVisible();
+  // So one part of it can change: the destroyer stays, the carrier moves with its hold.
+  await sheet.getByRole("button", { name: "Destroyer 1 of 1" }).click();
+  await expect(sheet.getByText("1 ship · 2 cargo")).toBeVisible();
+  await page.screenshot({ path: "shots/local/movement-undone.png", animations: "disabled" });
+  await send(page).click();
+  await expect.poll(() => savedLine(page)).toContain("9 answers saved");
+  await expect(system("23")).toHaveAttribute("aria-label", /1 Sol ship/);
+  // One undo again, and one more opens the activation again.
+  await undo(page).click();
+  await expect(heading(page)).toHaveText("Movement");
+  await expect.poll(() => savedLine(page)).toContain("4 answers saved");
   await undo(page).click();
   await expect(heading(page)).toHaveText("Activation");
   await expect.poll(() => savedLine(page)).toContain("3 answers saved");

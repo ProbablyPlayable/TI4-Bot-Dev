@@ -62,6 +62,24 @@ test("phone: a game of eight is played through the decision list", async ({ page
       await sheet.getByRole("button", { name: "Done with this system" }).click();
       await expect(send).toHaveText(/Move fleet/);
       await expect(page.locator(".galaxy .t-staged")).toHaveCount(1);
+      // An undo of the movement stages it again, and the map is open again.
+      await send.click();
+      await expect(send).not.toHaveText(/Move/);
+      await pane("Action").click();
+      await page.getByRole("button", { name: "Undo" }).click();
+      await expect(send).toHaveText(/Move/);
+      await expect(pane("Map")).toHaveAttribute("aria-pressed", "true");
+      await expect(send).toHaveText(/Move fleet/);
+      await expect(page.locator(".galaxy .t-staged")).toHaveCount(1);
+      await page.screenshot({ path: "shots/phone/local/undo.png", animations: "disabled" });
+      // An undo opens the map also when the choice before it was on the map: the activation.
+      await pane("Action").click();
+      await page.getByRole("button", { name: "Undo" }).click();
+      await expect(send).toHaveText(/Activate system/);
+      await expect(pane("Map")).toHaveAttribute("aria-pressed", "true");
+      await system.filter({ hasText: "#23" }).first().click();
+      await send.click();
+      await expect(send).toHaveText(/Move nothing/);
     }
     // The main button is under every pane, in view.
     await expect(send).toBeInViewport({ ratio: 1 });

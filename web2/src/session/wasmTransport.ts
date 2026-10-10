@@ -1,8 +1,8 @@
 // The engine in this page: `crates/ti4-wasm`, built by `scripts/build-wasm.sh`.
 import type { LocalGame } from "./savedGame";
-import { type MovementStep, planAnswer } from "./movementPlan";
+import { type MovementStep, planAnswer, stepOf } from "./movementPlan";
 import type { PlanStopped, Transport, TransportEvent } from "./transport";
-import type { SessionUpdate } from "./wire";
+import type { ChoiceOption, SessionUpdate } from "./wire";
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -85,6 +85,11 @@ export function createWasmTransport(
 ): Transport {
   const listeners = new Set<(event: TransportEvent) => void>();
   const answers = [...(play.answers ?? [])];
+  /**
+   * What each answer of this run chose, as far as the run has given it: an id alone does not say
+   * that. Compare `RecordedDecision` of the server. A game that is played again fills it again.
+   */
+  let recorded: ChoiceOption[] = [];
   let latest: TransportEvent | null = null;
   /** The pending choice: its update, its option ids in order, and how to answer the engine. */
   let pending: {
@@ -110,6 +115,8 @@ export function createWasmTransport(
   let planStopped: PlanStopped | null = null;
   /** An undo goes on while the choice that is open again is in the middle of a movement. */
   let undoing = false;
+  /** What the undo took back so far, first answer first. Told with the next update. */
+  let undone: ChoiceOption[] = [];
   /** The answers of each plan of this visit, as a range of `answers`: an undo takes them back whole. */
   let groups: { start: number; end: number }[] = [];
   /** The number of the run that is the game. An undo starts a new run; the old one leaves. */
@@ -122,9 +129,24 @@ export function createWasmTransport(
     }
   };
 
+  /** Shows the player a choice, with what the plan or the undo before it came to. */
+  const show = (update: SessionUpdate) => {
+    const steps = undone.flatMap((answer) => stepOf(answer) ?? []);
+    tell({
+      kind: "update",
+      update,
+      canUndo: answers.length > 0,
+      plan: planStopped ?? undefined,
+      undone: steps.length ? steps : undefined,
+    });
+    planStopped = null;
+    undone = [];
+  };
+
   const run = async (id: number) => {
     const jspi = WebAssembly as unknown as Jspi;
     const script = [...answers];
+    recorded = [];
     let replayed = 0;
     let shown = performance.now();
     let diverged: string | null = null;
@@ -153,6 +175,7 @@ export function createWasmTransport(
           return LEAVE;
         }
         replayed += 1;
+        recorded.push(choice.options[index]);
         if (performance.now() - shown > REPLAY_SLICE_MS) {
           tell({ kind: "replaying", done: replayed, total: script.length });
           await breathe();
@@ -167,13 +190,7 @@ export function createWasmTransport(
       }
       return new Promise<number>((answer) => {
         pending = { nonce, update, options, answer, canGoBack };
-        tell({
-          kind: "update",
-          update,
-          canUndo: answers.length > 0,
-          plan: planStopped ?? undefined,
-        });
-        planStopped = null;
+        show(update);
       });
     });
     const instance = await WebAssembly.instantiate(engine.module, { host: { ask } });
@@ -217,9 +234,17 @@ export function createWasmTransport(
    * checkpoint when it has one, or else the game is played again without the answer.
    */
   const back = (canGoBack: boolean): number => {
-    if (canGoBack) {
-      answers.pop();
+    /** The answers from `length` on leave, and an undo keeps what they chose. */
+    const drop = (length: number) => {
+      answers.length = length;
+      const gone = recorded.splice(length);
+      if (undoing) {
+        undone = [...gone, ...undone];
+      }
       play.onAnswers?.(answers);
+    };
+    if (canGoBack) {
+      drop(answers.length - 1);
       return UNDO;
     }
     // A game that is played again costs the same for one answer and for many: the answers of a
@@ -227,9 +252,8 @@ export function createWasmTransport(
     const group = groups.findLast(
       (item) => item.start < answers.length && answers.length <= item.end,
     );
-    answers.length = group ? group.start : answers.length - 1;
+    drop(group ? group.start : answers.length - 1);
     groups = groups.filter((item) => item.start < answers.length);
-    play.onAnswers?.(answers);
     current += 1;
     start();
     return LEAVE;
@@ -258,6 +282,7 @@ export function createWasmTransport(
       if (result.kind === "answer") {
         sent.next = result.next;
         answers.push(choice.options[result.index].id);
+        recorded.push(choice.options[result.index]);
         play.onAnswers?.(answers);
         return result.index;
       }
@@ -324,9 +349,10 @@ export function createWasmTransport(
       if (index < 0) {
         return;
       }
-      const { answer } = pending;
+      const { answer, update } = pending;
       pending = null;
       answers.push(optionId);
+      recorded.push(update.pending_choice!.choice.options[index]);
       play.onAnswers?.(answers);
       answer(index);
     },
@@ -346,13 +372,7 @@ export function createWasmTransport(
       const index = decide(update, canGoBack);
       if (index === null) {
         // The first step was refused: nothing was sent, and the same choice is open.
-        tell({
-          kind: "update",
-          update,
-          canUndo: answers.length > 0,
-          plan: planStopped ?? undefined,
-        });
-        planStopped = null;
+        show(update);
         return;
       }
       pending = null;
@@ -363,6 +383,7 @@ export function createWasmTransport(
         return;
       }
       undoing = true;
+      undone = [];
       // With no choice open the game is over: it is played again without the answer.
       const { answer = null, canGoBack = false } = pending ?? {};
       pending = null;

@@ -22,6 +22,8 @@ export type TransportEvent =
       /** The last answer can be taken back. */ canUndo: boolean;
       /** The plan that was sent before this update stopped here. */
       plan?: PlanStopped;
+      /** The steps of the movement that the undo before this update took back, in order. */
+      undone?: MovementStep[];
     }
   /** The game is played again up to where it was. The last update is out of date until the next. */
   | { kind: "replaying"; done: number; total: number }
@@ -44,8 +46,8 @@ export interface Transport {
    */
   submitPlan(nonce: string, plan: MovementPlan): void;
   /**
-   * Takes back the last answer of this side; a movement is taken back whole. Does nothing when
-   * there is none.
+   * Takes back the last answer of this side; a movement is taken back whole, and the next update
+   * tells its steps. Does nothing when there is none.
    */
   undo(): void;
   /** Ends the game on this side. */

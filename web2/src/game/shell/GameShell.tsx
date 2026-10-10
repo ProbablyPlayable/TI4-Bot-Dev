@@ -71,6 +71,15 @@ export function GameShell({
       ? "map"
       : null;
   useEffect(() => setPane(choiceOn ?? "action"), [choiceOn]);
+  // After an undo the pane follows the choice that is open again, also one of the same kind.
+  const undone = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the next view is the answer to the undo
+  useEffect(() => {
+    if (undone.current) {
+      undone.current = false;
+      setPane(choiceOn ?? "action");
+    }
+  }, [view]);
 
   const dispatch = useCallback(
     (intent: Intent) => {
@@ -82,6 +91,9 @@ export function GameShell({
       }
       if (intent.type === "inspectLogEntry") {
         setDrawer(null);
+      }
+      if (intent.type === "undo") {
+        undone.current = true;
       }
       session.dispatch(intent);
     },

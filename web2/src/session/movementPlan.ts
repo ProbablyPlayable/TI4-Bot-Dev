@@ -140,6 +140,34 @@ export function matches(step: MovementStep, option: ChoiceOption): boolean {
   }
 }
 
+/** The step that an option of a movement is. Null for any other option. The inverse of `matches`. */
+export function stepOf(option: Pick<ChoiceOption, "id" | "kind" | "payload">): MovementStep | null {
+  const { payload } = option;
+  const on = (key: string) => payload[key] === true;
+  if (option.kind === "move") {
+    return {
+      kind: "move",
+      origin: String(payload.origin),
+      unit: String(payload.unit),
+      damaged: on("damaged"),
+      gravity_drive: on("gravity_drive"),
+      ionian: on("ionian"),
+    };
+  }
+  if (option.kind === "load") {
+    return {
+      kind: "load",
+      origin: String(payload.system),
+      pickup_system: String(payload.pickup_system),
+      unit: String(payload.unit),
+      source: typeof payload.source === "string" ? payload.source : null,
+      damaged: on("damaged"),
+      galvanized: on("galvanized"),
+    };
+  }
+  return option.id === "done_loading" || option.id === "done_moving" ? { kind: option.id } : null;
+}
+
 const describe = (step: MovementStep) =>
   step.kind === "move"
     ? `move ${step.unit} from ${step.origin}`

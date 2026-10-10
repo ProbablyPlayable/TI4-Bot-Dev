@@ -237,6 +237,10 @@ staged again when the movement goes on.
 - One undo takes a movement back whole: after an undo, the transport goes on while the choice
   that is open again is inside a movement (a hold, or a ship has already moved). It needs no
   stored groups, so it also holds after a reload.
+- The transport keeps what each answer chose (the option with its payload, as `RecordedDecision`
+  of the server), and a game that is played again fills that list again. The update after an
+  undo tells the steps of the movement that were taken back (`undone`), and the page stages
+  them again as the draft.
 
 Limits:
 

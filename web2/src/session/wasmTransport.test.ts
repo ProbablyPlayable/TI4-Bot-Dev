@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { setLoad, setShip } from "./movementDraft";
-import { type MovementStep, stepsOf } from "./movementPlan";
+import { type MovementStep, draftOf, stepsOf } from "./movementPlan";
 import type { TransportEvent } from "./transport";
 import { type Engine, createWasmTransport } from "./wasmTransport";
 import type { MovementFacts, SessionUpdate } from "./wire";
@@ -141,10 +141,15 @@ it.skipIf(!built)(
     expect(answers()).toHaveLength(4);
     expect(shipsIn(again.update, "23")).toEqual([]);
     expect(shipsIn(again.update, "01")).toEqual(home);
+    // The update tells what was taken back: the draft of the movement is staged from it.
+    expect(again.undone).toEqual(good);
+    expect(draftOf(facts, again.undone!)).toEqual(setShip(facts, draft, "01|2", true));
 
     // One more undo is one answer: the activation is open again.
     transport.undo();
-    expect(subtype(await next())).toBe("activate_system");
+    const activation = await next();
+    expect(subtype(activation)).toBe("activate_system");
+    expect(activation.undone).toBeUndefined();
     expect(answers()).toHaveLength(3);
     transport.close();
   },
@@ -196,6 +201,8 @@ it.skipIf(!built)(
     const back = await wait(2);
     expect(subtype(back)).toBe("movement_step");
     expect((back.update.tactical as MovementFacts).moved).toBe(0);
+    // Also in a new visit: the game that was played again says what its answers chose.
+    expect(back.undone).toEqual(steps);
     expect(answers).toHaveLength(4);
     transport.close();
   },
