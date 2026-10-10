@@ -1,10 +1,22 @@
 // The action panel: every decision as one list. A dedicated screen later takes one kind of
 // decision out of this list; the list stays for every kind that has none.
-import type { BoardTaskView, FlowActionView, MenuRowView } from "../../model";
+import type { ApplyView, BoardTaskView, FlowActionView, MenuRowView } from "../../model";
 import type { MovementDraft } from "../movementDraft";
 import type { MovementPlan } from "../movementPlan";
 import type { Choice, SessionUpdate } from "../wire";
-import { sentence } from "./names";
+import { factionName, sentence } from "./names";
+
+/** The private draft that is in view: what its toolbar and its screens say. */
+export interface DraftInfo {
+  canUndo: boolean;
+  canRedo: boolean;
+  canApply: boolean;
+  applyHint: string;
+  /** What "Apply to Live" will send. */
+  apply: ApplyView | null;
+  /** Why the game did not play the whole draft. */
+  problem: string | null;
+}
 
 /** What the player does in this page, between two updates. Nothing of it is sent. */
 export interface LocalState {
@@ -30,6 +42,12 @@ export interface LocalState {
   remaining: MovementPlan | null;
   /** What the last movement that was sent came to, when it did not reach its end. */
   planNote: { text: string; error: boolean } | null;
+  /** The seat that the game waits for before it lets it decide: "Step" goes on. */
+  stepping: string | null;
+  /** Why the viewer cannot draft now. Null when the Draft tab opens. */
+  draftLocked: string | null;
+  /** The private draft, when it is in view: the update is then what the draft came to. */
+  draft: DraftInfo | null;
 }
 
 /** The choice that the viewer can answer now. */
@@ -82,18 +100,29 @@ export function selectAction(update: SessionUpdate, local: LocalState): FlowActi
     intent: { type: "chooseOption", option: option.id },
   }));
   const status = update.turn_status;
-  const idle = local.error
-    ? local.error
-    : local.replaying
-      ? `Playing the saved game again: answer ${local.replaying.done} of ${local.replaying.total}.`
-      : status.kind === "game_over"
-        ? "The game is over."
-        : "The other seats are playing.";
+  const faction = (seat: string) =>
+    factionName(update.view.players.find((player) => player.id === seat)?.faction ?? seat);
+  const stepping = !choice && !local.error && !local.replaying ? local.stepping : null;
+  const idle = local.draft
+    ? (local.draft.problem ?? "The draft has nothing to decide here.")
+    : local.error
+      ? local.error
+      : local.replaying
+        ? `Playing the saved game again: answer ${local.replaying.done} of ${local.replaying.total}.`
+        : status.kind === "game_over"
+          ? "The game is over."
+          : stepping
+            ? `${faction(stepping)} decides next.`
+            : "The other seats are playing.";
   return {
     kind: "flow",
-    title: choice ? "Decision" : "Waiting",
+    title: local.draft ? "Tactical action" : choice ? "Decision" : "Waiting",
     subtitle: "",
-    badge: staged ? { tone: "draft", label: "Not sent" } : null,
+    badge: local.draft
+      ? { tone: "draft", label: "Private draft" }
+      : staged
+        ? { tone: "draft", label: "Not sent" }
+        : null,
     past: null,
     tabs: [],
     selected: 0,
@@ -101,7 +130,7 @@ export function selectAction(update: SessionUpdate, local: LocalState): FlowActi
     contentKey: update.pending_choice?.nonce ?? "idle",
     interrupt: null,
     closing: [],
-    heading: choice ? sentence(choice.prompt) : "Waiting",
+    heading: local.draft ? "Draft" : choice ? sentence(choice.prompt) : "Waiting",
     pill: choice ? { tone: "live", label: "Your decision" } : null,
     trail: [],
     help: [],
@@ -121,13 +150,25 @@ export function selectAction(update: SessionUpdate, local: LocalState): FlowActi
           ]
         : [{ kind: "menu", rows }],
     footer: {
-      note: !choice
-        ? ""
-        : staged
-          ? `Selected: ${sentence(staged.label || staged.id)}`
-          : `Choose one of ${choice.options.length}.`,
-      error: false,
+      note: local.planNote
+        ? local.planNote.text
+        : !choice
+          ? ""
+          : staged
+            ? `Selected: ${sentence(staged.label || staged.id)}`
+            : `Choose one of ${choice.options.length}.`,
+      error: !!local.planNote?.error,
       actions: [
+        ...(stepping
+          ? [
+              {
+                label: "Step",
+                tone: "primary" as const,
+                key: "Enter",
+                intent: { type: "simulate" as const },
+              },
+            ]
+          : []),
         ...(local.canUndo && !local.replaying
           ? [
               {

@@ -313,3 +313,99 @@ test("a saved game of another engine build is not replayed without a word", asyn
     'The saved game does not fit this engine: answer 1 of 1 was "no-such"',
   );
 });
+
+test("a draft of a tactical action is private, is kept, and is applied as one request", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/?local=3&players=8&humans=1");
+  const workspace = (name: string) =>
+    page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name });
+  const row = (name: string) => panel(page).getByRole("button", { name });
+  const system = (id: string) => page.locator("g.system").filter({ hasText: `#${id}` });
+  const apply = page.getByRole("button", { name: "Apply to Live" });
+  // The strategy phase has no draft.
+  await expect(workspace("Draft")).toBeDisabled();
+  await row("8. Imperial").click();
+  await send(page).click();
+  await row("Decline").click();
+  await send(page).click();
+  await expect(row("Take a tactical action")).toBeVisible();
+
+  // The draft opens at the choice of a system. The game is not asked anything.
+  await workspace("Draft").click();
+  await expect(heading(page)).toHaveText("Activation");
+  await expect(page.getByText("Private draft").first()).toBeVisible();
+  await expect(apply).toBeDisabled();
+  await expect(page.locator("g.system.target:not(.plain)")).toHaveCount(13);
+  await system("23").click();
+  await page.keyboard.press("Enter");
+
+  // The movement of a draft has no main button: every change is recorded.
+  await expect(heading(page)).toHaveText("Movement");
+  await expect(send(page)).toHaveCount(0);
+  await expect(panel(page).getByText("Private to you until you apply.")).toBeVisible();
+  await system("01").click();
+  const sheet = page.getByRole("group", { name: /^Move from Jord/ });
+  await sheet.getByRole("button", { name: "Carrier 1 of 2" }).click();
+  await sheet.getByRole("button", { name: "Destroyer 1 of 1" }).click();
+  await expect(sheet.getByText(/· 2 ships$/)).toBeVisible();
+  await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
+  await page.screenshot({ path: "shots/local/draft-movement.png", animations: "disabled" });
+  // Undo and redo are of the draft.
+  await undo(page).click();
+  await expect(sheet.getByText(/· 1 ship$/)).toBeVisible();
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect(sheet.getByText(/· 2 ships$/)).toBeVisible();
+  await expect.poll(() => savedLine(page)).toContain("2 answers saved");
+
+  // Live is as it was, and the draft is still there after a reload.
+  await page.reload();
+  await expect(row("Take a tactical action")).toBeVisible();
+  await expect(system("23")).not.toHaveAttribute("aria-label", /Sol ship/);
+  await workspace("Draft").click();
+  await expect(heading(page)).toHaveText("Movement");
+  await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
+
+  // "Apply to Live" says what it sends, and sends it.
+  await apply.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(/^Activate .+ · #23$/)).toBeVisible();
+  await expect(dialog.getByText(/^2 ships from .+ · #01$/)).toBeVisible();
+  await page.screenshot({ path: "shots/local/draft-apply.png", animations: "disabled" });
+  await dialog.getByRole("button", { name: "Apply to Live" }).click();
+  await expect(workspace("Live")).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => savedLine(page)).toContain("8 answers saved");
+  await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
+  await expect(heading(page)).not.toHaveText("Movement");
+  expect(errors).toEqual([]);
+});
+
+test("the other seats wait for a step when Settings says so", async ({ page }) => {
+  await page.goto("/?local=3&players=8&humans=1");
+  await expect(send(page)).toBeDisabled();
+  const seats = settings(page).getByRole("group", { name: "Other seats" });
+  await openSettings(page);
+  await expect(seats.getByRole("button", { name: "Run" })).toHaveAttribute("aria-pressed", "true");
+  await seats.getByRole("button", { name: "Step" }).click();
+  await page.keyboard.press("Escape");
+  await panel(page).getByRole("button", { name: "8. Imperial" }).click();
+  await send(page).click();
+  // The next seat has not chosen: the game waits, and the main button lets it decide.
+  await expect(send(page)).toHaveText(/^Step/);
+  await expect(panel(page).getByText(/decides next\.$/)).toBeVisible();
+  const waiting = await page.locator("header strong").textContent();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("header strong")).not.toHaveText(waiting ?? "");
+  await expect(send(page)).toHaveText(/^Step/);
+  // The setting is of the page: a reload keeps it. With Run the seats play on to the next choice.
+  await page.reload();
+  await expect(send(page)).toHaveText(/^Step/);
+  await openSettings(page);
+  await expect(seats.getByRole("button", { name: "Step" })).toHaveAttribute("aria-pressed", "true");
+  await seats.getByRole("button", { name: "Run" }).click();
+  await page.keyboard.press("Escape");
+  await expect(send(page)).toHaveText(/^Send/);
+});

@@ -1,5 +1,5 @@
 import type { MovementPlan, MovementStep } from "./movementPlan";
-import type { SessionUpdate } from "./wire";
+import type { DraftOutcome, DraftStep, SessionUpdate } from "./wire";
 
 /** A plan that did not reach its end. Compare `BatchInterruption` and `BatchFailure` of the server. */
 export interface PlanStopped {
@@ -24,6 +24,8 @@ export type TransportEvent =
       plan?: PlanStopped;
       /** The steps of the movement that the undo before this update took back, in order. */
       undone?: MovementStep[];
+      /** The game waits before a decision of this seat, which is not played here: `step` goes on. */
+      stepping?: { seat: string };
     }
   /** The game is played again up to where it was. The last update is out of date until the next. */
   | { kind: "replaying"; done: number; total: number }
@@ -45,6 +47,24 @@ export interface Transport {
    * is not of the movement stops the plan there. Either is told with the next update.
    */
   submitPlan(nonce: string, plan: MovementPlan): void;
+  /**
+   * Plays a draft script as the next turn of this side, on a copy of the game, and tells where
+   * it ended. The game is not changed. Null while the game does not wait for this side.
+   */
+  runDraft(script: DraftStep[]): DraftOutcome | null;
+  /**
+   * Sends a draft to the game: the pending choice and the choices after it are answered with
+   * the options of these ids, then with the steps of the movement, as one request with the
+   * rules of `submitPlan`.
+   */
+  applyDraft(nonce: string, draft: { choices: string[]; plan: MovementPlan | null }): void;
+  /**
+   * Whether the game waits before each decision of a seat that is not played here. The seats
+   * decide the same either way.
+   */
+  setStepping(on: boolean): void;
+  /** Lets the seat decide that the game waits for (`stepping` of the last update). */
+  step(): void;
   /**
    * Takes back the last answer of this side; a movement is taken back whole, and the next update
    * tells its steps. Does nothing when there is none.

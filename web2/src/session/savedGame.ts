@@ -27,6 +27,12 @@ export const saveKey = (game: LocalGame): string =>
 /** Where the staged movement of the open movement step is kept: it is not an answer yet. */
 export const draftKey = (game: LocalGame): string => `${saveKey(game)}.movement`;
 
+/** Where the private draft of a tactical action is kept, with its undo history. */
+export const planKey = (game: LocalGame): string => `${saveKey(game)}.draft`;
+
+/** Whether the other seats wait for a step. A setting of the page, not of one game. */
+export const STEPPING_KEY = "ti4.local.stepping";
+
 const isCount = (value: unknown): value is number =>
   Number.isInteger(value) && (value as number) >= 0;
 
@@ -84,4 +90,5 @@ export function storeSavedGame(storage: SaveStorage, save: SavedGame): void {
 export function clearSavedGame(storage: SaveStorage, game: LocalGame): void {
   storage.removeItem(saveKey(game));
   storage.removeItem(draftKey(game));
+  storage.removeItem(planKey(game));
 }

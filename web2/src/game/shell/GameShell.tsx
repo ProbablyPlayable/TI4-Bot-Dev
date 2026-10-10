@@ -51,14 +51,17 @@ export function GameShell({
   session,
   other,
   settings,
+  settingsOpen = false,
 }: {
   session: GameSession;
   other?: OtherGame;
   /** The content of the Settings sheet. `close` shuts the sheet, for an action that ends it. */
   settings?: (close: () => void) => ReactNode;
+  /** The Settings sheet was open before the shell was there: it stays open. */
+  settingsOpen?: boolean;
 }) {
   const { view } = session;
-  const [drawer, setDrawer] = useState<string | null>(null);
+  const [drawer, setDrawer] = useState<string | null>(settingsOpen ? "settings" : null);
   const [tableOpen, setTableOpen] = useState(true);
   const [applyOpen, setApplyOpen] = useState(false);
   const toggleDrawer = (id: string) => setDrawer((now) => (now === id ? null : id));

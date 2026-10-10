@@ -226,6 +226,34 @@ export interface MovementFacts {
 /** `ti4_view::tactical::TacticalFacts` */
 export type TacticalFacts = ActivationFacts | MovementFacts;
 
+/** `ti4_view::planning::draft::DraftStep`: one entry of a draft script. */
+export type DraftStep =
+  | import("./movementPlan").MovementStep
+  | { kind: "choose"; option_id: string };
+
+/** `ti4_view::planning::draft::DraftStop`: why a run of a draft ended. */
+export type DraftStop =
+  /** The script is used up: the question of the update is open. */
+  | { kind: "open" }
+  /** The script ends the movement, and the game offers that. */
+  | { kind: "complete" }
+  /** The game does not offer what step `step` of the script asks for. */
+  | { kind: "refused"; step: number; reason: string }
+  /** Something a draft cannot show: `ti4_view::planning::audit::StopReason`. */
+  | { kind: "stopped"; reason: string }
+  | { kind: "failed"; reason: string };
+
+/** `ti4_view::planning::draft::DraftOutcome` */
+export interface DraftOutcome {
+  /** Where the run ended. It has the open question when the stop is "open" or "complete". */
+  update: SessionUpdate;
+  /** The question of the first ship to move, before any ship moved. */
+  movement?: SessionUpdate;
+  /** How many steps of the script the game took. */
+  consumed: number;
+  stop: DraftStop;
+}
+
 /** `ti4_view::projection::SessionUpdate`: the fields of `StateUpdateMsg` that web2 reads. */
 export interface SessionUpdate {
   viewer: ViewerRole;

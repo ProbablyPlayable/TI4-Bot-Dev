@@ -1,13 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GameSession, Intent } from "../model";
-import { fill, poolOfSource, resetOrigin, setCount } from "./movementDraft";
+import {
+  type Draft,
+  activate,
+  canRedo,
+  canUndo,
+  entryOf,
+  fits,
+  newDraft,
+  problemOf,
+  readDraft as readPlan,
+  redo,
+  scriptOf,
+  setMovement,
+  startOver,
+  storeDraft as storePlan,
+  undo,
+} from "./draft";
+import { type MovementDraft, fill, poolOfSource, resetOrigin, setCount } from "./movementDraft";
 import { type MovementStep, draftOf, stepsOf } from "./movementPlan";
 import type { SaveStorage } from "./savedGame";
-import type { LocalState } from "./select/action";
+import type { DraftInfo, LocalState } from "./select/action";
+import { systemLabel } from "./select/movement";
 import { selectShell } from "./select/shell";
 import { tacticalFacts } from "./select/tactical";
 import type { Transport } from "./transport";
-import type { SessionUpdate } from "./wire";
+import type { DraftOutcome, MovementFacts, SessionUpdate } from "./wire";
 
 const NOTHING: LocalState = {
   inspected: null,
@@ -21,6 +39,9 @@ const NOTHING: LocalState = {
   step: null,
   remaining: null,
   planNote: null,
+  stepping: null,
+  draftLocked: null,
+  draft: null,
 };
 
 /** The label of a system as the activation step lists it, for the search field. */
@@ -31,6 +52,131 @@ const sameSystem = (query: string, id: string) =>
 export interface DraftStore {
   storage: SaveStorage;
   key: string;
+  /** Where the private draft of a tactical action is kept. Without it a reload loses the draft. */
+  planKey?: string;
+}
+
+/** The private draft of the page, and whether it is in view. */
+interface Plan {
+  draft: Draft | null;
+  open: boolean;
+}
+
+const readPlanOf = (drafts: DraftStore | undefined): Plan => ({
+  draft: drafts?.planKey ? readPlan(drafts.storage, drafts.planKey) : null,
+  open: false,
+});
+
+/** Why the viewer cannot draft a tactical action now. Null when the Draft tab opens. */
+function draftLock(update: SessionUpdate, local: LocalState): string | null {
+  const seat = update.viewer.role === "player" ? update.viewer.seat : null;
+  if (local.error || local.replaying || update.view.finished) {
+    return "The game does not wait for you";
+  }
+  if (seat === null) {
+    return "A draft is private to a player";
+  }
+  if (update.view.phase !== "action") {
+    return "A draft is of the action phase";
+  }
+  if (update.view.players.find((player) => player.id === seat)?.passed) {
+    return "You have passed";
+  }
+  return null;
+}
+
+/** The turn menu of the viewer, with the tactical action in it: where a draft is sent. */
+const menuNonce = (update: SessionUpdate, local: LocalState): string | null => {
+  const pending = update.pending_choice;
+  return pending &&
+    pending.nonce !== local.sent &&
+    pending.choice.context?.subtype === "action_menu" &&
+    pending.choice.options.some((option) => option.id === "tactical")
+    ? pending.nonce
+    : null;
+};
+
+/** What "Apply to Live" sends, in words. */
+function applyItems(update: SessionUpdate, system: string, steps: MovementStep[] | null) {
+  const tiles = new Map((update.view.board.map_tiles ?? []).map((tile) => [tile.system_id, tile]));
+  const items = [`Activate ${systemLabel(tiles, system)}`];
+  if (steps === null) {
+    return [...items, "The movement is decided in Live"];
+  }
+  const origins = new Map<string, { ships: number; units: number }>();
+  let last: { ships: number; units: number } | null = null;
+  for (const step of steps) {
+    if (step.kind === "move") {
+      last = origins.get(step.origin) ?? { ships: 0, units: 0 };
+      last.ships += 1;
+      origins.set(step.origin, last);
+    } else if (step.kind === "load" && last) {
+      last.units += 1;
+    }
+  }
+  for (const [origin, { ships, units }] of origins) {
+    const cargo = units ? ` with ${units} ${units === 1 ? "unit" : "units"}` : "";
+    items.push(
+      `${ships} ${ships === 1 ? "ship" : "ships"} from ${systemLabel(tiles, origin)}${cargo}`,
+    );
+  }
+  return origins.size ? items : [...items, "No ship moves"];
+}
+
+/** The draft in view: the update that its screens are made from, and what its toolbar says. */
+function draftView(
+  live: SessionUpdate,
+  local: LocalState,
+  draft: Draft,
+  outcome: DraftOutcome,
+): { update: SessionUpdate; local: LocalState; facts: MovementFacts | null } {
+  const entry = entryOf(draft);
+  const problem = problemOf(entry, outcome);
+  const staged = entry.system !== null ? outcome.movement : undefined;
+  const update = staged ?? outcome.update;
+  const facts = staged?.tactical?.kind === "movement" ? staged.tactical : null;
+  // A roll ends the check, not the draft: the game goes on from there in Live.
+  const sound =
+    fits(entry, outcome) ||
+    (outcome.stop.kind === "stopped" && outcome.stop.reason === "Uncertainty");
+  const atMenu = menuNonce(live, local) !== null;
+  const canApply = entry.system !== null && sound && atMenu;
+  const info: DraftInfo = {
+    canUndo: canUndo(draft),
+    canRedo: canRedo(draft),
+    canApply,
+    applyHint:
+      entry.system === null
+        ? "Choose a system first"
+        : !sound
+          ? (problem ?? "The draft does not fit the game")
+          : !atMenu
+            ? "Apply when you choose your action"
+            : "Apply the recorded choices to the live game",
+    apply:
+      canApply && entry.system !== null
+        ? {
+            items: applyItems(update, entry.system, entry.steps),
+            cost: "Costs 1 tactic token.",
+            note: "Dice and later decisions continue in Live.",
+          }
+        : null,
+    problem,
+  };
+  return {
+    update,
+    facts,
+    local: {
+      ...local,
+      sent: null,
+      canUndo: false,
+      movement: facts ? draftOf(facts, entry.steps ?? []) : {},
+      remaining: null,
+      planNote: facts && problem ? { text: problem, error: outcome.stop.kind === "refused" } : null,
+      stepping: null,
+      draft: info,
+    },
+  };
 }
 
 /** The staged movement of one movement step, as the steps that "Move fleet" would send. */
@@ -66,10 +212,12 @@ export interface LiveSession {
 export function useLiveSession(transport: Transport | null, drafts?: DraftStore): LiveSession {
   const [update, setUpdate] = useState<SessionUpdate | null>(null);
   const [local, setLocal] = useState<LocalState>(NOTHING);
+  const [plan, setPlan] = useState<Plan>(() => readPlanOf(drafts));
 
   useEffect(() => {
     setUpdate(null);
     setLocal(NOTHING);
+    setPlan(readPlanOf(drafts));
     return transport?.subscribe((event) => {
       if (event.kind === "error") {
         setLocal((now) => ({ ...now, staged: null, replaying: null, error: event.message }));
@@ -142,6 +290,7 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
           step: null,
           remaining,
           planNote,
+          stepping: event.stepping?.seat ?? null,
         };
       });
     });
@@ -166,25 +315,83 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
     }
   }, [update, local.movement, drafts]);
 
+  // The private draft is kept for a reload, with its undo history.
+  useEffect(() => {
+    if (update && drafts?.planKey) {
+      storePlan(drafts.storage, drafts.planKey, plan.draft);
+    }
+  }, [update, plan.draft, drafts]);
+
+  // The draft is played again on a copy of the game, for each change of it and of the game.
+  const entry = plan.draft ? entryOf(plan.draft) : null;
+  const locked = update ? draftLock(update, local) : "The game has not started";
+  const outcome = useMemo((): DraftOutcome | null => {
+    if (!transport || !update || !entry || !plan.open || locked) {
+      return null;
+    }
+    try {
+      return transport.runDraft(scriptOf(entry));
+    } catch (error) {
+      return {
+        update,
+        consumed: 0,
+        stop: { kind: "failed", reason: error instanceof Error ? error.message : String(error) },
+      };
+    }
+  }, [transport, update, entry, plan.open, locked]);
+
   const session = useMemo((): GameSession | null => {
     if (!update || !transport) {
       return null;
     }
-    const pending = local.sent === update.pending_choice?.nonce ? null : update.pending_choice;
+    const live: LocalState = { ...local, draftLocked: locked, draft: null };
+    const drafted = plan.draft && outcome ? draftView(update, live, plan.draft, outcome) : null;
+    const shown = drafted?.update ?? update;
+    const state = drafted?.local ?? live;
+    const pending = state.sent === shown.pending_choice?.nonce ? null : shown.pending_choice;
+    /** Opens or closes the draft. What was staged for the other workspace is dropped. */
+    const workspace = (open: boolean, draft: Draft | null) => {
+      setPlan({ open, draft });
+      setLocal((now) => ({ ...now, staged: null, inspected: null, handled: [], step: null }));
+    };
+    /** A change of the draft: one step of its undo. */
+    const redraft = (change: (now: Draft) => Draft) =>
+      setPlan((now) => (now.draft ? { ...now, draft: change(now.draft) } : now));
     const stage = (option: string) => {
       if (pending?.choice.options.some((item) => item.id === option)) {
         setLocal((now) => ({ ...now, staged: now.staged === option ? null : option }));
       }
     };
-    const facts = tacticalFacts(update, local);
+    const facts = tacticalFacts(shown, state);
     const moving = facts?.kind === "movement" ? facts : null;
-    /** A change of the staged movement. It clears the note of the last plan. */
-    const draft = (change: (now: LocalState["movement"]) => LocalState["movement"]) =>
-      setLocal((now) => ({ ...now, movement: change(now.movement), planNote: null }));
+    /**
+     * A change of the staged movement. Live, it clears the note of the last plan. A draft
+     * records it at once, as the steps that the game is asked for.
+     */
+    const draft = (change: (now: MovementDraft) => MovementDraft) => {
+      if (!drafted) {
+        return setLocal((now) => ({ ...now, movement: change(now.movement), planNote: null }));
+      }
+      if (moving) {
+        const steps = stepsOf(moving, change(state.movement));
+        if (JSON.stringify(steps) !== JSON.stringify(stepsOf(moving, state.movement))) {
+          redraft((now) => setMovement(now, steps));
+        }
+      }
+    };
     const unmark = (keep: (system: string) => boolean) =>
       setLocal((now) => ({ ...now, handled: now.handled.filter(keep) }));
     const send = () => {
       if (!pending) {
+        return;
+      }
+      if (drafted) {
+        // The activation of a draft is recorded. Its movement has nothing to send.
+        const system = facts?.kind === "activation" ? state.staged : null;
+        if (system) {
+          redraft((now) => activate(now, system));
+          setLocal((now) => ({ ...now, staged: null, inspected: null }));
+        }
         return;
       }
       if (moving) {
@@ -199,8 +406,39 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
         setLocal((now) => ({ ...now, staged: null, sent: pending.nonce }));
       }
     };
+    const apply = () => {
+      const nonce = menuNonce(update, live);
+      const system = plan.draft ? entryOf(plan.draft).system : null;
+      if (!drafted?.local.draft?.canApply || !plan.draft || nonce === null || system === null) {
+        return;
+      }
+      const { steps } = entryOf(plan.draft);
+      transport.applyDraft(nonce, {
+        choices: ["tactical", system],
+        plan: steps ? { destination: system, steps } : null,
+      });
+      workspace(false, null);
+      setLocal((now) => ({ ...now, sent: nonce, planNote: null }));
+    };
     const dispatch = (intent: Intent) => {
       switch (intent.type) {
+        case "workspace":
+          if (intent.mode === "live") {
+            return workspace(false, plan.draft);
+          }
+          return intent.mode === "draft" && !locked
+            ? workspace(true, plan.draft ?? newDraft())
+            : undefined;
+        case "redo":
+          return redraft(redo);
+        case "startOver":
+          return redraft(startOver);
+        case "discardDraft":
+          return workspace(false, null);
+        case "confirmApply":
+          return apply();
+        case "simulate":
+          return transport.step();
         case "inspectSystem":
           return setLocal((now) => ({ ...now, inspected: intent.system }));
         case "closeInspector":
@@ -225,9 +463,9 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
         case "clearChoice":
           return setLocal((now) => ({ ...now, staged: null }));
         case "undo":
-          return transport.undo();
+          return drafted ? redraft(undo) : transport.undo();
         case "flow":
-          return intent.action === "resolve" && !facts ? send() : undefined;
+          return intent.action === "resolve" && !facts && !drafted ? send() : undefined;
         // The steps of a tactical action.
         case "commitEdit":
           return facts ? send() : undefined;
@@ -267,8 +505,8 @@ export function useLiveSession(transport: Transport | null, drafts?: DraftStore)
           return;
       }
     };
-    return { view: selectShell(update, local), dispatch };
-  }, [update, local, transport]);
+    return { view: selectShell(shown, state), dispatch };
+  }, [update, local, transport, plan, outcome, locked]);
 
   return { session, error: local.error, replaying: local.replaying };
 }

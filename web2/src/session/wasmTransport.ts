@@ -1,8 +1,8 @@
 // The engine in this page: `crates/ti4-wasm`, built by `scripts/build-wasm.sh`.
 import type { LocalGame } from "./savedGame";
-import { type MovementStep, planAnswer, stepOf } from "./movementPlan";
+import { type MovementStep, type PlanAnswer, planAnswer, stepOf } from "./movementPlan";
 import type { PlanStopped, Transport, TransportEvent } from "./transport";
-import type { ChoiceOption, SessionUpdate } from "./wire";
+import type { Choice, ChoiceOption, SessionUpdate } from "./wire";
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -11,6 +11,10 @@ interface Exports {
   ti4_response_ptr(): number;
   ti4_update_ptr(): number;
   ti4_update_len(): number;
+  ti4_set_stepping(on: number): void;
+  ti4_request_ptr(): number;
+  ti4_draft(length: number): number;
+  ti4_draft_ptr(): number;
 }
 
 // JSPI: the engine asks for a decision with a blocking call. `Suspending` parks its stack until
@@ -26,6 +30,8 @@ interface Jspi {
 const LEAVE = -1;
 /** Takes back the answer before the pending choice, when `ti4_can_undo` says the engine can. */
 const UNDO = -2;
+/** Lets a seat decide that the engine waits for while it is stepped. */
+const GO = -3;
 
 /** A replay gives the page a turn this often, so it can show how far the replay is. */
 const REPLAY_SLICE_MS = 50;
@@ -64,6 +70,8 @@ export interface LocalPlay {
   answers?: readonly string[];
   /** Told the whole list after each answer and each undo, to keep it. */
   onAnswers?(answers: readonly string[]): void;
+  /** The game waits before each decision of a seat that is not played here. */
+  stepping?: boolean;
 }
 
 /** A turn of the event loop. A timer would be slowed down in a tab that is not shown. */
@@ -99,10 +107,19 @@ export function createWasmTransport(
     answer: (index: number) => void;
     /** The engine has a checkpoint for the answer before this choice. */
     canGoBack: boolean;
+    /** The game waits before a decision of another seat: there is no choice to answer. */
+    paused: boolean;
+    /** Runs a draft script on the instance that waits here. */
+    draft: Transport["runDraft"];
   } | null = null;
+  let stepping = play.stepping ?? false;
+  /** Tells the engine of the run that is the game whether it waits for each seat. */
+  let tellStepping: (on: boolean) => void = () => {};
   /** The plan that is being sent: the choices of the game are answered from its steps. */
   let plan: {
     destination: string;
+    /** The ids of the options that answer the choices before the movement. */
+    choices: string[];
     steps: MovementStep[];
     next: number;
     actor: string;
@@ -130,7 +147,7 @@ export function createWasmTransport(
   };
 
   /** Shows the player a choice, with what the plan or the undo before it came to. */
-  const show = (update: SessionUpdate) => {
+  const show = (update: SessionUpdate, seat?: string) => {
     const steps = undone.flatMap((answer) => stepOf(answer) ?? []);
     tell({
       kind: "update",
@@ -138,6 +155,7 @@ export function createWasmTransport(
       canUndo: answers.length > 0,
       plan: planStopped ?? undefined,
       undone: steps.length ? steps : undefined,
+      stepping: seat === undefined ? undefined : { seat },
     });
     planStopped = null;
     undone = [];
@@ -157,10 +175,41 @@ export function createWasmTransport(
       const length = exports.ti4_update_len();
       return length ? JSON.parse(text(exports.ti4_update_ptr(), length)) : null;
     };
+    const draft: Transport["runDraft"] = (steps) => {
+      const request = new TextEncoder().encode(JSON.stringify({ script: steps }));
+      new Uint8Array(exports.memory.buffer).set(request, exports.ti4_request_ptr());
+      const status = exports.ti4_draft(request.length);
+      if (status < 0) {
+        throw new Error(text(exports.ti4_response_ptr(), -status));
+      }
+      return JSON.parse(text(exports.ti4_draft_ptr(), status));
+    };
     const ask = new jspi.Suspending(async () => {
       const update = readUpdate();
-      if (id !== current || !update?.pending_choice) {
+      if (id !== current || !update) {
         return LEAVE;
+      }
+      if (!update.pending_choice) {
+        // The engine waits before a decision of a seat that is not played here.
+        const turn = update.turn_status;
+        const seat = turn.kind === "waiting_for_decision" ? turn.seat : "";
+        if (replayed < script.length) {
+          return GO;
+        }
+        const canGoBack = exports.ti4_can_undo() === 1;
+        // A plan ends where another seat decides.
+        const index = decidePlan({ player: seat, prompt: "", options: [] }, canGoBack);
+        if (index !== null) {
+          return index;
+        }
+        // An undo goes on to the choice that it opens again.
+        if (undoing || !stepping) {
+          return GO;
+        }
+        return new Promise<number>((answer) => {
+          pending = { nonce: "", update, options: [], answer, canGoBack, paused: true, draft };
+          show(update, seat);
+        });
       }
       const { nonce, choice } = update.pending_choice;
       const options = choice.options.map((option) => option.id);
@@ -189,12 +238,14 @@ export function createWasmTransport(
         return index;
       }
       return new Promise<number>((answer) => {
-        pending = { nonce, update, options, answer, canGoBack };
+        pending = { nonce, update, options, answer, canGoBack, paused: false, draft };
         show(update);
       });
     });
     const instance = await WebAssembly.instantiate(engine.module, { host: { ask } });
     exports = instance.exports as unknown as Exports;
+    exports.ti4_set_stepping(stepping ? 1 : 0);
+    tellStepping = (on) => id === current && exports.ti4_set_stepping(on ? 1 : 0);
     // A status of 0 or more is the length of a result; below 0, the negated length of an error.
     const status = await jspi.promising(exports.ti4_play)(game.seed, game.players, game.humans);
     if (id !== current) {
@@ -268,17 +319,33 @@ export function createWasmTransport(
         update.tactical.moved > 0)
     );
   };
+  /** What a plan answers to a choice: first the options of its `choices`, then its steps. */
+  const answerOf = (sent: NonNullable<typeof plan>, choice: Choice): PlanAnswer => {
+    const wanted = sent.choices[sent.next];
+    if (wanted === undefined) {
+      const result = planAnswer(sent.steps, sent.next - sent.choices.length, choice, sent.actor);
+      return result.kind === "answer"
+        ? { ...result, next: result.next + sent.choices.length }
+        : result;
+    }
+    if (choice.player !== sent.actor) {
+      return { kind: "interrupted", reason: "The game asks for another decision first." };
+    }
+    const index = choice.options.findIndex((option) => option.id === wanted);
+    return index < 0
+      ? { kind: "mismatch", reason: `The game does not offer "${wanted}" here.` }
+      : { kind: "answer", index, next: sent.next + 1 };
+  };
   /**
-   * The answer to a choice that needs none from the player: the next step of the plan, or one
-   * more step back. Null when the player is asked.
+   * The answer of the plan that is being sent to a choice of the game. Null when there is no
+   * plan, or when it ends here: what it came to is then told with the next update.
    */
-  const decide = (update: SessionUpdate, canGoBack: boolean): number | null => {
-    const choice = update.pending_choice!.choice;
+  const decidePlan = (choice: Choice, canGoBack: boolean): number | null => {
     if (plan) {
       const sent = plan;
-      const result: ReturnType<typeof planAnswer> = sent.refused
+      const result: PlanAnswer = sent.refused
         ? { kind: "mismatch", reason: sent.refused }
-        : planAnswer(sent.steps, sent.next, choice, sent.actor);
+        : answerOf(sent, choice);
       if (result.kind === "answer") {
         sent.next = result.next;
         answers.push(choice.options[result.index].id);
@@ -306,8 +373,8 @@ export function createWasmTransport(
       } else if (result.kind === "interrupted") {
         planStopped = {
           destination: sent.destination,
-          applied: sent.next,
-          remaining: sent.steps.slice(sent.next),
+          applied: Math.max(0, sent.next - sent.choices.length),
+          remaining: sent.steps.slice(Math.max(0, sent.next - sent.choices.length)),
           interrupted: true,
           reason: result.reason,
         };
@@ -316,6 +383,17 @@ export function createWasmTransport(
         groups.push({ start: sent.start, end: answers.length });
       }
       plan = null;
+    }
+    return null;
+  };
+  /**
+   * The answer to a choice that needs none from the player: the next step of the plan, or one
+   * more step back. Null when the player is asked.
+   */
+  const decide = (update: SessionUpdate, canGoBack: boolean): number | null => {
+    const index = decidePlan(update.pending_choice!.choice, canGoBack);
+    if (index !== null) {
+      return index;
     }
     if (undoing) {
       if (answers.length > 0 && insideMovement(update)) {
@@ -357,12 +435,16 @@ export function createWasmTransport(
       answer(index);
     },
     submitPlan(nonce, sent) {
-      if (pending?.nonce !== nonce || pending.update.viewer.role !== "player") {
+      this.applyDraft(nonce, { choices: [], plan: sent });
+    },
+    applyDraft(nonce, draft) {
+      if (pending?.nonce !== nonce || pending.paused || pending.update.viewer.role !== "player") {
         return;
       }
       plan = {
-        destination: sent.destination,
-        steps: sent.steps,
+        destination: draft.plan?.destination ?? "",
+        choices: draft.choices,
+        steps: draft.plan?.steps ?? [],
         next: 0,
         actor: pending.update.viewer.seat,
         start: answers.length,
@@ -377,6 +459,23 @@ export function createWasmTransport(
       }
       pending = null;
       answer(index);
+    },
+    runDraft(script) {
+      return pending ? pending.draft(script) : null;
+    },
+    setStepping(on) {
+      stepping = on;
+      tellStepping(on);
+      if (!on) {
+        this.step();
+      }
+    },
+    step() {
+      if (pending?.paused) {
+        const { answer } = pending;
+        pending = null;
+        answer(GO);
+      }
     },
     undo() {
       if (answers.length === 0) {

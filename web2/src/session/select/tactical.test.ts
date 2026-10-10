@@ -25,6 +25,9 @@ const local = (change: Partial<LocalState> = {}): LocalState => ({
   step: null,
   remaining: null,
   planNote: null,
+  stepping: null,
+  draftLocked: null,
+  draft: null,
   ...change,
 });
 const tactical = (update: SessionUpdate, state: LocalState) => {

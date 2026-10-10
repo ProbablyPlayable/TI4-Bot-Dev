@@ -17,6 +17,9 @@ function status(update: SessionUpdate, local: LocalState): string {
   if (local.replaying) {
     return `Replaying ${local.replaying.done} of ${local.replaying.total}`;
   }
+  if (local.draft) {
+    return "Private draft";
+  }
   if (openChoice(update, local)) {
     return "Your decision";
   }
@@ -41,21 +44,29 @@ export function selectShell(update: SessionUpdate, local: LocalState): ShellView
       : null;
   return {
     seats: selectSeats(update),
-    accent: local.staged || (movement && Object.keys(local.movement).length) ? "draft" : "live",
+    accent:
+      local.draft || local.staged || (movement && Object.keys(local.movement).length)
+        ? "draft"
+        : "live",
     toolbar: {
       round: update.view.round,
       phase: phaseName(update.view.phase),
       status: status(update, local),
-      workspace: "live",
-      draftLocked: "Not in local play yet",
+      workspace: local.draft ? "draft" : "live",
+      draftLocked: local.draftLocked,
       past: null,
-      draft: null,
+      draft: local.draft && {
+        canUndo: local.draft.canUndo,
+        canRedo: local.draft.canRedo,
+        canApply: local.draft.canApply,
+        applyHint: local.draft.applyHint,
+      },
     },
     players: selectPlayers(update),
     board: selectBoard(update, local.inspected, boardTask(update, local), movement),
     action: facts ? selectTactical(update, local, facts) : selectAction(update, local),
     reference: { objectives: [], technology: [], cards: [], offerCards: [], log: [] },
-    apply: null,
+    apply: local.draft?.apply ?? null,
     reveal: null,
     toast: null,
     announcement: "",

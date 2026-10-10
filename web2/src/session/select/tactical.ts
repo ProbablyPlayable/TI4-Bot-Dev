@@ -45,7 +45,7 @@ function activation(
     content: {
       kind: "activation",
       editing: true,
-      draft: false,
+      draft: !!local.draft,
       tacticPool: [facts.tactic_tokens, facts.tactic_tokens - 1],
       systems: facts.systems.map((item) => ({
         id: item.system,
@@ -117,14 +117,16 @@ function movement(
       content: {
         kind: "activation",
         editing: false,
-        draft: false,
+        draft: !!local.draft,
         chosen: null,
         systems: [],
         active: { system: facts.active, name: tiles.get(facts.active)?.label ?? "System" },
         tacticPool: [pool + 1, pool],
       },
       footer: {
-        note: "Viewing activation. The action is at movement.",
+        note: local.draft
+          ? "Viewing activation. Undo takes it back."
+          : "Viewing activation. The action is at movement.",
         error: false,
         actions: [
           {
@@ -139,9 +141,22 @@ function movement(
     };
   }
   const nothing = Object.keys(local.movement).length === 0;
+  const content = selectMovement(update, facts, local.movement, local.handled);
+  if (local.draft) {
+    // A draft records every change of the movement at once: there is nothing to send.
+    return {
+      target,
+      content,
+      footer: {
+        note: local.planNote?.text ?? "Private to you until you apply.",
+        error: !!local.planNote?.error,
+        actions: [],
+      },
+    };
+  }
   return {
     target,
-    content: selectMovement(update, facts, local.movement, local.handled),
+    content,
     footer: {
       note: local.planNote?.text ?? "This commits to the live game.",
       error: !!local.planNote?.error,
@@ -199,7 +214,9 @@ export function selectTactical(
     kind: "tactical",
     title: "Tactical action",
     subtitle: `${view.target ?? "No system chosen"} · ${faction}`,
-    badge: { tone: "live", label: "In progress" },
+    badge: local.draft
+      ? { tone: "draft", label: "Private draft" }
+      : { tone: "live", label: "In progress" },
     past: null,
     tabs,
     selected,
@@ -211,8 +228,11 @@ export function selectTactical(
     task: {
       step: selected,
       title: STEPS[selected],
-      pill:
-        selected !== current
+      pill: local.draft
+        ? selected !== current
+          ? { tone: "done", label: "Drafted" }
+          : { tone: "draft", label: "Preparing" }
+        : selected !== current
           ? { tone: "done", label: "Resolved" }
           : local.remaining === null && local.planNote && !local.planNote.error
             ? { tone: "live", label: "Your decision · movement goes on" }

@@ -4,17 +4,19 @@ import { DemoApp } from "./DemoApp";
 import {
   type LocalGame,
   type SavedGame,
+  STEPPING_KEY,
   clearSavedGame,
   draftKey,
   loadSavedGame,
   parseSavedGame,
+  planKey,
   saveKey,
   storeSavedGame,
 } from "../session/savedGame";
 import type { Transport } from "../session/transport";
 import { useLiveSession } from "../session/useLiveSession";
 import { type Engine, createWasmTransport, loadEngine } from "../session/wasmTransport";
-import { Button, Drawer } from "../ui";
+import { Button, Drawer, Hint, Segmented } from "../ui";
 
 // Not an import: the file is built by scripts/build-wasm.sh and is not in the repository. Without
 // it the rest of web2 still builds, and this page says how to build it.
@@ -41,6 +43,11 @@ export function LocalApp({ game }: { game: LocalGame }) {
   const [importError, setImportError] = useState<string | null>(null);
   const [transport, setTransport] = useState<Transport | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** The other seats wait for "Step" before each decision. A setting of the page. */
+  const [stepping, setStepping] = useState(() => localStorage.getItem(STEPPING_KEY) === "1");
+  // The game that is played is told, and the next one starts with it.
+  const steps = useRef(stepping);
+  steps.current = stepping;
   // Without the shell nothing else closes the Settings sheet: Esc does, as in the shell.
   useEffect(() => {
     if (!settingsOpen) {
@@ -80,6 +87,7 @@ export function LocalApp({ game }: { game: LocalGame }) {
     setAnswers(saved?.answers.length ?? 0);
     const made = createWasmTransport(engine, game, {
       answers: saved?.answers,
+      stepping: steps.current,
       onAnswers(list) {
         storeSavedGame(localStorage, {
           format: 1,
@@ -97,8 +105,23 @@ export function LocalApp({ game }: { game: LocalGame }) {
     };
   }, [start, waits, game]);
 
-  const drafts = useMemo(() => ({ storage: localStorage, key: draftKey(game) }), [game]);
+  const drafts = useMemo(
+    () => ({ storage: localStorage, key: draftKey(game), planKey: planKey(game) }),
+    [game],
+  );
+  const stepSeats = (on: boolean) => {
+    setStepping(on);
+    localStorage.setItem(STEPPING_KEY, on ? "1" : "0");
+    transport?.setStepping(on);
+  };
   const { session, error, replaying } = useLiveSession(transport, drafts);
+  // The shell takes an open Settings sheet over. A page without the shell starts with it closed.
+  const shown = !waits && !!session;
+  useEffect(() => {
+    if (shown) {
+      setSettingsOpen(false);
+    }
+  }, [shown]);
 
   const newGame = () => {
     clearSavedGame(localStorage, game);
@@ -145,6 +168,22 @@ export function LocalApp({ game }: { game: LocalGame }) {
           {importError}
         </p>
       )}
+      <div className="mt-4 flex flex-wrap items-center gap-2.5">
+        <span className="text-sm text-muted">Other seats</span>
+        <Segmented
+          label="Other seats"
+          options={[
+            { id: "run", label: "Run" },
+            { id: "step", label: "Step" },
+          ]}
+          value={stepping ? "step" : "run"}
+          onChange={(mode) => stepSeats(mode === "step")}
+        />
+        <Hint label="About the other seats">
+          The other seats decide at random. With Step the game waits before each of their decisions,
+          and the Step button of the action panel lets the seat decide.
+        </Hint>
+      </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <Button
           tone="quiet"
@@ -199,13 +238,14 @@ export function LocalApp({ game }: { game: LocalGame }) {
         session={session}
         other={{ label: "Demo", href: "/?example=live-picker" }}
         settings={settingsView}
+        settingsOpen={settingsOpen}
       />
     );
   }
 
   // The shell has the toolbar, and the toolbar has the Settings entry. Without the shell the page
   // has a row of its own, so Import and New game stay in reach.
-  const inShell = !waits && !!session;
+  const inShell = shown;
   return (
     <div className="flex h-dvh flex-col">
       {!inShell && (

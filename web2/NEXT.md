@@ -1,5 +1,9 @@
 Also look for UX ideas on how to integrate this: in web/, and in the demo of web2 (`?example=…`, the code in `web2/src/mock/`), which shows screens that are not wired to the engine yet.
 
+- the draft covers the activation and the movement only: space combat, invasion and production are next (the server's planning already audits invasion and production offers, `ti4-view/src/planning/audit.rs`)
+- a question of the seat before its turn menu (a start-of-turn ability) stops the draft at its first step; the server's runner shows such a question
+- the draft has no way to change the system but Undo and Start over: the activation step of a draft should open for an edit, as in the demo
+- the action picker of the demo, so that a tactical action opens as the draft
 - state should be inspectable and wired up next (exhausted planets with dotted ring instead of solid, objectives, technology, cards, ...)
 - payment is also painful and should be done via the map (like the demo of web2, `?example=draft-production`)
 - map space combat view should be similar to web/

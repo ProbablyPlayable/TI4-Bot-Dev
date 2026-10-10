@@ -99,3 +99,51 @@ test("phone: a game of eight is played through the decision list", async ({ page
   await pane("Players").click();
   await page.screenshot({ path: "shots/phone/local/players.png", animations: "disabled" });
 });
+
+test("phone: a draft is staged on the map and applied from the toolbar", async ({ page }) => {
+  await page.goto("/?local=3&players=8&humans=1");
+  const send = page.locator('footer button[aria-keyshortcuts="Enter"]');
+  const pane = (name: string) =>
+    page.getByRole("navigation", { name: "Panes" }).getByRole("button", { name });
+  const row = (name: string) => page.locator("#step-panel").getByRole("button", { name });
+  const system = (id: string) => page.locator("g.system").filter({ hasText: `#${id}` });
+  const width = page.viewportSize()!.width;
+  const fits = async () =>
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+  await expect(send).toBeDisabled();
+  for (const name of ["8. Imperial", "Decline"]) {
+    await pane("Action").click();
+    await row(name).click();
+    await send.click();
+  }
+  await expect(row("Take a tactical action")).toBeVisible();
+
+  await page
+    .getByRole("navigation", { name: "Workspace" })
+    .getByRole("button", { name: "Draft" })
+    .click();
+  // The system is chosen on the map, and the main button records it.
+  await expect(pane("Map")).toHaveAttribute("aria-pressed", "true");
+  await system("23").click();
+  await expect(send).toHaveText(/Activate system/);
+  await expect(send).toBeInViewport({ ratio: 1 });
+  await send.click();
+  // The movement of a draft has no main button; the controls of the draft are in the toolbar.
+  await system("01").click();
+  const sheet = page.getByRole("group", { name: /^Move from / });
+  await sheet.getByRole("button", { name: /^Carrier 1 of / }).click();
+  await sheet.getByRole("button", { name: "Done with this system" }).click();
+  await expect(send).toHaveCount(0);
+  await expect(system("23")).toHaveAttribute("aria-label", /1 Sol ship/);
+  await fits();
+  await page.screenshot({ path: "shots/phone/local/draft.png", animations: "disabled" });
+  const apply = page.getByRole("button", { name: "Apply to Live" });
+  await expect(apply).toBeInViewport({ ratio: 1 });
+  await apply.click();
+  await fits();
+  await page.screenshot({ path: "shots/phone/local/draft-apply.png", animations: "disabled" });
+  await page.getByRole("dialog").getByRole("button", { name: "Apply to Live" }).click();
+  await expect(apply).toHaveCount(0);
+  await expect(system("23")).toHaveAttribute("aria-label", /1 Sol ship/);
+  await fits();
+});

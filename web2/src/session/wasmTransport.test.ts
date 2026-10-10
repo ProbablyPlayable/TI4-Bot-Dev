@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { setLoad, setShip } from "./movementDraft";
+import { entryOf, activate, fits, newDraft, scriptOf, setMovement } from "./draft";
 import { type MovementStep, draftOf, stepsOf } from "./movementPlan";
 import type { TransportEvent } from "./transport";
 import { type Engine, createWasmTransport } from "./wasmTransport";
@@ -14,13 +15,13 @@ const built = existsSync(WASM);
 type Update = Extract<TransportEvent, { kind: "update" }>;
 
 /** A game of seed 3 with seat a on this side, and the updates of it, one after the other. */
-async function play() {
+async function play(stepping = false) {
   const engine: Engine = { module: await WebAssembly.compile(readFileSync(WASM)), hash: "test" };
   let answers: readonly string[] = [];
   const transport = createWasmTransport(
     engine,
     { seed: 3, players: 8, humans: 1 },
-    { onAnswers: (all) => (answers = [...all]) },
+    { onAnswers: (all) => (answers = [...all]), stepping },
   );
   const seen: Update[] = [];
   let wake: (() => void) | null = null;
@@ -205,6 +206,146 @@ it.skipIf(!built)(
     expect(back.undone).toEqual(steps);
     expect(answers).toHaveLength(4);
     transport.close();
+  },
+  60_000,
+);
+
+it.skipIf(!built)(
+  "runs a draft on a copy of the game, and applies it as one request",
+  async () => {
+    const { transport, next, nonce, answers } = await play();
+    for (const answer of ["pok8imperial", "no"]) {
+      transport.submitChoice(nonce(await next()), answer);
+    }
+    const menu = await next();
+    expect(subtype(menu)).toBe("action_menu");
+
+    // The draft starts at the choice of a system: the tactical action is its first step.
+    let draft = newDraft();
+    const start = transport.runDraft(scriptOf(entryOf(draft)))!;
+    expect(start.stop).toEqual({ kind: "open" });
+    expect(start.update.pending_choice?.nonce).toBe("draft");
+    expect(start.update.tactical?.kind).toBe("activation");
+
+    draft = activate(draft, "23");
+    const activated = transport.runDraft(scriptOf(entryOf(draft)))!;
+    expect(fits(entryOf(draft), activated)).toBe(true);
+    const facts = activated.movement?.tactical as MovementFacts;
+    expect(facts).toMatchObject({ kind: "movement", active: "23", moved: 0 });
+    // The token of the draft is spent in the draft only.
+    const tokens = (update: SessionUpdate) =>
+      update.view.players.find((player) => player.id === "a")!.tactic_tokens;
+    expect(tokens(activated.update)).toBe(tokens(menu.update) - 1);
+
+    const steps = stepsOf(facts, setShip(facts, setShip(facts, {}, "01|0", true), "01|2", true));
+    draft = setMovement(draft, steps);
+    const moved = transport.runDraft(scriptOf(entryOf(draft)))!;
+    expect(moved.stop).toEqual({ kind: "complete" });
+    expect(fits(entryOf(draft), moved)).toBe(true);
+    expect(shipsIn(moved.update, "23")).toEqual(["destroyer", "sol_carrier"]);
+    // What the movement is staged against is still the fleet before it.
+    expect(moved.movement?.tactical).toEqual(facts);
+
+    // A step that the game does not offer is named, with how far the script fits.
+    const bad = transport.runDraft([
+      ...scriptOf(entryOf(draft)).slice(0, 2),
+      {
+        kind: "move",
+        origin: "01",
+        unit: "dreadnought",
+        damaged: false,
+        gravity_drive: false,
+        ionian: false,
+      },
+      { kind: "done_moving" },
+    ])!;
+    expect(bad.stop).toMatchObject({ kind: "refused", step: 2 });
+    expect(bad.consumed).toBe(2);
+
+    // Nothing of this is in the game.
+    expect(answers()).toHaveLength(2);
+
+    transport.applyDraft(nonce(menu), {
+      choices: ["tactical", "23"],
+      plan: { destination: "23", steps },
+    });
+    const after = await next();
+    expect(after.plan).toBeUndefined();
+    expect(shipsIn(after.update, "23")).toEqual(["destroyer", "sol_carrier"]);
+    expect(answers().slice(2)).toEqual([
+      "tactical",
+      "23",
+      "move|01|0",
+      "done_loading",
+      "move|01|1",
+      "done_moving",
+    ]);
+    transport.close();
+  },
+  60_000,
+);
+
+it.skipIf(!built)(
+  "takes a draft back whole when the game does not offer one of its choices",
+  async () => {
+    const { transport, next, nonce, answers } = await play();
+    for (const answer of ["pok8imperial", "no"]) {
+      transport.submitChoice(nonce(await next()), answer);
+    }
+    const menu = await next();
+    transport.applyDraft(nonce(menu), { choices: ["tactical", "no such system"], plan: null });
+    const refused = await next();
+    expect(refused.plan).toMatchObject({
+      applied: 0,
+      interrupted: false,
+      reason: 'The game does not offer "no such system" here.',
+    });
+    expect(nonce(refused)).toBe(nonce(menu));
+    expect(answers()).toHaveLength(2);
+    transport.close();
+  },
+  60_000,
+);
+
+it.skipIf(!built)(
+  "waits for a step before each decision of another seat, and plays the same game",
+  async () => {
+    const run = await play();
+    const stepped = await play(true);
+    const answersOf = ["pok8imperial", "no", "tactical", "23"];
+    for (const answer of answersOf) {
+      run.transport.submitChoice(run.nonce(await run.next()), answer);
+    }
+    const reached = await run.next();
+
+    let pauses = 0;
+    let given = 0;
+    let event = await stepped.next();
+    while (given < answersOf.length || event.stepping) {
+      if (event.stepping) {
+        // No choice of this side is open; the update names the seat that decides.
+        pauses += 1;
+        expect(event.update.pending_choice).toBeUndefined();
+        expect(event.update.viewer).toEqual({ role: "player", seat: "a" });
+        expect(event.stepping.seat).not.toBe("a");
+        if (pauses === 3) {
+          // A draft can be run while another seat has the turn.
+          expect(stepped.transport.runDraft([])?.stop.kind).toBeDefined();
+          // From here on the seats play on.
+          stepped.transport.setStepping(false);
+        } else {
+          stepped.transport.step();
+        }
+      } else {
+        stepped.transport.submitChoice(stepped.nonce(event), answersOf[given]);
+        given += 1;
+      }
+      event = await stepped.next();
+    }
+    expect(pauses).toBe(3);
+    expect(event.update).toEqual(reached.update);
+    run.transport.close();
+    stepped.transport.close();
   },
   60_000,
 );
