@@ -6,7 +6,6 @@ import {
   HISTORY,
   KEYS,
   MAP,
-  ORIGIN_IDS,
   PAY,
   RETREATS,
   SEAT,
@@ -298,6 +297,31 @@ export function reduce(world: World, intent: Intent) {
       `Viewing ${STEPS[step]}. ${state.frontier === null ? "Action complete." : `Current step: ${STEPS[state.frontier]}.`}`,
     );
   }
+  /** One ship moves or stays, or one unit goes into the hold of a ship or out of it. */
+  function stageMove(key: string, value: number) {
+    const data = state.edit.value;
+    const [unit, cargo] = key.split(">");
+    if (!E.shipLine(unit)) {
+      return;
+    }
+    if (cargo) {
+      const room = E.holdRoom(data, unit) - E.holdLoad(data, unit) + (data[key] || 0);
+      data[key] = Math.max(0, Math.min(value, room, E.available(state, data, key)));
+      return;
+    }
+    data[unit] = value > 0 && E.available(state, data, unit) > 0 ? 1 : 0;
+    // A ship that stays takes its hold with it. A ship that needs Gravity Drive takes it.
+    E.trimHold(data, unit);
+    if (data[unit]) {
+      E.autoBoost(state, data);
+    }
+  }
+  /** A draft records every change of the movement at once: one step of undo for each. */
+  function recordMove() {
+    if (E.recordMovement(state)) {
+      E.remember(state);
+    }
+  }
   function battle(action: string, data: object = {}) {
     const open = E.activeBattle(state);
     if (!open) {
@@ -360,7 +384,9 @@ export function reduce(world: World, intent: Intent) {
           (Object.keys(state.inv.records).length || Object.keys(state.inv.battles).length)) ||
           (step === 1 && state.cannon));
       state.selected = results ? step : (state.frontier ?? step);
-      state.inspect = state.data.activation.system;
+      // The movement of a draft is staged on the map: nothing is open over it at the start.
+      state.inspect =
+        state.mode === "draft" && state.selected === 1 ? null : state.data.activation.system;
       E.remember(state);
       toast(
         state.mode === "draft"
@@ -374,12 +400,14 @@ export function reduce(world: World, intent: Intent) {
     }
     case "confirmApply": {
       const draft = world.workspaces.draft;
-      if (world.mode !== "draft" || !E.canApply(draft) || draft.edit) {
+      if (world.mode !== "draft" || !E.canApply(draft) || E.pendingEdit(draft)) {
         break;
       }
       const live = E.blankState("applied", "live", draft.route, draft.data);
       Object.assign(live, {
         stale: draft.stale,
+        scene: draft.scene,
+        present: draft.present,
         tip: "Your draft is now the live action. Recorded steps are read-only; the rest needs live decisions.",
       });
       // Replay the recorded choices until the live game needs something the draft could not hold.
@@ -458,9 +486,14 @@ export function reduce(world: World, intent: Intent) {
           : intent.type === "removeLine"
             ? Math.max(0, E.available(state, state.edit.value, path))
             : Math.max(0, intent.value);
-      E.put(state.edit.value, path, value);
+      if (state.edit.step === 1) {
+        stageMove(path, Number(value));
+      } else {
+        E.put(state.edit.value, path, value);
+      }
       state.edit.dirty = true;
       announce(E.validation(state) || "Selection updated.");
+      recordMove();
       break;
     }
     case "inspectSystem":
@@ -468,15 +501,54 @@ export function reduce(world: World, intent: Intent) {
       if (state.edit?.step === 0 && state.selected === 0) {
         Object.assign(state.edit, { value: { system: state.inspect }, dirty: true });
       }
-      if (state.edit?.step === 1 && ORIGIN_IDS.includes(state.inspect)) {
-        state.open[state.inspect] = true;
+      if (state.edit?.step === 1) {
         state.reveal = `sys:${state.inspect}`;
       }
       break;
-    case "expandOrigin":
-      state.open[intent.system] = true;
-      state.inspect = intent.system;
+    case "setBoost": {
+      if (state.edit?.step !== 1) {
+        break;
+      }
+      E.setBoost(state, state.edit.value, intent.ship);
+      state.edit.dirty = true;
+      announce(E.validation(state) || "Gravity Drive moved.");
+      recordMove();
       break;
+    }
+    case "fillHold": {
+      if (state.edit?.step === 1) {
+        const data = state.edit.value;
+        if (intent.key.startsWith("origin:")) {
+          E.fillOrigin(state, data, intent.key.slice(7), intent.source);
+        } else {
+          E.fillHold(state, data, intent.key, intent.source);
+        }
+        state.edit.dirty = true;
+        announce(E.validation(state) || "Hold filled.");
+        recordMove();
+      }
+      break;
+    }
+    case "resetOrigin": {
+      if (state.edit?.step !== 1) {
+        break;
+      }
+      // Everything that leaves with the ships of this system stays: the ships and their holds.
+      for (const entry of E.stagedEntries(state.edit.value)) {
+        if (entry.carrier === intent.system) {
+          state.edit.value[entry.key] = 0;
+        }
+      }
+      for (const key of Object.keys(state.edit.value)) {
+        if (key.startsWith("@gd:") && E.shipLine(key.slice(4))?.origin === intent.system) {
+          delete state.edit.value[key];
+        }
+      }
+      state.edit.dirty = true;
+      announce(E.validation(state) || `Movement from ${MAP[intent.system].name} reset.`);
+      recordMove();
+      break;
+    }
     case "closeInspector":
       state.inspect = null;
       break;
@@ -495,6 +567,11 @@ export function reduce(world: World, intent: Intent) {
       }
       break;
     case "toggleSystem":
+      if (state.kind === "tactical" && state.edit?.step === 1) {
+        // The fleet of a system opens at the system: its controls are on the board.
+        state.inspect = state.inspect === intent.system ? null : intent.system;
+        break;
+      }
       if (state.kind === "tactical") {
         battle("pickRetreat", intent);
         break;
@@ -594,14 +671,6 @@ export function reduce(world: World, intent: Intent) {
         state.edit.dirty = true;
         announce(E.validation(state) || "Payment staged.");
       }
-      break;
-    case "chooseRoute":
-      if (state.edit?.step !== 1) {
-        break;
-      }
-      state.edit.value["@" + intent.line] = intent.index;
-      state.edit.dirty = true;
-      announce(E.validation(state) || "Route changed.");
       break;
     case "findSystem": {
       const text = intent.query.trim().toLowerCase();

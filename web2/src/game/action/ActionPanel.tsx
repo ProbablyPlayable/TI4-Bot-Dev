@@ -61,6 +61,10 @@ function Interrupt({ view }: { view: InterruptView }) {
 
 /** What the main button does, and the main button. A phone shows it under every pane. */
 export function ActionFooter({ view: footer }: { view: FooterView }) {
+  // Nothing to say and nothing to send: the footer takes no room.
+  if (!footer.note && !footer.payment && !footer.actions.length) {
+    return null;
+  }
   return (
     <footer className="flex items-center justify-between gap-[15px] border-t border-line bg-surface px-5 py-2.5 phone:flex-col phone:items-stretch phone:gap-1.5 phone:px-3 phone:py-2">
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-4 text-sm">

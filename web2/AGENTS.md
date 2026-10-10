@@ -55,7 +55,8 @@ There are two layouts, and no others.
 - A pane may scroll down. Pattern 9 and "the open step must not need vertical scroll" are desktop rules. Nothing may be cut at the side: `e2e/phone.spec.ts` checks every example for this.
 - The player table keeps the names in view and scrolls the values sideways. A tap on a row opens the sheet of the player; there is no hover sheet.
 - A phone has no hover and no keys. A shortcut key is not shown. A name that desktop cuts with "…" takes a second line where the full name is only on hover (the technology tree, the action picker).
-- The map zooms with two fingers; the "+" and "−" buttons are not shown under a finger. "Fit task" and "Fit board" stay.
+- The map zooms with two fingers; the "+" and "−" buttons are not shown under a finger. "Fit task" and "Fit board" stay, in the row of the map views.
+- Exception to "no short variants of labels" (owner, 2026-10-10): the map views and the two fit buttons are icons on a phone, so that they are one row. The name is the tooltip and the accessible name. Desktop keeps the words.
 - The reference sheets and the draft menu are one menu in the toolbar. A sheet covers the pane.
 - The app can be installed (`public/manifest.webmanifest`): fullscreen, locked to portrait. There is no service worker: the game is live, and the CDN already caused stale bundles once. The icons come from `scripts/make-icons.mjs`.
 - A new screen is checked in both layouts. Short variants of labels are still not allowed; restructure the row instead.
@@ -152,6 +153,26 @@ All eight cards use one frame: one list of seats. There are no tabs, no seat col
 - A planet that can pay shows resources and influence (`res/inf`). The value that pays is large. The player must see what the payment gives up.
 - The inner ring of a system shows who has ships there, in the colour of that seat. A red dashed ring shows that two or more players have ships there.
 - Seat symbols are drawn shapes of one size (`SeatShape` in `src/game/context.tsx`). Do not use font glyphs for them: their sizes are not equal.
+
+- The board has no log line and no log button. The log is a reference sheet in the toolbar.
+- Every map view shows the board after the staged movement: the ships and ground forces that stay, and the fleet that arrives. The player must see what a move leaves behind.
+
+## Movement
+
+The owner chose this design on 2026-10-10, from three that were compared.
+
+- The movement is staged on the map. A system that ships can leave opens its fleet there, in a sheet: one token for each ship. A tap moves a ship or takes it back. The panel says what leaves each system; it has no controls.
+- A ship that moves is one row: its token, then its own hold, one slot for each unit. The game rolls for each ship at a gravity rift, so the player must see what each ship carries. Ships of a kind that stay are tokens in one row.
+- What the ships of a system can load is one row of the sheet, a chip for each kind of unit with the count that is left. One chip is chosen (▸). A tap on an empty slot loads that kind; a tap on a used slot unloads. "Fill" loads the chosen kind on every ship that leaves the system, until the holds are full or none is left. A chip is the icon of the unit and the count; the name is its tooltip. The heading and this row stay in view while the ships scroll.
+- A pickup on the way has one sign, the bent arrow: on its chip, with the number of the system, and on the slot that holds the unit. A slot of a ship that does not pass the system cannot take it.
+- Gravity Drive is a toggle on the row of a ship, where it changes what the ship does: it spares the ship a gravity rift, or the ship cannot move without it. One ship of the action has it; the toggle of another ship names that ship. The game chooses the path, and the row shows what the path means ("⚄ Rift roll").
+- A system that the movement takes something from has a check mark. The count of the player's ships shows "now → after" in the standard view.
+- The paths of the ships are drawn for the open system only, with the marks of that path (rift roll, Gravity Drive). The game chooses the path. The map shows no cargo labels.
+- Exception to "a choice is staged, then sent": a draft records every change of the movement at once, and the later steps are checked again. The step has no main button and no "Reset selection", so the footer is empty and the sheet has the room. The reason: a draft is private, every change is one step of undo, and the step tabs go on. Live keeps "Move fleet", because that sends to the game.
+- The active system opens the list of what is committed to it: the ships that were there, then the ships that move, by the system that they leave, each with its hold. It is read-only; a system in the list opens its sheet.
+- The demo data follows the game: before a movement, ships of two players are never in one system. Ground forces of two players can be on different planets of one system.
+- The sheet has a small "Reset": it takes back what leaves that system, and its check mark.
+- The read-only view of a movement (a recorded step in Live, History) is the same tokens in the panel, one band for each system.
 
 ## Battle table
 

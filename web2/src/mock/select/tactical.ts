@@ -7,12 +7,8 @@ import type {
   HelpView,
   InvasionPlanetView,
   InvasionView,
-  MoveRowView,
-  MovementView,
-  OriginView,
   PillView,
   ProductionView,
-  Rich,
   StepContentView,
   TacticalActionView,
   TaskView,
@@ -23,9 +19,7 @@ import { plural } from "../../model";
 import {
   ANOMALY,
   KEYS,
-  LINES,
   MAP,
-  ORIGIN_IDS,
   P,
   SEAT,
   SEATS,
@@ -35,13 +29,12 @@ import {
   STOCK,
   SUPPLY,
   U,
-  lineById,
-  type Line,
   type Side,
 } from "../data";
 import { E } from "../loose";
 import { sysLabel, type State, type World } from "../world";
 import { battleOffers, battleTable, oddsView, outcomeView } from "./battle";
+import { movement } from "./movement";
 import {
   END_TURN,
   battleReaction,
@@ -111,268 +104,6 @@ function activation(state: State): ActivationView {
       originsInRange: range.systems,
     },
     active: null,
-  };
-}
-
-const routeText = (path: string[]) =>
-  path
-    .map(
-      (id, index) =>
-        `${index && !E.adjacent(path[index - 1]).includes(id) ? MAP[id].wormhole + " → " : ""}#${id}`,
-    )
-    .join(" → ");
-function viaText(line: Line, path: string[]) {
-  const inner = path.slice(1, -1);
-  const hop = path.some((id, index) => index && !E.adjacent(path[index - 1]).includes(id));
-  const notes = [
-    E.rifts(path).length ? "rift roll" : "",
-    ...(U[line.type].capacity
-      ? inner
-          .filter((id) => E.cargoAt(id).length)
-          .map((id) => (MAP[id].token ? `no pickup at #${id}` : `can pick up at ${MAP[id].name}`))
-      : []),
-  ].filter(Boolean);
-  return `${inner.length ? "via " + inner.map((id) => `#${id} ${MAP[id].name}`).join(", ") : "Direct"}${hop ? ` · ${MAP[path.find((id) => MAP[id].wormhole)!].wormhole} wormhole` : ""}${notes.length ? " · " + notes.join(" · ") : ""}`;
-}
-
-function movement(state: State): MovementView {
-  const editing = state.edit?.step === 1;
-  const data = E.editedData(state, 1);
-  const entries: any[] = E.stagedEntries(data);
-  const place = (line: Line) => (line.from === "space" ? "Space area" : `Planet ${line.from}`);
-  const cargoRow = (key: string, line: Line, read: string): MoveRowView | null => {
-    const count: number = data[key] || 0;
-    const max: number = Math.max(0, E.available(state, data, key));
-    const bad = count > max;
-    if (!count && (!editing || !line.n)) {
-      return null;
-    }
-    const name = E.unitName(line.type, editing ? 1 : count);
-    const subtitle = !editing
-      ? read
-      : bad && key.includes(">") && !max
-        ? MAP[line.origin].token
-          ? "Your command token is here · cannot pick up"
-          : "Not on the route of a staged ship"
-        : `${place(line)} · 1 capacity each · ${max} available`;
-    return {
-      key,
-      unit: line.type,
-      name,
-      subtitle: [subtitle],
-      invalid: bad,
-      link: [`sys:${line.origin}`],
-      counter: editing
-        ? { id: key, value: count, max, label: `${name} from ${MAP[line.origin].name}` }
-        : null,
-      quantity: editing ? null : count,
-      removable: editing && bad,
-      route: null,
-    };
-  };
-  const shipRow = (line: Line): MoveRowView | null => {
-    const info = E.moveInfo(state, line);
-    const count: number = data[line.id] || 0;
-    const max: number = info.routes.length ? line.n : 0;
-    const bad = count > max;
-    if (!count && (!editing || !max)) {
-      return null;
-    }
-    const path: string[] | undefined = E.chosen(state, data, line);
-    const exits: string[] = path ? E.rifts(path) : [];
-    const unit = U[line.type];
-    const name =
-      (line.label || E.unitName(line.type, editing ? 1 : count)) +
-      (line.damaged ? " (damaged)" : "");
-    const own = (info.capped ? 1 : info.base) + (info.gd ? 1 : 0);
-    const subtitle: Rich = bad
-      ? [info.reason || "No longer available"]
-      : [
-          `Move ${info.base}${info.capped ? " → 1 · Nebula" : ""}`,
-          ...(info.gd ? [" ", { accent: "+1 Gravity Drive" }] : []),
-          ...(path && path.length - 1 > own
-            ? [" ", { accent: `+${exits.length} Gravity rift #${exits[0]}` }]
-            : []),
-          unit.capacity ? ` · Capacity ${unit.capacity}` : "",
-          editing ? ` · ${max} available` : "",
-        ];
-    const routes: string[][] = info.routes;
-    return {
-      key: line.id,
-      unit: line.type,
-      name,
-      subtitle,
-      invalid: bad,
-      link: [`rt:${line.id}`, `sys:${line.origin}`],
-      counter: editing
-        ? { id: line.id, value: count, max, label: `${name} from ${MAP[line.origin].name}` }
-        : null,
-      quantity: editing ? null : count,
-      removable: editing && bad,
-      route:
-        !path || bad
-          ? null
-          : {
-              line: line.id,
-              text: editing ? viaText(line, path) : routeText(path),
-              options:
-                editing && routes.length > 1
-                  ? routes.map((option, index) => ({ index, label: viaText(line, option) }))
-                  : [],
-              selected: routes.indexOf(path),
-              riftRoll: exits.length > 0,
-            },
-    };
-  };
-  const shipsAt = (origin: string) =>
-    LINES.filter((line) => line.origin === origin && U[line.type].ship);
-  const reach = (origin: string) =>
-    shipsAt(origin).filter((line) => E.moveInfo(state, line).routes.length);
-  const away = (origin: string) =>
-    Math.min(...reach(origin).map((line) => E.moveInfo(state, line).routes[0].length - 1));
-  const used = (origin: string) => entries.some((entry) => entry.carrier === origin);
-  const rowsOf = (rows: (MoveRowView | null)[]) => rows.filter((row): row is MoveRowView => !!row);
-  const card = (origin: string): OriginView => {
-    const total = E.originTotals(data, origin);
-    const open = !editing || used(origin) || state.open[origin];
-    const base = {
-      system: origin,
-      label: sysLabel(origin),
-      away: reach(origin).length ? away(origin) : null,
-      cargo: total.cargo,
-      capacity: total.capacity,
-      carriers: total.carriers,
-    };
-    if (!open) {
-      return {
-        ...base,
-        collapsed: {
-          away: away(origin),
-          names: reach(origin)
-            .map((line) => line.label || E.unitName(line.type))
-            .join(", "),
-        },
-        rows: [],
-        pickups: [],
-        stays: [],
-      };
-    }
-    const sites: string[] = E.pickupSites(state, data, origin);
-    const stray = entries.filter(
-      (entry) =>
-        entry.carrier === origin && entry.key.includes(">") && !sites.includes(entry.line.origin),
-    );
-    const pickups = [...sites, ...new Set(stray.map((entry) => entry.line.origin as string))].map(
-      (site) => {
-        const rows = rowsOf(
-          (E.cargoAt(site) as Line[]).map((line) =>
-            cargoRow(`${origin}>${line.id}`, line, `Picked up at ${MAP[site].name} · #${site}`),
-          ),
-        );
-        const hidden =
-          MAP[site].token &&
-          !entries.some(
-            (entry) =>
-              entry.carrier === origin && entry.key.includes(">") && entry.line.origin === site,
-          );
-        return {
-          system: site,
-          label: sysLabel(site),
-          commandToken: !!MAP[site].token,
-          rows: editing && hidden ? [] : rows,
-        };
-      },
-    );
-    const own = rowsOf(
-      LINES.filter((line) => line.origin === origin && !U[line.type].ship).map((line) =>
-        cargoRow(
-          line.id,
-          line,
-          `From ${line.from === "space" ? "the space area" : "planet " + line.from}`,
-        ),
-      ),
-    );
-    const stay = editing
-      ? shipsAt(origin).filter((line) => !E.moveInfo(state, line).routes.length && !data[line.id])
-      : [];
-    return {
-      ...base,
-      collapsed: null,
-      rows: [
-        ...rowsOf(shipsAt(origin).map(shipRow)),
-        ...own,
-        ...(editing ? [] : pickups.flatMap((site) => site.rows)),
-      ],
-      pickups: editing ? pickups : [],
-      stays: stay.map(
-        (line) => `${line.label || E.unitName(line.type)} · ${E.moveInfo(state, line).reason}`,
-      ),
-    };
-  };
-  const inRange = ORIGIN_IDS.filter((origin) => reach(origin).length || used(origin)).sort(
-    (a, b) => (reach(a).length ? away(a) : 9) - (reach(b).length ? away(b) : 9),
-  );
-  const out = editing
-    ? ORIGIN_IDS.filter((origin) => !inRange.includes(origin)).flatMap(shipsAt)
-    : [];
-  const all = E.originTotals(data);
-  const exits: any[] = E.riftExits(state, data);
-  const pds = state.planets.find((planet: any) => E.hostile(planet) && E.shielded(planet));
-  const riftName = (ship: any) => lineById[ship.line].label || E.unitName(ship.type);
-  let rift: MovementView["rift"] = null;
-  if (!editing && state.rift) {
-    rift = state.rift.map((ship: any) => ({
-      unit: ship.type,
-      name: riftName(ship),
-      text: `From ${MAP[lineById[ship.line].origin].name} · left gravity rift #${ship.rift} · survives on 4+`,
-      roll: { face: ship.face, lost: ship.lost },
-    }));
-  } else if (!editing && state.boundary === "rift") {
-    rift = exits.map((ship) => ({
-      unit: ship.type,
-      name: riftName(ship),
-      text: `From ${MAP[lineById[ship.line].origin].name} · leaves gravity rift #${ship.rift}`,
-      roll: null,
-    }));
-  }
-  let cannon: MovementView["cannon"] = null;
-  if (!editing && state.cannon) {
-    cannon = battleTable(state, state.cannon);
-  } else if (!editing && state.boundary === "cannon") {
-    cannon = battleTable(
-      state,
-      E.preview(
-        "Space cannon offense",
-        { att: state.fleet, def: E.force({ pds: 1 }) },
-        { def: SPECS.cannon },
-      ),
-    );
-  }
-  return {
-    kind: "movement",
-    editing,
-    origins: inRange.filter((origin) => editing || used(origin)).map(card),
-    unreachable: out.length
-      ? {
-          target: E.activeId(state),
-          rows: out.map((line) => ({
-            unit: line.type,
-            name: line.label || E.unitName(line.type),
-            text: `${sysLabel(line.origin)} · ${E.moveInfo(state, line).reason}`,
-            system: line.origin,
-          })),
-        }
-      : null,
-    gauges: [
-      { label: "Fleet supply in the active system", used: all.ships, total: SUPPLY },
-      { label: "Transport capacity", used: all.cargo, total: all.capacity },
-    ],
-    excessShips: Math.max(0, all.ships - SUPPLY),
-    riftRolls: editing ? exits.length : 0,
-    rift,
-    removed: editing ? [] : state.removed,
-    cannon,
-    cannonSkipped: !editing && !pds && !!state.done[1],
   };
 }
 
@@ -898,11 +629,18 @@ function taskFooter(state: State): FooterView {
   if (state.edit?.step === step) {
     const error: string = E.validation(state);
     const current = step === state.frontier;
+    if (draft && step === 1) {
+      // A draft records every change of the movement: there is nothing to send and nothing to
+      // reset here. The footer only says why a movement is not recorded.
+      return foot(error, [], !!error);
+    }
     const verb = (
       draft
         ? ["Preview activation", "Preview movement", "", "Preview landings", "Preview production"]
         : ["Activate system", "Move fleet", "", "Commit ground forces", "Produce units"]
     )[step];
+    // Moving nothing is a move: the main button says so.
+    const nothing = step === 1 && !E.stagedEntries(state.edit.value).length;
     const back =
       state.edit.dirty || !current
         ? [button({ type: "cancelEdit" }, current ? "Reset selection" : "Cancel edits")]
@@ -910,7 +648,10 @@ function taskFooter(state: State): FooterView {
     return {
       ...foot(
         error || (draft ? "Private to you until you apply." : "This commits to the live game."),
-        [...back, button({ type: "commitEdit" }, verb, "primary", !!error, true)],
+        [
+          ...back,
+          button({ type: "commitEdit" }, nothing ? "Move nothing" : verb, "primary", !!error, true),
+        ],
         !!error,
       ),
       // The open payment is one line here; its controls are on the board.

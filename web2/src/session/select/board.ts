@@ -162,8 +162,8 @@ export function selectBoard(
     targeting: false,
     task,
     inspector: open ? inspector(open, board.systems[open.system_id], viewer) : null,
+    origin: null,
     taskSystems: task ? Object.keys(task.values) : [],
     fitKey: "local",
-    latestResult: "",
   };
 }

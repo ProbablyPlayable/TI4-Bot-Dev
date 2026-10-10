@@ -119,9 +119,7 @@ export function GameShell({ session }: { session: GameSession }) {
       onOpenSeat={(seat) => toggleDrawer(`player:${seat}`)}
     />
   );
-  const board = (
-    <Board view={view.board} logOpen={drawer === "log"} onLog={() => toggleDrawer("log")} />
-  );
+  const board = <Board view={view.board} />;
   const paneClass = (id: Pane) =>
     cx(
       "absolute inset-0 grid grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)]",
@@ -178,9 +176,7 @@ export function GameShell({ session }: { session: GameSession }) {
             </>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_1040px]">
-              <Board view={view.board} logOpen={drawer === "log"} onLog={() => toggleDrawer("log")}>
-                {reference}
-              </Board>
+              <Board view={view.board}>{reference}</Board>
               <div className="flex min-h-0 min-w-0 flex-col border-l border-line">
                 {players}
                 <ActionPanel view={view.action} reveal={view.reveal} />

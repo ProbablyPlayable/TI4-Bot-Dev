@@ -1,214 +1,44 @@
-import type { MoveRowView, MovementView, OriginView } from "../../model";
+import type { MovementView } from "../../model";
 import { plural, unitName } from "../../model";
-import {
-  Button,
-  Card,
-  CardHeading,
-  Counter,
-  Die,
-  Gauge,
-  Gauges,
-  Hint,
-  Icon,
-  InlineNote,
-  ListRow,
-  Pill,
-  Quantity,
-  SectionTitle,
-  cx,
-} from "../../ui";
+import { Card, Die, Hint, Icon, InlineNote, ListRow, Pill, SectionTitle, cx } from "../../ui";
 import { BattleTable } from "../combat/BattleTable";
-import { RichText, useDispatch } from "../context";
 import { useLink } from "../link";
-
-function MoveRow({ row }: { row: MoveRowView }) {
-  const dispatch = useDispatch();
-  const { linked, props } = useLink(row.link);
-  const route = row.route;
-  return (
-    <ListRow
-      icon={row.unit}
-      title={row.name}
-      subtitle={<RichText value={row.subtitle} />}
-      invalid={row.invalid}
-      linked={linked}
-      {...props}
-      extra={
-        route && (
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-            {route.options.length ? (
-              <select
-                className="max-w-full rounded-[5px] border border-line bg-canvas px-1.5 py-0.5 text-text"
-                aria-label={`Route for ${row.name}`}
-                value={route.selected}
-                onChange={(event) =>
-                  dispatch({
-                    type: "chooseRoute",
-                    line: route.line,
-                    index: Number(event.target.value),
-                  })
-                }
-              >
-                {route.options.map((option) => (
-                  <option key={option.index} value={option.index}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <span>{route.text}</span>
-            )}
-            {route.riftRoll && (
-              <Pill
-                tone="loss"
-                title="One die for each rift the ship leaves. The ship and its cargo are destroyed on 1–3."
-              >
-                Rift roll 1–3
-              </Pill>
-            )}
-          </div>
-        )
-      }
-      controls={
-        row.counter ? (
-          <>
-            {row.removable && (
-              <Button size="sm" onClick={() => dispatch({ type: "removeLine", key: row.key })}>
-                Remove from fleet
-              </Button>
-            )}
-            <Counter
-              {...row.counter}
-              onChange={(value) => dispatch({ type: "setCount", key: row.counter!.id, value })}
-            />
-          </>
-        ) : (
-          row.quantity !== null && <Quantity count={row.quantity} />
-        )
-      }
-    />
-  );
-}
-
-function SubHeading({ system, children }: { system?: string; children: React.ReactNode }) {
-  const { linked, props } = useLink(system ? [`sys:${system}`] : undefined);
-  return (
-    <div
-      className={cx(
-        "border-t border-line px-3.5 pt-[7px] pb-1 text-xs text-muted",
-        !system && "font-bold tracking-[.06em] uppercase",
-        linked && "bg-cyan/[.06]",
-      )}
-      {...props}
-    >
-      {children}
-    </div>
-  );
-}
-
-/** The ships and cargo that can leave one system. */
-function Origin({ origin }: { origin: OriginView }) {
-  const dispatch = useDispatch();
-  const { linked, props } = useLink([`sys:${origin.system}`]);
-  if (origin.collapsed) {
-    return (
-      <button
-        type="button"
-        aria-expanded={false}
-        onClick={() => dispatch({ type: "expandOrigin", system: origin.system })}
-        className={cx(
-          "flex w-full flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-lg border border-line px-3.5 py-1.5 text-left text-sm text-muted",
-          linked && "bg-cyan/[.06]",
-        )}
-        {...props}
-      >
-        <strong className="font-semibold text-text">{origin.label}</strong>
-        <span>
-          {plural(origin.collapsed.away, "system")} away · {origin.collapsed.names} can reach
-        </span>
-        <span className="ml-auto text-accent">Show</span>
-      </button>
-    );
-  }
-  return (
-    <Card {...props}>
-      <CardHeading title={origin.label} bad={origin.cargo > origin.capacity}>
-        {origin.away !== null ? `${plural(origin.away, "system")} away · ` : ""}Capacity{" "}
-        {origin.cargo} / {origin.capacity}
-        {origin.carriers.length > 1 ? ` · ${origin.carriers.join(", ")}` : ""}
-      </CardHeading>
-      {origin.rows.map((row) => (
-        <MoveRow key={row.key} row={row} />
-      ))}
-      {origin.pickups.length > 0 && <SubHeading>Pick up on the way</SubHeading>}
-      {origin.pickups.map((site) => (
-        <div key={site.system}>
-          <SubHeading system={site.system}>
-            <strong className="font-semibold text-text">{site.label}</strong>
-            {site.commandToken ? " · Command token here · cannot pick up" : ""}
-          </SubHeading>
-          {site.rows.map((row) => (
-            <MoveRow key={row.key} row={row} />
-          ))}
-        </div>
-      ))}
-      {origin.stays.length > 0 && (
-        <div className="border-t border-line px-3.5 py-[7px] text-xs text-faint">
-          Stays behind: {origin.stays.join("; ")}
-        </div>
-      )}
-    </Card>
-  );
-}
+import { MovementSummary } from "./movement/OriginSheet";
+import { Arrival } from "./movement/parts";
+import { MovementTokens } from "./movement/Tokens";
 
 function Unreachable({ row }: { row: NonNullable<MovementView["unreachable"]>["rows"][number] }) {
   const { linked, props } = useLink([`sys:${row.system}`]);
   return (
-    <ListRow icon={row.unit} title={row.name} subtitle={row.text} linked={linked} {...props} />
+    <span
+      className={cx("inline-flex items-center gap-1 rounded-sm", linked && "bg-cyan/[.09]")}
+      {...props}
+    >
+      <Icon name={row.unit} className="size-3.5 text-icon" />
+      <strong className="font-mid text-muted">{row.name}</strong>
+      {row.text}
+    </span>
   );
 }
 
-/** Step 2: stage ships by origin, load cargo, choose routes. Anomalies and wormholes show in the routes. */
+/**
+ * Step 2: which ships move to the active system, and what they load. The game chooses the path
+ * of a ship. The controls are on the board, at each system; the panel says what leaves.
+ */
 export function MovementStep({ view }: { view: MovementView }) {
+  const Origins = view.editing ? MovementSummary : MovementTokens;
   return (
     <>
-      {view.origins.length ? (
-        // Two columns: the panel is wide, and every origin must be in view without scroll.
-        <div className="columns-2 gap-2.5 phone:columns-1 [&>*]:mb-2.5 [&>*]:break-inside-avoid">
-          {view.origins.map((origin) => (
-            <Origin key={origin.system} origin={origin} />
-          ))}
-        </div>
-      ) : (
-        <InlineNote tone="quiet">
-          No ships are staged. You may activate a system without moving.
-        </InlineNote>
-      )}
+      <Arrival view={view} />
+      {view.origins.length > 0 && <Origins origins={view.origins} />}
       {view.unreachable && (
-        <Card>
-          <CardHeading title={`Cannot reach #${view.unreachable.target}`}>
-            {plural(view.unreachable.rows.length, "ship")}
-          </CardHeading>
+        // Dense: the board marks these systems, and the inspector of a system says the same.
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-1 text-xs text-faint">
+          <strong className="font-mid text-muted">Cannot move to #{view.unreachable.target}</strong>
           {view.unreachable.rows.map((row, index) => (
             <Unreachable key={index} row={row} />
           ))}
-        </Card>
-      )}
-      <Gauges>
-        {view.gauges.map((gauge) => (
-          <Gauge key={gauge.label} {...gauge} />
-        ))}
-      </Gauges>
-      {view.excessShips > 0 && (
-        <InlineNote
-          strong={
-            <>
-              <Icon name="alert" /> Over fleet supply.
-            </>
-          }
-        >
-          {plural(view.excessShips, "excess ship")} will be removed after movement.
-        </InlineNote>
+        </div>
       )}
       {view.riftRolls > 0 && (
         <InlineNote

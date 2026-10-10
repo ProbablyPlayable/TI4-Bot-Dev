@@ -1,4 +1,4 @@
-import type { PaymentView } from "./action";
+import type { OriginView, PaymentView } from "./action";
 import type { Force, PlanetId, SeatId, SystemId } from "./core";
 
 export type Anomaly = "asteroid" | "supernova" | "nebula" | "rift";
@@ -32,17 +32,31 @@ export interface TileView {
   planets: PlanetMarkView[];
   /** Who has ships here: one seat, or "contested" when two or more players have ships. */
   control: SeatId | "contested" | null;
-  /** Ships in the space area. `strength` is the average number of hits per combat round. */
-  fleets: { seat: SeatId; ships: number; strength: number }[];
+  /**
+   * Ships in the space area. `strength` is the average number of hits per combat round.
+   * `was` is the count before the staged movement, when that changes it: the mark shows "3 → 1".
+   */
+  fleets: { seat: SeatId; ships: number; strength: number; was?: number }[];
   /** Cargo that staged ships pick up here. */
   pickedUp: number;
+  /**
+   * What the open movement means for this system and has no number: ships that cannot leave,
+   * cargo that no ship takes. A sign on the tile; the text is in the tooltip and the inspector.
+   */
+  note?: { sign: "stay" | "cargo"; text: string };
+  /** The open movement takes something from here: ships leave, or a ship picks up units. */
+  staged?: boolean;
 }
 
 export interface RouteView {
   /** Link token id: a row with `rt:<id>` lights this route. */
   id: string;
+  /** The rows that light this route, when it stands for more than one. */
+  links?: string[];
   path: SystemId[];
   staged: boolean;
+  /** What happens on the way, at the system where it happens. */
+  marks?: { system: SystemId; sign: "die" | "plus"; text: string }[];
 }
 
 /**
@@ -58,6 +72,8 @@ export interface BoardTaskView {
   chosen: Record<PlanetId | SystemId, boolean>;
   verb: string;
   unit: string;
+  /** Systems that cannot be chosen and belong to the choice: they are not dimmed. */
+  context?: SystemId[];
   /** A payment that is open: the board has its state and its controls, where the player chooses. */
   payment?: PaymentView;
 }
@@ -80,6 +96,11 @@ export interface InspectorView {
   rows: InspectorRowView[];
   /** Set when the player may start a tactical action here. */
   activate: "allowed" | "token" | null;
+  /**
+   * The active system while the movement is staged: the ships that are committed to it, by the
+   * system that they leave, each with what it carries. Read-only; the controls are at those systems.
+   */
+  arriving?: { summary: string; origins: OriginView[] };
 }
 
 export interface BoardView {
@@ -92,9 +113,10 @@ export interface BoardView {
   targeting: boolean;
   task: BoardTaskView | null;
   inspector: InspectorView | null;
+  /** The fleet of the inspected system, with its controls, while the movement is staged on the board. */
+  origin: OriginView | null;
   /** The systems of the open task, for "Fit task". */
   taskSystems: SystemId[];
   /** Changes when the board must be framed again, for example for a new action. */
   fitKey: string;
-  latestResult: string;
 }

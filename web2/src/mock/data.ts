@@ -18,6 +18,8 @@ export interface MapSystem {
   note?: string;
   home?: string;
   token?: boolean;
+  /** A space dock of the player: fighters can stay here without a ship. */
+  dock?: boolean;
   anomaly?: "asteroid" | "supernova" | "nebula" | "rift";
   wormhole?: string;
   planets?: MapPlanet[];
@@ -47,6 +49,10 @@ export interface Line {
   damaged?: boolean;
   move?: number;
   label?: string;
+  /** The line exists only in the example that names this scene. */
+  scene?: string;
+  /** The engine chooses the path of a ship. The dummy takes the path through this system. */
+  via?: string;
 }
 export interface PaySource {
   id: string;
@@ -86,6 +92,7 @@ export const MAP: Record<string, MapSystem> = {
     name: "Jord",
     note: "Sol home system",
     home: "sol",
+    dock: true,
     planets: [{ id: "jord", name: "Jord", res: 4, inf: 2, owner: "sol" }],
   },
   "23": {
@@ -209,7 +216,8 @@ export const MAP: Record<string, MapSystem> = {
       ["Maaluuk 0/2 naalu", "Druaa 3/1 naalu"],
       { home: "naalu", fleets: { naalu: { carrier: 1, fighter: 4 } } },
     ],
-    [-1, -3, "Empty space"],
+    // The large fleet of the movement cases is here: its ships leave through the gravity rift.
+    [-1, -3, "Everra", ["Everra 1/1 sol"]],
     [3, -2, "Arinam / Meer", ["Arinam 1/2 hacan", "Meer 0/4 hacan R"]],
     [-3, -1, "Empty space"],
     [-2, -1, "Mehar Xull", ["Mehar Xull 1/3 naalu R"]],
@@ -634,12 +642,15 @@ export const LINES: Line[] = [
   { id: "j-mech", origin: "1", type: "mech", n: 1, from: "Jord" },
   { id: "j-infantry", origin: "1", type: "infantry", n: 5, from: "Jord" },
   { id: "t-dreadnought", origin: "23", type: "dreadnought", n: 1, damaged: true },
+  { id: "t-dreadnought-ok", origin: "23", type: "dreadnought", n: 1, scene: "cases" },
   { id: "t-destroyer", origin: "23", type: "destroyer", n: 1 },
   { id: "t-infantry", origin: "23", type: "infantry", n: 2, from: "Tar’Mann" },
   { id: "v-dreadnought", origin: "31", type: "dreadnought", n: 1 },
-  { id: "v-destroyer", origin: "31", type: "destroyer", n: 1 },
+  { id: "v-carrier", origin: "31", type: "carrier", n: 1, scene: "cases" },
+  { id: "v-destroyer", origin: "31", type: "destroyer", n: 1, via: "41" },
   { id: "v-infantry", origin: "31", type: "infantry", n: 1, from: "Vefut" },
-  { id: "l-carrier", origin: "26", type: "carrier", n: 1 },
+  { id: "l-carrier", origin: "26", type: "carrier", n: 1, via: "23" },
+  { id: "l-dreadnought", origin: "26", type: "dreadnought", n: 1, via: "38", scene: "cases" },
   { id: "l-fighter", origin: "26", type: "fighter", n: 2, from: "space" },
   { id: "l-infantry", origin: "26", type: "infantry", n: 2, from: "Lodor" },
   { id: "q-cruiser", origin: "34", type: "cruiser", n: 1, move: 3, label: "Cruiser II" },
@@ -648,11 +659,18 @@ export const LINES: Line[] = [
   { id: "n-destroyer", origin: "42", type: "destroyer", n: 1 },
   { id: "c-cruiser", origin: "33", type: "cruiser", n: 1 },
   { id: "a-infantry", origin: "36", type: "infantry", n: 1, from: "Arnor" },
+  { id: "w-fighter", origin: "19", type: "fighter", n: 2, from: "space", scene: "cases" },
+  // Many ships of one kind, and more cargo than their holds take.
+  { id: "e-carrier", origin: "58", type: "carrier", n: 4, scene: "cases" },
+  { id: "e-dreadnought", origin: "58", type: "dreadnought", n: 4, scene: "cases" },
+  { id: "e-fighter", origin: "58", type: "fighter", n: 8, from: "space", scene: "cases" },
+  { id: "e-mech", origin: "58", type: "mech", n: 2, from: "Everra", scene: "cases" },
+  { id: "e-infantry", origin: "58", type: "infantry", n: 8, from: "Everra", scene: "cases" },
 ];
 export const lineById = Object.fromEntries(LINES.map((line) => [line.id, line]));
-export const ORIGIN_IDS = [
-  ...new Set(LINES.filter((line) => U[line.type].ship).map((line) => line.origin)),
-];
+/** The lines of one example: the lines of every example, and those of its scene. */
+export const linesOf = (state: { scene?: string }) =>
+  LINES.filter((line) => !line.scene || line.scene === state.scene);
 export const RETREATS: Record<Side, string[]> = {
   att: ["1", "23"],
   def: ["19", "41"],
@@ -797,10 +815,27 @@ export const examples: Record<string, any> = {
       "j-infantry": 2,
       "l-carrier": 1,
       "l-fighter": 2,
-      "26>t-infantry": 2,
+      "l-carrier>t-infantry": 2,
       "q-cruiser": 1,
     },
-    tip: "Three origins. The Lodor carrier picks up infantry at Tar’Mann; change its route and the pickup needs review. Hover a row to see its route.",
+    tip: "Three origins. The Lodor carrier picks up infantry at Tar’Mann on its way. Choose a system on the map to move its ships.",
+  },
+  "draft-movement-cases": {
+    mode: "draft",
+    route: "hostile",
+    until: 1,
+    scene: "cases",
+    movement: {
+      "t-dreadnought-ok": 1,
+      "l-carrier": 1,
+      "l-infantry": 2,
+      "l-carrier>t-infantry": 1,
+      "v-carrier": 1,
+      "v-infantry": 1,
+      "v-destroyer": 1,
+      "q-cruiser": 1,
+    },
+    tip: "Every edge case of movement on one board: origins one, two and three systems away, holds that are full and holds with room, a pickup, cargo that no ship can take, Gravity Drive for one of two ships, rift rolls, a damaged ship, command tokens, fleet supply, and at Everra four carriers and four dreadnoughts with more cargo than they hold.",
   },
   "draft-rift": {
     mode: "draft",
@@ -811,10 +846,9 @@ export const examples: Record<string, any> = {
       "j-infantry": 2,
       "v-dreadnought": 1,
       "v-destroyer": 1,
-      "@v-destroyer": 1,
       "v-infantry": 1,
     },
-    tip: "Two ships leave the gravity rift, so the draft stops at the rift roll. Edit Movement to send the destroyer through Wellon instead.",
+    tip: "Two ships leave the gravity rift, so the draft stops at the rift roll. The game chooses the path of a ship: the destroyer leaves the rift too.",
   },
   "draft-invasion": {
     mode: "draft",

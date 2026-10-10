@@ -1,5 +1,6 @@
 import type { ReactNode, SelectHTMLAttributes } from "react";
 import { cx } from "./cx";
+import { Icon, type IconName } from "./Icon";
 
 export interface CounterProps {
   value: number;
@@ -41,7 +42,8 @@ export function Counter({ value, max, label, onChange }: CounterProps) {
 
 export interface SegmentedProps<T extends string> {
   label: string;
-  options: readonly { id: T; label: string }[];
+  /** With an icon, the option shows the icon alone; the label is its name and its tooltip. */
+  options: readonly { id: T; label: string; icon?: IconName }[];
   value: T | null;
   onChange: (id: T) => void;
   className?: string;
@@ -65,10 +67,12 @@ export function Segmented<T extends string>({
           key={option.id}
           type="button"
           aria-pressed={option.id === value}
+          aria-label={option.icon && option.label}
+          title={option.icon && option.label}
           onClick={() => onChange(option.id)}
           className="px-[9px] py-[5px] text-xs whitespace-nowrap text-muted aria-pressed:bg-raised aria-pressed:text-accent touch:px-3 touch:py-2.5"
         >
-          {option.label}
+          {option.icon ? <Icon name={option.icon} /> : option.label}
         </button>
       ))}
     </div>

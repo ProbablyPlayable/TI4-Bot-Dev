@@ -180,7 +180,7 @@
   filter: drop-shadow(0 0 6px var(--color-gold));
 }
 
-.galaxy svg[data-targeting] .system:not(.target) {
+.galaxy svg[data-targeting] .system:not(.target):not(.context) {
   opacity: 0.3;
 }
 
@@ -270,4 +270,65 @@
   stroke-width: 1;
   stroke-dasharray: 1 5;
   opacity: 0.55;
+}
+
+/* The staged movement on the board: a check mark on a system that it takes something from, a
+   die where a ship leaves a gravity rift, and a sign on a system whose ships or cargo cannot move. */
+.galaxy .t-staged {
+  pointer-events: none;
+}
+
+.galaxy .t-staged circle {
+  fill: var(--color-accent);
+  stroke: var(--color-canvas);
+  stroke-width: 1;
+}
+
+.galaxy .t-staged path {
+  fill: none;
+  stroke: var(--color-canvas);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.galaxy .route-die,
+.galaxy .route-plus,
+.galaxy .t-note {
+  pointer-events: none;
+}
+
+.galaxy .route-die rect {
+  fill: var(--color-surface);
+  stroke: var(--color-red);
+  stroke-width: 1;
+}
+
+.galaxy .route-die circle {
+  fill: var(--color-red);
+}
+
+.galaxy .t-note circle {
+  fill: var(--color-surface);
+  stroke: var(--color-orange);
+  stroke-width: 1;
+}
+
+.galaxy .t-note path {
+  fill: none;
+  stroke: var(--color-orange);
+  stroke-width: 1.2;
+}
+
+.galaxy .route-plus rect {
+  fill: var(--color-surface);
+  stroke: var(--color-gold);
+  stroke-width: 1;
+}
+
+.galaxy .route-plus text {
+  fill: var(--color-gold);
+  font-size: 8.5px;
+  font-weight: 700;
+  text-anchor: middle;
 }

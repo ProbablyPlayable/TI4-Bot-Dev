@@ -25,6 +25,12 @@ const PATHS = {
   token: '<path d="M12 4 21 19H3Z"/>',
   card: '<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 8h6m-6 4h6"/>',
   planet: '<circle cx="12" cy="12" r="6"/><path d="M6 9c-6 1-5 7 6 5s13-8 6-6"/>',
+  coin: '<circle cx="12" cy="12" r="8"/><path d="M14.5 9.5c-.6-1-1.5-1.5-2.7-1.5-1.5 0-2.5.8-2.5 2s1 1.7 2.7 2 2.7.8 2.7 2-1 2-2.7 2c-1.3 0-2.3-.5-2.9-1.5M12 6.5V8m0 8v1.5"/>',
+  tech: '<path d="M9 3h6m-5 0v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3M7.5 15h9"/>',
+  target:
+    '<circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/>',
+  pickup: '<path d="M5 20c0-7 4-11 13-11m-4-4 4 4-4 4"/>',
+  frame: '<path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5"/>',
 } as const;
 
 export type IconName = keyof typeof PATHS;

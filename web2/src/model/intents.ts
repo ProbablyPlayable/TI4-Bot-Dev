@@ -25,15 +25,22 @@ export type Intent =
   // Staged values of the open step
   | { type: "setCount"; key: string; value: number }
   | { type: "removeLine"; key: string }
+  /**
+   * Loads one ship, or every ship that leaves a system ("origin:<system>"), until the holds are
+   * full or nothing is left. `source` is the kind of unit that is loaded: a cargo source.
+   */
+  | { type: "fillHold"; key: string; source?: string }
+  /** Gives Gravity Drive to one ship of the action, or takes it back. The path follows. */
+  | { type: "setBoost"; ship: string | null }
+  /** Takes back everything that leaves with the ships of one system. */
+  | { type: "resetOrigin"; system: SystemId }
   | { type: "setPlacement"; unit: UnitType; place: string }
-  | { type: "chooseRoute"; line: string; index: number }
   | { type: "setPayment"; source: string; value: number }
   /** Stages a suggested payment on the map, or clears the staged payment. */
   | { type: "payment"; action: "auto" | "reset" }
   // Board
   | { type: "inspectSystem"; system: SystemId }
   | { type: "closeInspector" }
-  | { type: "expandOrigin"; system: SystemId }
   | { type: "findSystem"; query: string }
   | { type: "togglePlanet"; planet: PlanetId }
   | { type: "toggleSystem"; system: SystemId }

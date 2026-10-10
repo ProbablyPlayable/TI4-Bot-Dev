@@ -75,7 +75,7 @@ function toolbar(world: World, state: State): ToolbarView {
       ? {
           canUndo: state.cursor > 0,
           canRedo: state.cursor < state.history.length - 1,
-          canApply: E.canApply(state) && world.viewer === "sol" && !state.edit,
+          canApply: E.canApply(state) && world.viewer === "sol" && !E.pendingEdit(state),
           applyHint: E.applyReadiness(state),
         }
       : null,
@@ -260,7 +260,7 @@ export function selectShell(world: World): ShellView {
     tactical &&
     state.mode === "draft" &&
     E.canApply(state) &&
-    !state.edit;
+    !E.pendingEdit(state);
   return {
     seats: seatViews,
     accent:

@@ -199,7 +199,7 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
   const { linked, props } = useLink([`sys:${tile.id}`]);
   const { x, y } = hexCenter(tile);
   const strength = view === "space";
-  const label = `${tile.name}, system ${tile.id}${tile.home ? `, ${seats[tile.home].faction} home system` : ""}${tile.anomaly ? ", " + ANOMALY_LABEL[tile.anomaly] : ""}${tile.wormhole ? `, ${tile.wormhole} wormhole` : ""}${tile.commandToken ? ", your command token is here" : ""}${tile.fleets.map((fleet) => `, ${plural(fleet.ships, seats[fleet.seat].faction + " ship")}`).join("")}`;
+  const label = `${tile.name}, system ${tile.id}${tile.home ? `, ${seats[tile.home].faction} home system` : ""}${tile.anomaly ? ", " + ANOMALY_LABEL[tile.anomaly] : ""}${tile.wormhole ? `, ${tile.wormhole} wormhole` : ""}${tile.commandToken ? ", your command token is here" : ""}${tile.staged ? ", movement staged" : ""}${tile.fleets.map((fleet) => `, ${plural(fleet.ships, seats[fleet.seat].faction + " ship")}`).join("")}`;
   // Planets and the wormhole are in one row. A system has at most three planets.
   const slots = tile.planets.length + (tile.wormhole ? 1 : 0);
   const gap = slots > 3 ? 19 : 25;
@@ -219,6 +219,7 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
         linked && "linked",
         target && "target",
         chosen && "chosen",
+        task?.context?.includes(tile.id) && "context",
       )}
       style={tile.home ? ({ "--seat": seats[tile.home].color } as React.CSSProperties) : undefined}
       role="button"
@@ -278,8 +279,9 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
         </g>
       )}
       {tile.fleets.map((fleet, index) => {
-        const markX = x + (index - (tile.fleets.length - 1) / 2) * (strength ? 38 : 28);
-        const shift = strength ? 13 : 6;
+        const wide = strength || tile.fleets.some((mark) => mark.was !== undefined);
+        const markX = x + (index - (tile.fleets.length - 1) / 2) * (wide ? 38 : 28);
+        const shift = wide ? 13 : 6;
         return (
           <g key={fleet.seat} className="t-mark">
             <SeatShape
@@ -290,29 +292,73 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
               color={seats[fleet.seat].color}
             />
             <text x={markX - shift + 8} y={y + 27} style={{ fill: seats[fleet.seat].color }}>
+              {/* A staged movement changes the count: the mark shows now → after. The combat
+                  view has no room for both: it shows the fleet after the move, with its hits. */}
+              {fleet.was !== undefined && !strength && `${fleet.was}→`}
               {fleet.ships}
               {strength ? `·${fleet.strength.toFixed(1)}` : ""}
             </text>
           </g>
         );
       })}
+      {tile.staged && (
+        // A check mark, not only a colour: the open movement takes something from this system.
+        <g className="t-staged" transform={`translate(${x - 25} ${y - 19})`}>
+          <title>Movement staged here</title>
+          <circle r="6" />
+          <path d="m-2.9 0 2.1 2.2 3.7-4.2" />
+        </g>
+      )}
       {tile.pickedUp > 0 && (
-        <text className="t-pick" x={x - 24} y={y - 24}>
-          +{tile.pickedUp}
+        <text className="t-pick" x={x - 9} y={y - 16}>
+          −{tile.pickedUp}
+          <title>{plural(tile.pickedUp, "unit")} picked up here</title>
         </text>
+      )}
+      {tile.note && (
+        // A sign for what has no number: ships that cannot leave, cargo that no ship takes.
+        <g className="t-note" transform={`translate(${x + 25} ${y - 19})`}>
+          <title>{tile.note.text}</title>
+          <circle r="6" />
+          {tile.note.sign === "stay" ? (
+            <path d="m-2.6-2.6 5.2 5.2m0-5.2-5.2 5.2" />
+          ) : (
+            <path d="M-2.8-2.2h5.6v4.4h-5.6zm-1.4 4.8 8.4-5.2" />
+          )}
+        </g>
       )}
     </g>
   );
 }
 
 function Route({ route, tiles }: { route: RouteView; tiles: Record<SystemId, TileView> }) {
-  const { linked } = useLink([`rt:${route.id}`]);
+  const { linked } = useLink(route.links ?? [`rt:${route.id}`]);
   return (
-    <path
-      className={cx("route", route.staged ? "staged" : "idle", linked && "linked")}
-      d={routePath(route.path, tiles)}
-      markerEnd="url(#route-end)"
-    />
+    <g className={cx("route-group", linked && "linked")}>
+      <path
+        className={cx("route", route.staged ? "staged" : "idle", linked && "linked")}
+        d={routePath(route.path, tiles)}
+        markerEnd="url(#route-end)"
+      />
+      {route.marks?.map((mark) => {
+        const { x, y } = hexCenter(tiles[mark.system]);
+        return mark.sign === "die" ? (
+          <g key={mark.system} className="route-die" transform={`translate(${x + 27} ${y + 3})`}>
+            <title>{mark.text}</title>
+            <rect x="-6" y="-6" width="12" height="12" rx="2.5" />
+            <circle cx="-2.6" cy="-2.6" r="1.1" />
+            <circle r="1.1" />
+            <circle cx="2.6" cy="2.6" r="1.1" />
+          </g>
+        ) : (
+          <g key={mark.system} className="route-plus" transform={`translate(${x + 27} ${y + 3})`}>
+            <title>{mark.text}</title>
+            <rect x="-8" y="-6" width="16" height="12" rx="2.5" />
+            <text y="3">+1</text>
+          </g>
+        );
+      })}
+    </g>
   );
 }
 

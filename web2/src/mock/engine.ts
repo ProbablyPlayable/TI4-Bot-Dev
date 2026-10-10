@@ -7,7 +7,6 @@ import {
   DECISIONS,
   FACES,
   KEYS,
-  LINES,
   LOSS_ORDER,
   MAP,
   MORALE,
@@ -31,7 +30,9 @@ import {
   blankMine,
   clone,
   examples,
+  LINES,
   lineById,
+  linesOf,
   other,
   plural,
 } from "./data";
@@ -453,7 +454,8 @@ export const sysLabel = (id) => `${MAP[id].name} · #${id}`;
 export const adjacent = (id) => ADJ[id];
 export const neighbours = (id) => NEAR[id];
 export const rifts = (path) => path.slice(0, -1).filter((id) => MAP[id].anomaly === "rift");
-export const cargoAt = (id) => LINES.filter((line) => line.origin === id && !U[line.type].ship);
+export const cargoAt = (state, id) =>
+  linesOf(state).filter((line) => line.origin === id && !U[line.type].ship);
 export function blocker(state, id) {
   const anomaly = MAP[id].anomaly;
   if (anomaly === "asteroid" || anomaly === "supernova") {
@@ -522,84 +524,172 @@ export const moveCache = new Map();
 // How many of the player's ships can move to a system, before it is activated.
 export function reach(state, id) {
   const probe = { ...state, data: { ...state.data, activation: { system: id } } };
-  const lines = LINES.filter((line) => U[line.type].ship && moveInfo(probe, line).routes.length);
+  const lines = linesOf(state).filter(
+    (line) => U[line.type].ship && moveInfo(probe, line).routes.length,
+  );
   return {
     ships: lines.reduce((sum, line) => sum + line.n, 0),
     systems: new Set(lines.map((line) => line.origin)).size,
   };
 }
-// What one ship line can do: its move value, whether it needs Gravity Drive, and the routes worth offering.
+// What the ships of one line can do. `plain` is the path with their own move value, where a
+// gravity rift on the way adds one. `boost` is the path with Gravity Drive, with the fewest rifts.
+// `gd`: the ships cannot move without Gravity Drive. `helps`: Gravity Drive spares them a rift.
 export function moveInfo(state, line) {
-  const key = [activeId(state), state.route, !!size(state.enemyFleet), state.stale, line.id].join(
-    "|",
-  );
+  const key = [
+    activeId(state),
+    state.route,
+    !!size(state.enemyFleet),
+    state.stale,
+    state.scene,
+    line.id,
+  ].join("|");
   if (!moveCache.has(key)) {
     const base = line.move || U[line.type].move,
       gone = state.stale && line.id === "j-cruiser";
-    let found = gone ? [] : routes(state, line.origin, base),
-      gd = false;
-    if (!found.length && !gone) {
-      found = routes(state, line.origin, base + 1);
-      gd = found.length > 0;
-    }
+    const found = gone ? [] : routes(state, line.origin, base);
+    const further = gone ? [] : routes(state, line.origin, base + 1);
     const load = (path) =>
       U[line.type].capacity
         ? path
             .slice(1, -1)
             .filter((id) => !MAP[id].token)
-            .reduce((sum, id) => sum + cargoAt(id).length, 0)
+            .reduce((sum, id) => sum + cargoAt(state, id).length, 0)
         : 0;
-    const best = found
+    // The game chooses the path of a ship. There is one, and the player cannot change it.
+    const via = (path) => (line.via && path.includes(line.via) ? 0 : 1);
+    const plain = found
       .filter((path) => path.length === found[0].length)
-      .sort((a, b) => rifts(a).length - rifts(b).length || load(b) - load(a))
-      .slice(0, 3);
+      .sort((a, b) => via(a) - via(b) || rifts(a).length - rifts(b).length || load(b) - load(a))
+      .slice(0, 1);
+    const boost = [...further]
+      .sort(
+        (a, b) =>
+          rifts(a).length - rifts(b).length ||
+          a.length - b.length ||
+          via(a) - via(b) ||
+          load(b) - load(a),
+      )
+      .slice(0, 1);
+    const fewest = (paths) => Math.min(...paths.map((path) => rifts(path).length));
+    const gd = !plain.length && boost.length > 0;
     moveCache.set(key, {
       base,
       gd,
+      helps: plain.length > 0 && boost.length > 0 && fewest(further) < fewest(found),
       capped: MAP[line.origin].anomaly === "nebula",
-      routes: best,
-      reason: best.length ? "" : whyNot(state, line, base),
+      plain,
+      boost,
+      routes: plain.length ? plain : boost,
+      reason: plain.length || boost.length ? "" : whyNot(state, line, base),
     });
   }
   return moveCache.get(key);
 }
-export function chosen(state, data, line) {
-  const found = moveInfo(state, line).routes;
-  return found[Math.min(data["@" + line.id] || 0, found.length - 1)];
+// The path of the ships of a line when nothing is staged.
+export function chosen(state, _data, line) {
+  return moveInfo(state, line).routes[0];
 }
-// Movement data: { lineId: count } for ships and for cargo loaded where it starts,
-// { 'carrierSystem>lineId': count } for cargo picked up on the way, { '@lineId': route index }.
+// Movement data, for each ship: { 'lineId#i': 1 } when ship i of the line moves,
+// { 'lineId#i>cargoLineId': count } for what is in its hold, and { '@gd:lineId#i': 1 } for the
+// one ship of the action that has Gravity Drive. An example may name a line only: see expandMovement.
+export const shipKeys = (line) =>
+  Array.from({ length: line.n }, (_, index) => `${line.id}#${index}`);
+export const shipLine = (shipKey) => lineById[shipKey.split("#")[0]];
 export const stagedEntries = (data) =>
   Object.keys(data)
     .filter((key) => key[0] !== "@" && data[key] > 0)
     .map((key) => {
-      const [first, second] = key.split(">"),
-        line = lineById[second || first];
-      return line && { key, line, carrier: second ? first : line.origin, count: data[key] };
+      const [unit, second] = key.split(">"),
+        ship = shipLine(unit),
+        line = second ? lineById[second] : ship;
+      return (
+        line &&
+        ship &&
+        unit.includes("#") && {
+          key,
+          line,
+          // The ship that carries: its key, and its line for a unit in a hold.
+          unit,
+          ship: second ? ship : null,
+          carrier: ship.origin,
+          count: data[key],
+        }
+      );
     })
     .filter(Boolean);
-export function pickupSites(state, data, origin) {
-  const sites = new Set();
-  for (const line of LINES) {
-    if (line.origin === origin && U[line.type].capacity && data[line.id] > 0) {
-      for (const id of chosen(state, data, line)?.slice(1, -1) || []) {
-        if (cargoAt(id).length) {
-          sites.add(id);
-        }
-      }
+// The ship that has Gravity Drive: it moves one ship in an action.
+export const boostKey = (data) =>
+  Object.keys(data)
+    .find((key) => key.startsWith("@gd:") && data[key] > 0)
+    ?.slice(4);
+export const hasBoost = (data, shipKey) => boostKey(data) === shipKey;
+// Another ship that has Gravity Drive.
+export function boosted(_state, data, except) {
+  const key = boostKey(data);
+  return key && key !== except ? key : undefined;
+}
+export function setBoost(state, data, shipKey) {
+  for (const key of Object.keys(data)) {
+    if (key.startsWith("@gd:")) {
+      delete data[key];
     }
   }
-  return [...sites];
+  if (shipKey) {
+    data[`@gd:${shipKey}`] = 1;
+  }
+  // A ship that cannot move without Gravity Drive stays when another ship takes it.
+  for (const entry of stagedEntries(data)) {
+    if (!entry.ship && entry.unit !== shipKey && moveInfo(state, entry.line).gd) {
+      data[entry.key] = 0;
+      trimHold(data, entry.unit);
+    }
+  }
+}
+// The path of one ship: with Gravity Drive the path with the fewest rifts.
+export function shipPath(state, data, shipKey) {
+  const info = moveInfo(state, shipLine(shipKey));
+  return hasBoost(data, shipKey) ? (info.boost[0] ?? info.plain[0]) : info.routes[0];
+}
+// The systems between the start and the active system where a ship can load.
+export function pickupSites(state, data, shipKey) {
+  const path = U[shipLine(shipKey).type].capacity ? shipPath(state, data, shipKey) : null;
+  return (path || []).slice(1, -1).filter((id) => cargoAt(state, id).length);
+}
+// What is in the hold of one ship, and the room it has.
+export const holdEntries = (data, shipKey) =>
+  stagedEntries(data).filter((entry) => entry.ship && entry.unit === shipKey);
+export const holdRoom = (data, shipKey) =>
+  data[shipKey] ? U[shipLine(shipKey).type].capacity || 0 : 0;
+export const holdLoad = (data, shipKey) =>
+  holdEntries(data, shipKey).reduce((sum, entry) => sum + entry.count, 0);
+// What one ship can load: the units where it starts, then those on its way.
+// A system with the player's command token gives nothing; it is listed with that reason.
+export function loadable(state, data, shipKey) {
+  const ship = shipLine(shipKey);
+  if (!U[ship.type].capacity) {
+    return [];
+  }
+  return [ship.origin, ...pickupSites(state, data, shipKey)].flatMap((site) =>
+    cargoAt(state, site).map((line) => ({
+      line,
+      key: `${shipKey}>${line.id}`,
+      pickup: site !== ship.origin,
+      token: site !== ship.origin && !!MAP[site].token,
+    })),
+  );
 }
 export function available(state, data, key) {
-  const [first, second] = key.split(">"),
-    line = lineById[second || first];
-  if (U[line.type].ship) {
-    return moveInfo(state, line).routes.length ? line.n : 0;
+  const [unit, second] = key.split(">"),
+    ship = shipLine(unit);
+  if (!second) {
+    const info = moveInfo(state, ship);
+    return !info.routes.length ? 0 : info.gd && boosted(state, data, unit) ? 0 : 1;
   }
+  const line = lineById[second];
   if (
-    second &&
-    (MAP[line.origin].token || !pickupSites(state, data, first).includes(line.origin))
+    !data[unit] ||
+    !loadable(state, data, unit).some((cargo) => cargo.line === line && !cargo.token)
   ) {
     return 0;
   }
@@ -609,6 +699,81 @@ export function available(state, data, key) {
       .filter((entry) => entry.line === line && entry.key !== key)
       .reduce((sum, entry) => sum + entry.count, 0)
   );
+}
+// An example names a line and a count: "j-carrier": 2 moves the first two carriers of Jord,
+// "j-infantry": 3 loads three infantry on the ships that leave Jord, in the order of the lines,
+// and "l-carrier>t-infantry": 2 loads a pickup on the ships of that line.
+export function expandMovement(data) {
+  const short = Object.keys(data).filter((key) => key[0] !== "@" && !key.includes("#"));
+  const isShip = (key) => !key.includes(">") && lineById[key] && U[lineById[key].type].ship;
+  for (const key of short.filter(isShip)) {
+    shipKeys(lineById[key]).forEach((unit, index) => {
+      data[unit] = index < data[key] ? 1 : 0;
+    });
+    delete data[key];
+  }
+  for (const key of short.filter((key) => !isShip(key))) {
+    const [first, second] = key.split(">"),
+      line = lineById[second || first];
+    let left = data[key];
+    delete data[key];
+    if (!line) {
+      continue;
+    }
+    const ships = LINES.filter((ship) =>
+      second ? ship.id === first : U[ship.type].ship && ship.origin === line.origin,
+    ).flatMap(shipKeys);
+    for (const unit of ships) {
+      const count = Math.min(left, holdRoom(data, unit) - holdLoad(data, unit));
+      if (count > 0) {
+        const slot = `${unit}>${line.id}`;
+        data[slot] = (data[slot] || 0) + count;
+        left -= count;
+      }
+    }
+  }
+  return data;
+}
+// A ship that cannot move without Gravity Drive takes it, when no ship has it.
+export function autoBoost(state, data) {
+  const needs = stagedEntries(data).find((entry) => !entry.ship && moveInfo(state, entry.line).gd);
+  if (needs && !boostKey(data)) {
+    data[`@gd:${needs.unit}`] = 1;
+  }
+}
+// A ship stays: what it had loaded stays too, and it gives Gravity Drive back.
+export function trimHold(data, shipKey) {
+  if (data[shipKey]) {
+    return;
+  }
+  for (const entry of holdEntries({ ...data, [shipKey]: 1 }, shipKey)) {
+    data[entry.key] = 0;
+  }
+  delete data[`@gd:${shipKey}`];
+}
+// The usual target: the hold of the ship is full. With a source, of that kind of unit only;
+// with none, ground forces before fighters.
+export function fillHold(state, data, shipKey, source) {
+  const order = (cargo) => (cargo.line.type === "fighter" ? 1 : 0);
+  const cargoes = loadable(state, data, shipKey)
+    .filter((cargo) => !source || cargo.line.id === source)
+    .sort((a, b) => order(a) - order(b));
+  for (const cargo of cargoes) {
+    const room = holdRoom(data, shipKey) - holdLoad(data, shipKey);
+    const count = data[cargo.key] || 0;
+    const more = Math.min(room, available(state, data, cargo.key) - count);
+    if (more > 0) {
+      data[cargo.key] = count + more;
+    }
+  }
+}
+// Every ship that leaves a system, in the order of the lines.
+export function fillOrigin(state, data, origin, source) {
+  for (const entry of stagedEntries(data)) {
+    if (!entry.ship && entry.carrier === origin) {
+      fillHold(state, data, entry.unit, source);
+    }
+  }
 }
 export function originTotals(data, origin) {
   const total = { ships: 0, capacity: 0, cargo: 0, carriers: [] };
@@ -629,14 +794,20 @@ export function originTotals(data, origin) {
   }
   return total;
 }
-// One entry per ship and per gravity rift that ship leaves.
+// One entry per ship and per gravity rift that ship leaves, with what is in its hold.
 export const riftExits = (state, data) =>
   stagedEntries(data)
-    .filter(({ line }) => U[line.type].ship)
-    .flatMap(({ line, count }) =>
-      rifts(chosen(state, data, line) || []).flatMap((rift) =>
-        Array.from({ length: count }, () => ({ line: line.id, type: line.type, rift })),
-      ),
+    .filter((entry) => !entry.ship)
+    .flatMap(({ line, unit }) =>
+      rifts(shipPath(state, data, unit) || []).map((rift) => ({
+        line: line.id,
+        ship: unit,
+        type: line.type,
+        rift,
+        cargo: Object.fromEntries(
+          holdEntries(data, unit).map((entry) => [entry.line.type, entry.count]),
+        ),
+      })),
     );
 export function productionTotals(state, data) {
   const count = (type) => data.units[type] || 0;
@@ -687,17 +858,23 @@ export function problem(state, step, data) {
     if (entries.some((entry) => entry.count > available(state, data, entry.key))) {
       return "A staged selection is no longer available. Remove the marked rows.";
     }
-    if (
-      entries
-        .filter(({ line }) => U[line.type].ship && moveInfo(state, line).gd)
-        .reduce((sum, entry) => sum + entry.count, 0) > 1
-    ) {
+    const needy = entries.filter((entry) => !entry.ship && moveInfo(state, entry.line).gd);
+    if (needy.some((entry) => !hasBoost(data, entry.unit))) {
       return "Gravity Drive moves one ship per action. Remove one of the boosted ships.";
     }
     for (const origin of new Set(entries.map((entry) => entry.carrier))) {
       const total = originTotals(data, origin);
       if (total.cargo > total.capacity) {
         return `Cargo carried from ${MAP[origin].name} exceeds its transport capacity by ${total.cargo - total.capacity}.`;
+      }
+    }
+    // Every ship has its own hold.
+    for (const unit of new Set(entries.filter((entry) => entry.ship).map((entry) => entry.unit))) {
+      const ship = shipLine(unit);
+      const loaded = holdLoad(data, unit);
+      const room = holdRoom(data, unit);
+      if (loaded > room) {
+        return `The ${unitName(ship.type).toLowerCase()} from ${MAP[ship.origin].name} carries ${loaded}, and its hold has room for ${room}.`;
       }
     }
   }
@@ -757,7 +934,8 @@ export function setup(state) {
     ];
   }
   Object.assign(state, {
-    fleet: {},
+    // The ships of the player that are in the active system before the movement.
+    fleet: force(state.present || {}),
     ground: { infantry: 0, mech: 0 },
     removed: [],
     rift: null,
@@ -793,7 +971,7 @@ export const T = {
   },
   1(state) {
     setup(state);
-    const counts = {},
+    const counts = { ...state.present },
       damaged = {};
     for (const { line, count } of stagedEntries(state.data.movement)) {
       counts[line.type] = (counts[line.type] || 0) + count;
@@ -815,6 +993,16 @@ export const T = {
           lost = face <= 3 && state.fleet[ship.type]?.n > 0;
         if (lost) {
           drop(state.fleet, ship.type);
+          // What the ship carried is destroyed with it.
+          for (const type of Object.keys(ship.cargo)) {
+            for (let count = ship.cargo[type]; count > 0; count--) {
+              if (type === "fighter") {
+                drop(state.fleet, type);
+              } else {
+                state.ground[type]--;
+              }
+            }
+          }
         }
         return { ...ship, face, lost };
       });
@@ -1036,7 +1224,7 @@ export function blankState(example, workspace, route, data) {
     example,
     mode: workspace,
     route,
-    data: clone(data),
+    data: { ...clone(data), movement: expandMovement(clone(data.movement)) },
     stale: false,
     frontier: 0,
     blocker: "decision",
@@ -1072,14 +1260,20 @@ export function makeState(example) {
       inspect: null,
     });
   }
-  const state = blankState(example, config.mode, config.route, baseData);
+  const state = blankState(example, config.mode, config.route, {
+    ...baseData,
+    movement: { ...baseData.movement, ...config.movement },
+  });
   const until = config.until ?? 5;
-  Object.assign(state.data.movement, config.movement);
+  state.scene = config.scene;
+  autoBoost(state, state.data.movement);
   if (config.invasion) {
     state.data.invasion = { ...config.invasion };
   }
   Object.assign(state, {
     stale: !!config.stale,
+    scene: config.scene,
+    present: config.present,
     tip: config.tip,
     auto: true,
     hold: !!config.hold,
@@ -1110,6 +1304,10 @@ export function makeState(example) {
     selected: config.show ?? state.frontier ?? 4,
     inspect: state.data.activation.system,
   });
+  // The movement of a draft is staged on the map: nothing is open over it at the start.
+  if (state.mode === "draft" && state.selected === 1) {
+    state.inspect = null;
+  }
   remember(state);
   return state;
 }
@@ -1193,9 +1391,40 @@ export function normalize(state) {
     Object.assign(battle, { stage: "assign", staged: [] });
   }
   const decides = state.mode === "draft" || env.viewer === "sol";
+  const draft = state.mode === "draft";
+  // The movement of a draft is open whenever its step is in view: it has no button to open it.
+  if (draft && state.selected === 1 && state.done[1] && !state.edit?.dirty) {
+    if (state.edit?.step !== 1) {
+      beginEdit(state, 1, false);
+    }
+  } else if (recorded(state) && state.selected !== 1) {
+    state.edit = null;
+  }
   if (!state.edit && decides && ["decision", "needs-review"].includes(state.blocker)) {
     beginEdit(state, state.frontier, false);
   }
+  if (draft && state.edit?.step === 1 && state.frontier === 1 && state.blocker === "decision") {
+    recordMovement(state);
+  }
+}
+// The open movement of a draft with nothing that is not recorded: it holds nothing back.
+export const recorded = (state) =>
+  state.mode === "draft" && state.edit?.step === 1 && !state.edit.dirty && !!state.done[1];
+// An edit that must be committed or dropped before the draft can go on.
+export const pendingEdit = (state) => !!state.edit && !recorded(state);
+// A draft records every change of the movement at once, and the later steps are checked again.
+// A movement that is not valid stays staged, with its error.
+export function recordMovement(state) {
+  if (state.mode !== "draft" || state.edit?.step !== 1 || validation(state)) {
+    return false;
+  }
+  const { selected, inspect } = state;
+  state.data.movement = clone(state.edit.value);
+  state.edit = null;
+  commitStep(state, 1);
+  beginEdit(state, 1, false);
+  Object.assign(state, { selected, inspect });
+  return true;
 }
 export function remember(state) {
   normalize(state);
@@ -1217,7 +1446,7 @@ export function applyReadiness(state) {
   if (env.viewer !== "sol") {
     return "Only the acting player can apply";
   }
-  if (state.edit?.dirty || (state.edit && state.edit.step !== state.frontier)) {
+  if (state.edit?.dirty || (pendingEdit(state) && state.edit.step !== state.frontier)) {
     return `Commit or cancel the ${STEPS[state.edit.step].toLowerCase()} edits first`;
   }
   if (state.blocker === "needs-review") {
@@ -1301,7 +1530,7 @@ export const flowStaged = (state) =>
 // A decision: the ships of the viewer in the system that is over the limit, and the limit.
 export function unitsOver(state) {
   const system = "1";
-  const lines = LINES.filter(
+  const lines = linesOf(state).filter(
     (line) => line.origin === system && U[line.type].ship && line.type !== "fighter",
   );
   const total = lines.reduce((sum, line) => sum + line.n, 0);

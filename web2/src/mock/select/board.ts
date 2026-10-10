@@ -9,18 +9,15 @@ import type {
   UnitType,
 } from "../../model";
 import { plural } from "../../model";
-import { ANOMALY, LINES, MAP, PAY, RETREATS, SCRIPTED, STEPS, TECH, U } from "../data";
+import { ANOMALY, MAP, PAY, RETREATS, SCRIPTED, TECH, U, linesOf } from "../data";
 import { E } from "../loose";
 import { strategyEditor } from "../strategy";
 import { decisionShape, sysLabel, type State, type World } from "../world";
-import {
-  countsForce,
-  isTactical,
-  mapStep,
-  productionPayment,
-  stepCaption,
-  toForce,
-} from "./shared";
+import { countsForce, isTactical, mapStep, productionPayment, toForce } from "./shared";
+import { movementArrival, movementBoard, movementOrigin } from "./movement";
+
+/** The movement is staged on the board: the fleet of a system opens at the system. */
+const onMap = (world: World, state: State) => world.mode !== "history" && mapStep(state) === 1;
 
 function boardTask(world: World, state: State): BoardTaskView | null {
   if (world.mode === "history") {
@@ -45,6 +42,20 @@ function boardTask(world: World, state: State): BoardTaskView | null {
     Object.fromEntries(
       PAY.filter((source) => source.system).map((source) => [source.id, source[key]!]),
     );
+  if (isTactical(state) && onMap(world, state)) {
+    const move = movementBoard(state);
+    const origins = move.origins;
+    return {
+      context: move.systems,
+      target: "system",
+      kind: "pick",
+      interactive: true,
+      values: Object.fromEntries(origins.map((id) => [id, 0])),
+      chosen: origins.includes(state.inspect) ? { [state.inspect]: true } : {},
+      verb: "Move from",
+      unit: "system",
+    };
+  }
   if (isTactical(state)) {
     // A retreat: the destination is a system, so the board is where it is chosen.
     const battle = state.mode === "live" ? E.activeBattle(state) : null;
@@ -101,7 +112,12 @@ function boardTask(world: World, state: State): BoardTaskView | null {
   return null;
 }
 
-function inspector(world: World, state: State): InspectorView | null {
+function inspector(
+  world: World,
+  state: State,
+  moveNote?: string,
+  arriving?: InspectorView["arriving"],
+): InspectorView | null {
   const id: string | null = state.inspect;
   if (!id) {
     return null;
@@ -127,6 +143,7 @@ function inspector(world: World, state: State): InspectorView | null {
     .filter(Boolean)
     .join(" · ");
   const notes = [
+    moveNote ?? "",
     system.anomaly ? ANOMALY[system.anomaly].rule : "",
     partner ? `Adjacent to ${sysLabel(partner)} through the wormhole.` : "",
   ].filter(Boolean);
@@ -144,7 +161,8 @@ function inspector(world: World, state: State): InspectorView | null {
       E.stagedEntries(moved)
         .filter((entry: any) => entry.line === line)
         .reduce((sum: number, entry: any) => sum + entry.count, 0);
-    const left = LINES.filter((line) => line.origin === id)
+    const left = linesOf(state)
+      .filter((line) => line.origin === id)
       .map((line) => [line, line.n - taken(line)] as const)
       .filter(([, count]) => count > 0);
     const fleets = E.others(state, id);
@@ -180,7 +198,16 @@ function inspector(world: World, state: State): InspectorView | null {
     .filter(Boolean)
     .join(" · ");
   const space: InspectorRowView[] = [];
-  if (E.size(state.fleet) || carrying) {
+  if (arriving) {
+    // The movement is open: the ships that were here, then the ships that are committed.
+    if (E.size(E.force(state.present || {}))) {
+      space.push({
+        seat: "sol",
+        force: toForce(E.force(state.present)),
+        notes: [{ text: "Here before the movement", tone: "muted" }],
+      });
+    }
+  } else if (E.size(state.fleet) || carrying) {
     space.push({
       seat: "sol",
       force: toForce(state.fleet),
@@ -190,7 +217,7 @@ function inspector(world: World, state: State): InspectorView | null {
   if (E.size(state.enemyFleet)) {
     space.push({ seat: "hacan", force: toForce(state.enemyFleet) });
   }
-  if (!space.length) {
+  if (!space.length && !arriving?.origins.length) {
     space.push({ label: "In space", text: "No ships" });
   }
   const planets = state.planets.map((planet: any): InspectorRowView => {
@@ -207,20 +234,7 @@ function inspector(world: World, state: State): InspectorView | null {
       ],
     };
   });
-  return { ...base, rows: [...space, ...planets], activate: null };
-}
-
-function latestResult(world: World, state: State): string {
-  if (world.mode === "history") {
-    return "Board: the result of this action (demo). The real board stays on the present state.";
-  }
-  if (isTactical(state)) {
-    const last = [4, 3, 2, 1, 0].find((step) => state.done[step] && !state.skipped[step]);
-    if (last !== undefined) {
-      return `Jamie · ${STEPS[last]} · ${stepCaption(state, last, "done")}${state.mode === "draft" ? " (draft)" : ""}`;
-    }
-  }
-  return "Blair gained 3 trade goods with Mining Initiative.";
+  return { ...base, rows: [...space, ...planets], activate: null, arriving };
 }
 
 export function selectBoard(world: World, state: State): BoardView {
@@ -252,11 +266,26 @@ export function selectBoard(world: World, state: State): BoardView {
       0,
     );
 
+  const LINES = linesOf(state);
+  // The active system while the movement is staged: what is there, and what arrives. Every map
+  // view shows the board after the move, so the player sees what the move leaves and what it brings.
+  const arrived: Record<string, number> = { ...state.present };
+  for (const { line, count } of step === 1 ? entries : []) {
+    if (U[line.type as UnitType].ship || line.type === "fighter") {
+      arrived[line.type] = (arrived[line.type] || 0) + count;
+    }
+  }
+  // The staged movement, while its step is in view: routes, and what changes in each system.
+  const move = tactical && state.selected === 1 && state.done[0] ? movementBoard(state) : null;
   const tiles = Object.keys(MAP).map((id): TileView => {
     const system = MAP[id];
     const here = tactical && state.done[0] && id === E.activeId(state);
     const solCounts: Record<string, number> = here
-      ? Object.fromEntries(E.types(state.fleet).map((type: string) => [type, state.fleet[type].n]))
+      ? step === 1
+        ? arrived
+        : Object.fromEntries(
+            E.types(state.fleet).map((type: string) => [type, state.fleet[type].n]),
+          )
       : Object.fromEntries(
           [
             ...new Set(
@@ -276,13 +305,25 @@ export function selectBoard(world: World, state: State): BoardView {
       ...(shipCount(solCounts) ? { sol: solCounts } : {}),
       ...E.others(state, id),
     };
-    const marks = Object.keys(fleets)
-      .map((seat) => ({
-        seat,
-        ships: shipCount(fleets[seat]),
-        strength: hits(E.force(fleets[seat])),
-      }))
-      .filter((mark) => mark.ships);
+    // The mark of the player shows "now → after" where the staged movement changes the count.
+    const before = !move
+      ? null
+      : here
+        ? move.arrives[0]
+        : move.leaving[id]
+          ? shipCount(solCounts) + move.leaving[id]
+          : null;
+    const marks = Object.keys({ ...(before !== null ? { sol: 0 } : {}), ...fleets })
+      .map((seat) => {
+        const ships = shipCount(fleets[seat] ?? {});
+        return {
+          seat,
+          ships,
+          strength: hits(E.force(fleets[seat] ?? {})),
+          ...(seat === "sol" && before !== null && before !== ships ? { was: before } : {}),
+        };
+      })
+      .filter((mark) => mark.ships || mark.was);
     const troops = (planet: any) =>
       here
         ? E.size(planet.units, (type: UnitType) => U[type].ground)
@@ -294,6 +335,10 @@ export function selectBoard(world: World, state: State): BoardView {
           : planet.owner
             ? planet.troops || 2
             : 0;
+    // Units that a ship takes from here on its way: not the cargo of the ships that start here.
+    const pickedUp = entries
+      .filter((entry) => entry.ship && entry.ship.origin !== id && entry.line.origin === id)
+      .reduce((sum, entry) => sum + entry.count, 0);
     return {
       id,
       name: system.name,
@@ -315,9 +360,9 @@ export function selectBoard(world: World, state: State): BoardView {
       })),
       control: marks.length > 1 ? "contested" : (marks[0]?.seat ?? null),
       fleets: marks,
-      pickedUp: entries
-        .filter((entry) => entry.key.includes(">") && entry.line.origin === id)
-        .reduce((sum, entry) => sum + entry.count, 0),
+      pickedUp,
+      note: move?.notes[id],
+      staged: !!move && (!!move.leaving[id] || pickedUp > 0),
     };
   });
 
@@ -329,10 +374,6 @@ export function selectBoard(world: World, state: State): BoardView {
         .filter((other) => other > id && MAP[other].wormhole === MAP[id].wormhole)
         .map((other) => [id, other] as [string, string]),
     );
-  const lines =
-    !tactical || state.selected !== 1 || !state.done[0]
-      ? []
-      : LINES.filter((line) => U[line.type].ship && E.moveInfo(state, line).routes.length);
   // The systems of the open task: where the player's units and planets are, and the active system.
   const taskActive = tactical
     ? state.edit?.step === 0
@@ -351,7 +392,15 @@ export function selectBoard(world: World, state: State): BoardView {
   // A table with fewer seats: the other factions are not in the game, so the board is neutral there.
   const seats = world.table.seats;
   const plays = (seat: string | null | undefined) => !seat || seats.includes(seat);
-  const inspected = inspector(world, state);
+  const inspected = inspector(
+    world,
+    state,
+    move?.notes[state.inspect]?.text,
+    tactical && onMap(world, state) && state.inspect === E.activeId(state)
+      ? movementArrival(state)
+      : undefined,
+  );
+  const origin = tactical && onMap(world, state) ? movementOrigin(state, state.inspect) : null;
   if (seats.length < 8) {
     for (const tile of tiles) {
       tile.fleets = tile.fleets.filter((fleet) => plays(fleet.seat));
@@ -378,18 +427,15 @@ export function selectBoard(world: World, state: State): BoardView {
   return {
     tiles,
     wormholes,
-    routes: lines.map((line) => ({
-      id: line.id,
-      path: E.chosen(state, moving, line),
-      staged: moving[line.id] > 0,
-    })),
+    routes: move?.routes ?? [],
     activeSystem: active,
     inspected: state.inspect,
     targeting: step === 0,
     task: boardTask(world, state),
-    inspector: inspected,
+    // The fleet with its controls takes the place of the inspector of that system.
+    inspector: origin ? null : inspected,
+    origin,
     taskSystems,
     fitKey: `${world.fit}`,
-    latestResult: latestResult(world, state),
   };
 }

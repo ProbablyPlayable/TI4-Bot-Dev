@@ -163,38 +163,98 @@ export interface ActivationView {
   draft: boolean;
 }
 
-export interface MoveRowView {
+/**
+ * One ship. The game moves the ships one at a time and asks for each: a ship has its own path,
+ * its own hold, and its own roll when it leaves a gravity rift.
+ */
+export interface ShipUnitView {
+  /** The id of the staged value: 1 moves the ship, 0 keeps it. */
+  key: string;
+  /** "Carrier 2 of 4". */
+  label: string;
+  moves: boolean;
+  /** False when the ship cannot move, or cannot move now. `reason` says why. */
+  canMove: boolean;
+  reason: string | null;
+  invalid: boolean;
+  /** The path that the game takes: "via #41 Gravity rift". Empty when the ship cannot move. */
+  route: string;
+  /** The ship leaves a gravity rift: one die decides whether it arrives, with its hold. */
+  riftRoll: boolean;
+  /**
+   * Gravity Drive, where it changes what this ship does. One ship of the action has it.
+   * `locked`: the ship cannot move without it. `reason`: why it cannot be switched on.
+   */
+  boost: { on: boolean; locked: boolean; reason: string | null } | null;
+  /** Null for a ship without capacity, and for a ship that stays. */
+  hold: ShipHoldView | null;
+  link: LinkToken[];
+}
+
+/** The hold of one ship that moves. */
+export interface ShipHoldView {
+  capacity: number;
+  loaded: number;
+  /**
+   * One for each loaded unit. `value` is the count that takes this unit out again.
+   * `site` names the system on the way where the unit is picked up.
+   */
+  slots: { key: string; unit: UnitType; name: string; value: number; site: string | null }[];
+  /** What this ship can load: the id of a cargo source, and the staged value that takes one more. */
+  accepts: Record<string, { key: string; value: number }>;
+}
+
+/** One kind of ship in one system: what the ships have in common, and each ship. */
+export interface MoveShipView {
+  /** The ship line. */
   key: string;
   unit: UnitType;
   name: string;
-  subtitle: Rich;
+  damaged: boolean;
+  /** How many move, and how many are in the system. */
+  count: number;
+  total: number;
+  /** "Move 1 · Capacity 4". */
+  facts: Rich;
+  /** Why no ship of this kind can move. */
+  reason: string | null;
   invalid: boolean;
   link: LinkToken[];
-  counter: CounterView | null;
-  /** Read-only count. */
-  quantity: number | null;
-  removable: boolean;
-  route: {
-    line: string;
-    text: string;
-    options: { index: number; label: string }[];
-    selected: number;
-    riftRoll: boolean;
-  } | null;
+  /** Every ship of the kind while the movement is open; in a read-only view those that moved. */
+  units: ShipUnitView[];
 }
 
+/** Units that the ships of one system can load: where they start, or on their way. */
+export interface CargoSourceView {
+  id: string;
+  unit: UnitType;
+  name: string;
+  /** Where the units are: "Planet Jord", "Space area". */
+  place: string;
+  /** A system on the way of a ship, where it picks the units up. Null for the system itself. */
+  site: { system: SystemId; label: string } | null;
+  /** How many are there to load. */
+  left: number;
+  /** Why the units cannot be loaded. */
+  reason: string | null;
+}
+
+/** The ships that can leave one system, and what they load. */
 export interface OriginView {
   system: SystemId;
   label: string;
-  /** A collapsed origin is one line. */
-  collapsed: { away: number; names: string } | null;
-  away: number | null;
-  cargo: number;
+  away: number;
+  ships: MoveShipView[];
+  /** What the ships can load. Empty in a read-only view. */
+  cargo: CargoSourceView[];
+  /** What leaves: "2 ships · 3 cargo". Empty when nothing is staged. */
+  leaves: string;
+  loaded: number;
   capacity: number;
-  carriers: string[];
-  rows: MoveRowView[];
-  pickups: { system: SystemId; label: string; commandToken: boolean; rows: MoveRowView[] }[];
-  stays: string[];
+  /** What stays in the system after the staged ships left. */
+  stays: string;
+  /** Units that stay with no ship to carry them. They are removed. */
+  warning: string | null;
 }
 
 export interface RiftRowView {
@@ -208,11 +268,16 @@ export interface RiftRowView {
 export interface MovementView {
   kind: "movement";
   editing: boolean;
+  /** The active system. */
+  target: { system: SystemId; label: string };
   origins: OriginView[];
+  /** Ships and cargo that cannot move to the active system, each with the reason. */
   unreachable: {
     target: SystemId;
     rows: { unit: UnitType; name: string; text: string; system: SystemId }[];
   } | null;
+  /** The fleet of the player in the active system, before and after the staged movement. */
+  arrival: { unit: UnitType; now: number; after: number }[];
   gauges: GaugeView[];
   excessShips: number;
   riftRolls: number;
