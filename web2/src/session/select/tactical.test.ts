@@ -206,3 +206,38 @@ it("has no screen of its own once the movement is sent, or for a hold", () => {
   expect(sent.board.origin).toBeNull();
   expect(selectShell(loadUpdate as unknown as SessionUpdate, local()).action.kind).toBe("flow");
 });
+
+it("says the move value of a kind in its heading, and of a ship where it differs", () => {
+  const ships = (update: SessionUpdate, state: LocalState) => {
+    const content = tactical(update, state).task.content;
+    if (content.kind !== "movement") {
+      throw new Error("not the movement step");
+    }
+    return content.origins[0].ships;
+  };
+  const [carriers, destroyers] = ships(movement, local({ movement: fleet }));
+  expect(carriers.facts).toEqual(["Move 1 · Capacity 6"]);
+  expect(destroyers.facts).toEqual(["Move 2"]);
+  expect(carriers.units.map((unit) => unit.move)).toEqual([null, null]);
+
+  // The first carrier needs Gravity Drive, and the destroyer starts in a nebula.
+  const changed: SessionUpdate = {
+    ...movement,
+    tactical: {
+      ...facts,
+      ships: facts.ships.map((ship) =>
+        ship.unit === "destroyer"
+          ? { ...ship, nebula: true }
+          : ship.index === 0
+            ? { ...ship, move: { ...ship.move!, gravity_drive: true } }
+            : ship,
+      ),
+    },
+  };
+  const [boosted, capped] = ships(changed, local({ movement: fleet }));
+  expect(boosted.facts).toEqual(["Move 1 · Capacity 6"]);
+  expect(boosted.units.map((unit) => unit.move)).toEqual(["Move 1 → 2", null]);
+  expect(capped.facts).toEqual(["Move 2 → 1 · Nebula"]);
+  // A ship that stays says nothing of a boost.
+  expect(ships(changed, local())[0].units.map((unit) => unit.move)).toEqual([null, null]);
+});

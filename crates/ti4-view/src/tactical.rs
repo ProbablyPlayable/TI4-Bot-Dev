@@ -71,6 +71,12 @@ pub struct ShipFact {
     pub capacity: i64,
     /// The ship counts against the fleet pool.
     pub fleet: bool,
+    /// The move value of the ship in this activation, without Gravity Drive and the Ionian Fuel
+    /// Refinery: a move that uses one of them says so, and has 1 more for each.
+    pub move_value: i32,
+    /// The ship starts in a nebula: it moves with a value of 1, whatever `move_value` is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nebula: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#move: Option<MoveFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -338,6 +344,16 @@ fn movement(
                 damaged: hull.sustained_damage,
                 capacity: kind.capacity(),
                 fleet: !kind.is_fighter(),
+                move_value: effective_move_value_for_ship(
+                    state,
+                    kind,
+                    player,
+                    origin,
+                    Some(index),
+                    false,
+                    false,
+                ),
+                nebula: rules.nebula_caps(origin.as_str()),
                 r#move,
                 blocked,
                 loads,
@@ -527,6 +543,57 @@ mod tests {
         for ship in &facts.ships {
             assert_eq!(ship.blocked, Some(Blocked::CommandToken), "{ship:?}");
         }
+    }
+
+    #[test]
+    fn every_ship_has_its_move_value_and_a_nebula_caps_it() {
+        let content = ContentStore::embedded();
+        let is_nebula = |id: &str| {
+            ti4_content::galaxy::system(content, id, POK).is_some_and(|system| system.is_nebula())
+        };
+        // The map of the template has no nebula: one takes the place of a system next to home.
+        let (mut state, mut galaxy) = game();
+        let active = home(&state);
+        let nebula = ti4_content::galaxy::all_systems(content, POK)
+            .into_keys()
+            .find(|id| is_nebula(id))
+            .expect("a nebula")
+            .to_owned();
+        let old = galaxy
+            .adjacent(active.as_str())
+            .into_iter()
+            .find(|id| !ti4_content::galaxy::is_home_system(content, id, POK))
+            .expect("a system next to home")
+            .to_owned();
+        galaxy
+            .replace_system(content, &old, &nebula, POK)
+            .expect("the nebula is placed");
+        // A carrier and its upgrade in every system, so that some start in the nebula.
+        let systems: Vec<SystemId> = galaxy.system_ids().into_iter().map(SystemId::new).collect();
+        for system in &systems {
+            for kind in ["carrier", "carrier2"] {
+                state
+                    .system_mut(system)
+                    .units
+                    .push(Unit::new(UnitTypeId::new(kind), seat()));
+            }
+        }
+        let facts = facts_into(&mut state, &galaxy, active.as_str());
+        let mut capped = 0;
+        for ship in &facts.ships {
+            match ship.unit.as_str() {
+                "carrier" => assert_eq!(ship.move_value, 1, "{ship:?}"),
+                "carrier2" => assert_eq!(ship.move_value, 2, "{ship:?}"),
+                _ => {}
+            }
+            assert_eq!(ship.nebula, is_nebula(&ship.origin), "{ship:?}");
+            if let (true, Some(route)) = (ship.nebula, &ship.r#move) {
+                // With a value of 1 the path is the nebula and the active system, no other.
+                assert_eq!(route.path.len(), 2, "{ship:?}");
+            }
+            capped += usize::from(ship.nebula);
+        }
+        assert!(capped > 0, "no ship starts in the nebula");
     }
 
     #[test]

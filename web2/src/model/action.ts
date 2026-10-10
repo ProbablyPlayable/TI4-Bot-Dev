@@ -177,6 +177,11 @@ export interface ShipUnitView {
   canMove: boolean;
   reason: string | null;
   invalid: boolean;
+  /**
+   * The move value of this ship, when the heading of its kind does not say it: "Move 1 → 2"
+   * with Gravity Drive. Null when the heading says it.
+   */
+  move: string | null;
   /** The path that the game takes: "via #41 Gravity rift". Empty when the ship cannot move. */
   route: string;
   /** The ship leaves a gravity rift: one die decides whether it arrives, with its hold. */

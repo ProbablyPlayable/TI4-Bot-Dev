@@ -118,6 +118,18 @@ function holdOf(plan: Plan, ship: ShipFact): ShipHoldView | null {
   };
 }
 
+/** The move value of a ship before a boost. A nebula caps it: the game says so, not this text. */
+const moveText = (ship: ShipFact) =>
+  `Move ${ship.move_value}${ship.nebula && ship.move_value !== 1 ? " → 1 · Nebula" : ""}`;
+
+/** The move value of a ship that moves with Gravity Drive or the Ionian Fuel Refinery: +1 each. */
+function boostedText(ship: ShipFact): string | null {
+  const boosts = Number(!!ship.move?.gravity_drive) + Number(!!ship.move?.ionian);
+  return boosts && !ship.nebula
+    ? `Move ${ship.move_value} → ${ship.move_value + boosts}`
+    : null;
+}
+
 /** The ships of one system that are the same kind: one heading, one token for each. */
 const kindKey = (ship: ShipFact) => `${ship.origin}:${ship.unit}${ship.damaged ? ":damaged" : ""}`;
 const routeId = (ship: ShipFact) => ship.move!.path.join(">");
@@ -130,6 +142,8 @@ function shipRows(plan: Plan, ships: ShipFact[], onlyMoving = false): MoveShipVi
   return [...kinds.entries()].map(([key, same]): MoveShipView => {
     const first = same[0];
     const name = nameOf(first.unit, first.damaged);
+    // One move value for every ship of the kind is said once, in the heading.
+    const shared = same.every((ship) => moveText(ship) === moveText(first)) ? moveText(first) : "";
     const units = same.map((ship, index): ShipUnitView => {
       const moves = shipId(ship) in plan.draft;
       const reason = moves ? null : reasonOf(plan, ship);
@@ -140,6 +154,7 @@ function shipRows(plan: Plan, ships: ShipFact[], onlyMoving = false): MoveShipVi
         canMove: !reason && !!ship.move,
         reason,
         invalid: false,
+        move: (moves && boostedText(ship)) || (shared ? null : moveText(ship)),
         route: ship.move ? viaText(plan, ship) : "",
         riftRoll: !!ship.move?.rifts.length,
         // The game uses Gravity Drive only for a ship that cannot arrive without it.
@@ -157,7 +172,11 @@ function shipRows(plan: Plan, ships: ShipFact[], onlyMoving = false): MoveShipVi
       damaged: first.damaged,
       count: moving.length,
       total: same.length,
-      facts: first.capacity > 0 ? [`Capacity ${first.capacity}`] : [],
+      facts: [
+        [shared, first.capacity > 0 ? `Capacity ${first.capacity}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+      ],
       reason: same.every((ship) => ship.blocked) ? BLOCKED[first.blocked!] : null,
       invalid: false,
       link: [`sys:${first.origin}`, ...routes.map((id) => `rt:${id}`)],

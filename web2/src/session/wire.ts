@@ -173,6 +173,10 @@ export interface ShipFact {
   capacity: number;
   /** The ship counts against the fleet pool. */
   fleet: boolean;
+  /** The move value in this activation, without Gravity Drive and the Ionian Fuel Refinery. */
+  move_value: number;
+  /** The ship starts in a nebula: it moves with a value of 1. */
+  nebula?: boolean;
   move?: MoveFact;
   blocked?: "command_token" | "range";
   /** What the ship can load: places in `MovementFacts.cargo`. */

@@ -128,13 +128,12 @@ function Token({
       disabled={!editing || !can}
       aria-pressed={unit.moves}
       aria-label={unit.label}
-      title={
-        unit.moves
-          ? "Moves · tap to keep it here"
-          : can
-            ? "Stays · tap to move it"
-            : (unit.reason ?? "")
-      }
+      title={[
+        unit.move,
+        unit.moves ? "Moves · tap to keep it here" : can ? "Stays · tap to move it" : unit.reason,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       className={cx(
         "relative grid size-8 flex-none place-items-center rounded-md border touch:size-10",
         unit.moves
@@ -278,6 +277,7 @@ function UnitRow({
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <Token ship={ship} unit={unit} editing={editing} />
       {unit.hold && <Slots unit={unit} source={source} editing={editing} />}
+      {unit.move && <span className="text-xs text-muted">{unit.move}</span>}
       {unit.boost && <Boost unit={unit} editing={editing} />}
       {unit.riftRoll && (
         <Pill

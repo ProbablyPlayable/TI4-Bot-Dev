@@ -184,6 +184,7 @@ The owner chose this design on 2026-10-10, from three that were compared.
 
 - Work in `web2/` uses six crates: `ti4-model`, `ti4-content`, `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-wasm`. Check them with `cargo c-web` and test them with `cargo t-web` (the aliases are in `.cargo/config.toml`).
 - Do not build or test another crate for this work, and do not use `--workspace`. The other crates (`ti4-policy`, `ti4-sim`, `ti4-training`, the libtorch crates, and the rest) are slow to test and fill the target directory. They are fixed later.
+- A fact that the UI needs is added in `ti4-view`, not in `ti4-engine`, when that takes little code: a change of the engine can break replays. Change the engine when the fact obviously belongs there, or when `ti4-view` would need much code or would repeat a rule. Such a change must not alter what the game does (owner, 2026-10-10).
 - Before you commit Rust changes, all three must be clean: `cargo fmt --all -- --check`, `cargo l-web` (Clippy, no warnings), and `cargo t-web`.
 - The server integration tests are one binary. Run one file with `cargo test -p ti4-server --test it <file name>::`.
 - Temporary (2026-10-09): update this section when the other crates are fixed.

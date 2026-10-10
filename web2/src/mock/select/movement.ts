@@ -112,6 +112,7 @@ function plan(state: State) {
       canMove: move.routes.length > 0 && !blocked,
       reason,
       invalid: moves && (!move.routes.length || blocked),
+      move: moves && on && !move.capped ? `Move ${move.base} → ${move.base + 1}` : null,
       route: route ? viaText(route) : "",
       riftRoll: !!route && E.rifts(route).length > 0,
       boost:
