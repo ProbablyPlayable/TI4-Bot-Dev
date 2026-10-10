@@ -193,6 +193,9 @@ The owner chose this design on 2026-10-10, from three that were compared.
 ## Local play
 
 - `?local=<seed>&players=8&humans=<mask>` plays a real game of the engine in the page (`src/dev/LocalApp.tsx`). Build the engine first: `scripts/build-wasm.sh`.
+- The bare address `/` is that game with `DEFAULT_GAME` (seed 42, 8 seats, seat A played here), so the installed app opens it. `?example=…` is the demo and `?gallery` the gallery; they get no local game.
+- If the engine does not load (missing file, or no JSPI), the demo opens with the reason in a line above the shell.
+- The header has a link to the other app: "Demo" in a local game, "Local game" in the demo. On desktop it is a button after the reference sheets; on a phone it is the last item of "Reference and more". A page load, not a game choice.
 - `src/session/` turns an update of the game into the view models. It imports `model` only, and it decides no rule: a value that needs a rule comes from the engine.
 - A decision without a dedicated screen is one list in the action panel.
 - The activation and the movement of a tactical action use the screens of these steps. The facts come from the engine with the update (`tactical`), and "Move fleet" sends the staged movement as one plan (`Transport.submitPlan`). A plan that the game refuses is taken back whole; one undo takes a movement back whole.

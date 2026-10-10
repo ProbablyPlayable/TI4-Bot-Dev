@@ -196,6 +196,13 @@ test.describe("flows", () => {
     await shot(page, "flow/reference");
   });
 
+  test("the other app is in the reference menu", async ({ page }) => {
+    await page.goto("/?example=live-strategic");
+    await page.getByRole("button", { name: "Reference and more" }).tap();
+    await expect(page.getByRole("menuitem", { name: "Local game" })).toBeVisible();
+    await shot(page, "flow/menu-other-app");
+  });
+
   test("the app can be installed", async ({ page, request }) => {
     await page.goto("/");
     const href = await page.locator('link[rel="manifest"]').getAttribute("href");

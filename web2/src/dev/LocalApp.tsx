@@ -1,5 +1,6 @@
 import { type ChangeEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { GameShell } from "../game/shell/GameShell";
+import { DemoApp } from "./DemoApp";
 import {
   type LocalGame,
   type SavedGame,
@@ -120,10 +121,13 @@ export function LocalApp({ game }: { game: LocalGame }) {
   };
   const file = useRef<HTMLInputElement>(null);
 
-  let body: ReactNode;
+  // The engine did not load: the demo is shown with the reason, so the page is never empty.
   if (start.kind === "failed") {
-    body = <Notice tone="error">{start.message}</Notice>;
-  } else if (waits) {
+    return <DemoApp notice={`Local game unavailable. ${start.message}`} />;
+  }
+
+  let body: ReactNode;
+  if (waits) {
     body = (
       <Notice tone="error">
         The saved game ({start.saved?.answers.length} answers) was played by another build of the
@@ -144,7 +148,7 @@ export function LocalApp({ game }: { game: LocalGame }) {
       </Notice>
     );
   } else {
-    body = <GameShell session={session} />;
+    body = <GameShell session={session} other={{ label: "Demo", href: "/?example=live-picker" }} />;
   }
 
   return (
@@ -192,10 +196,16 @@ function Notice({ tone, children }: { tone: "quiet" | "error"; children: ReactNo
   );
 }
 
-/** The game that the address asks for, or null when it asks for none. */
+/** The game of the bare address `/`: seed 42, eight seats, and only the first seat is played here. */
+export const DEFAULT_GAME: LocalGame = { seed: 42, players: 8, humans: 1 };
+
+/**
+ * The game that the address asks for. Without `local`, the bare address gets DEFAULT_GAME, and
+ * the demo (`example`) and the gallery have their own addresses, so they get none.
+ */
 export function localGame(params: URLSearchParams): LocalGame | null {
   if (!params.has("local")) {
-    return null;
+    return params.has("example") || params.has("gallery") ? null : DEFAULT_GAME;
   }
   const number = (name: string, otherwise: number) => {
     const value = Number(params.get(name) || otherwise);

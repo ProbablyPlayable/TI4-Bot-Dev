@@ -9,18 +9,26 @@ export const REFERENCES = [
   ["log", "Log"],
 ] as const;
 
+/** The other app of the same address space: the demo, or the local game. A page load, not a game choice. */
+export interface OtherGame {
+  label: string;
+  href: string;
+}
+
 /** One header row: status, workspace, reference sheets, and the controls of the draft. */
 export function Toolbar({
   view,
   drawer,
   onDrawer,
   phone = false,
+  other,
 }: {
   view: ToolbarView;
   drawer: string | null;
   onDrawer: (id: string) => void;
   /** A phone has the reference sheets in the menu: the row has no room for four buttons. */
   phone?: boolean;
+  other?: OtherGame;
 }) {
   const dispatch = useDispatch();
   const tab = (mode: Workspace, label: string, disabled = false, title?: string) => (
@@ -87,6 +95,11 @@ export function Toolbar({
           ))}
         </nav>
       )}
+      {other && !phone && (
+        <Button tone="quiet" size="sm" onClick={() => location.assign(other.href)}>
+          {other.label}
+        </Button>
+      )}
       {view.draft && (
         <div className="flex items-center gap-1.5 phone:order-last phone:w-full phone:[&>:last-child]:flex-1">
           <Button
@@ -125,6 +138,7 @@ export function Toolbar({
           items={[
             ...REFERENCES.map(([id, label]) => ({ label, onSelect: () => onDrawer(id) })),
             ...(view.draft ? draftItems : []),
+            ...(other ? [{ label: other.label, onSelect: () => location.assign(other.href) }] : []),
           ]}
         />
       )}

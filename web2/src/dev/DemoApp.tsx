@@ -3,8 +3,11 @@ import { GameShell } from "../game/shell/GameShell";
 import { DemoBar } from "../mock/DemoBar";
 import { createMockStore, useMockSession } from "../mock/store";
 
-/** The game shell on the mock session. `?example=draft-movement&viewer=hacan` opens one state directly. */
-export function DemoApp() {
+/**
+ * The game shell on the mock session. `?example=draft-movement&viewer=hacan` opens one state directly.
+ * `notice` says why the page is the demo and not the local game (the engine did not load).
+ */
+export function DemoApp({ notice }: { notice?: string }) {
   const store = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return createMockStore({
@@ -24,10 +27,20 @@ export function DemoApp() {
     history.replaceState(null, "", `?${params}`);
   }, [demo.example, demo.viewer]);
   return (
-    // The demo bar is under the shell, so it has the bottom edge of the screen, not the shell.
-    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] [--inset-bottom:0px]">
-      <GameShell session={session} />
-      <DemoBar demo={demo} />
+    <div className="flex h-dvh flex-col [--inset-bottom:0px]">
+      {notice && (
+        <p
+          role="status"
+          className="shrink-0 border-b border-line bg-surface px-4 py-1.5 text-xs text-muted"
+        >
+          {notice}
+        </p>
+      )}
+      {/* The demo bar is under the shell, so it has the bottom edge of the screen, not the shell. */}
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]">
+        <GameShell session={session} other={{ label: "Local game", href: "/" }} />
+        <DemoBar demo={demo} />
+      </div>
     </div>
   );
 }

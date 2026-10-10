@@ -8,7 +8,7 @@ import { LinkProvider } from "../link";
 import { PlayerTable } from "../players/PlayerTable";
 import { ReferenceDrawer } from "./Reference";
 import { OVERLAY, keyIsFree } from "./shortcuts";
-import { Toolbar } from "./Toolbar";
+import { type OtherGame, Toolbar } from "./Toolbar";
 
 const ACCENT = {
   draft: "var(--color-gold)",
@@ -30,7 +30,7 @@ type Pane = (typeof PANES)[number][0];
  * each of them.
  * It needs a `GameSession` and nothing else. State that only changes what is in view lives here.
  */
-export function GameShell({ session }: { session: GameSession }) {
+export function GameShell({ session, other }: { session: GameSession; other?: OtherGame }) {
   const { view } = session;
   const [drawer, setDrawer] = useState<string | null>(null);
   const [tableOpen, setTableOpen] = useState(true);
@@ -133,7 +133,13 @@ export function GameShell({ session }: { session: GameSession }) {
           className="flex min-h-0 flex-col"
           style={{ "--accent": ACCENT[view.accent] } as CSSProperties}
         >
-          <Toolbar view={view.toolbar} drawer={drawer} onDrawer={toggleDrawer} phone={phone} />
+          <Toolbar
+            view={view.toolbar}
+            drawer={drawer}
+            onDrawer={toggleDrawer}
+            phone={phone}
+            other={other}
+          />
           {phone ? (
             <>
               <div className="relative min-h-0 flex-1">
