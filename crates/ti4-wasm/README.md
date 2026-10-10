@@ -304,6 +304,8 @@ its movement. `web2` shows it in the Draft workspace.
   movement that the game then shows.
 - The seat of a draft is the seat that was asked last (with stepping: also while another seat
   decides).
+- A draft is also run in the strategy phase: the copy is put into the action phase as it
+  stands (`Game::prepare_hypothetical_turn`). The status and agenda phases have no draft.
 
 Limits:
 

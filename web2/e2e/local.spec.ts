@@ -326,8 +326,11 @@ test("a draft of a tactical action is private, is kept, and is applied as one re
   const row = (name: string) => panel(page).getByRole("button", { name });
   const system = (id: string) => page.locator("g.system").filter({ hasText: `#${id}` });
   const apply = page.getByRole("button", { name: "Apply to Live" });
-  // The strategy phase has no draft.
-  await expect(workspace("Draft")).toBeDisabled();
+  // The draft opens in the strategy phase too. It is sent at the turn menu only.
+  await workspace("Draft").click();
+  await expect(heading(page)).toHaveText("Activation");
+  await expect(apply).toBeDisabled();
+  await workspace("Live").click();
   await row("8. Imperial").click();
   await send(page).click();
   await row("Decline").click();

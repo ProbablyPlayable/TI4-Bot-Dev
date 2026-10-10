@@ -464,6 +464,11 @@ mod tests {
 
     /// A seeded game of six on the recommended map, played by random seats to its first action.
     fn game() -> (Game<'static>, Vec<BoardTileView>) {
+        game_until(|game| game.state.phase == Phase::Action)
+    }
+
+    /// The same game, played by random seats until `reached`.
+    fn game_until(reached: impl Fn(&Game<'static>) -> bool) -> (Game<'static>, Vec<BoardTileView>) {
         let content = ContentStore::embedded();
         let ids: Vec<PlayerId> = ["a", "b", "c", "d", "e", "f"]
             .iter()
@@ -480,10 +485,59 @@ mod tests {
             .with_sources(POK)
             .with_galaxy(galaxy);
         game.table = Table::with_default(Box::new(SeededRandom::new(3)));
-        while game.state.phase != Phase::Action {
+        while !reached(&game) {
             assert_eq!(game.step().error, None);
         }
         (game, tiles)
+    }
+
+    #[test]
+    fn a_draft_opens_while_the_strategy_cards_are_chosen() {
+        // Two seats have a card, four have none.
+        let (game, tiles) = game_until(|game| {
+            let seats = game.state.players.iter();
+            seats.filter(|seat| !seat.strategy_cards.is_empty()).count() == 2
+        });
+        assert_eq!(game.state.phase, Phase::Strategy);
+        let before = game.state.clone();
+
+        let mut script = vec![choose("tactical")];
+        let activation = run(&game, &tiles, &script);
+        assert_eq!(activation.stop, DraftStop::Open);
+        let Some(TacticalFacts::Activation(facts)) = &activation.update.tactical else {
+            panic!("no activation facts");
+        };
+        let target = facts
+            .systems
+            .iter()
+            .find(|reach| reach.ships > 0)
+            .expect("a system in range");
+        script.push(choose(&target.system));
+        let movement = run(&game, &tiles, &script);
+        assert_eq!(movement.stop, DraftStop::Open);
+        let Some(TacticalFacts::Movement(facts)) = &movement.update.tactical else {
+            panic!("no movement facts");
+        };
+        let ship = facts
+            .ships
+            .iter()
+            .find(|ship| ship.r#move.is_some())
+            .expect("a ship that can move");
+        let plan = ship.r#move.as_ref().unwrap();
+        script.push(DraftStep::Move {
+            origin: ship.origin.clone(),
+            unit: ship.unit.clone(),
+            damaged: ship.damaged,
+            gravity_drive: plan.gravity_drive,
+            ionian: plan.ionian,
+        });
+        script.push(DraftStep::DoneLoading);
+        script.push(DraftStep::DoneMoving);
+        let moved = run(&game, &tiles, &script);
+        assert_eq!(moved.stop, DraftStop::Complete);
+        assert_eq!(moved.consumed, script.len());
+
+        assert_eq!(game.state, before, "a draft changes nothing");
     }
 
     fn run(game: &Game<'static>, tiles: &[BoardTileView], script: &[DraftStep]) -> DraftOutcome {

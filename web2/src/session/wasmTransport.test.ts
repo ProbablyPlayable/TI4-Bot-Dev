@@ -329,8 +329,11 @@ it.skipIf(!built)(
         expect(event.update.viewer).toEqual({ role: "player", seat: "a" });
         expect(event.stepping.seat).not.toBe("a");
         if (pauses === 3) {
-          // A draft can be run while another seat has the turn.
-          expect(stepped.transport.runDraft([])?.stop.kind).toBeDefined();
+          // A draft can be run while another seat decides, also while it chooses its card.
+          expect(event.update.view.phase).toBe("strategy");
+          const drafted = stepped.transport.runDraft([{ kind: "choose", option_id: "tactical" }]);
+          expect(drafted?.stop).toEqual({ kind: "open" });
+          expect(drafted?.update.tactical?.kind).toBe("activation");
           // From here on the seats play on.
           stepped.transport.setStepping(false);
         } else {

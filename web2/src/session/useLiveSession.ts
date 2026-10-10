@@ -76,7 +76,8 @@ function draftLock(update: SessionUpdate, local: LocalState): string | null {
   if (seat === null) {
     return "A draft is private to a player";
   }
-  if (update.view.phase !== "action") {
+  // In the strategy phase the draft is of the turn that comes: the board is the same.
+  if (update.view.phase !== "action" && update.view.phase !== "strategy") {
     return "A draft is of the action phase";
   }
   if (update.view.players.find((player) => player.id === seat)?.passed) {

@@ -1270,8 +1270,12 @@ impl<'a> Game<'a> {
     /// already paid by an unfinished action; only its continuation and in-flight bookkeeping
     /// are discarded. The next ordinary [`Game::step`] runs the usual start-of-turn hooks.
     ///
+    /// In the strategy phase the copy is put into the action phase as it stands: the strategy
+    /// cards that are not chosen yet stay unchosen, and nothing of the end of the strategy phase
+    /// is resolved (trade goods on the cards that are left, the initiative hooks of factions).
+    ///
     /// # Errors
-    /// Rejects a finished game, a phase other than action, an unknown or passed player, a
+    /// Rejects a finished game, a status or agenda phase, an unknown or passed player, a
     /// blocked driver, or exhausted sequence counters. An error leaves the copy unchanged.
     pub fn prepare_hypothetical_turn(&mut self, player: &PlayerId) -> Result<(), GameError> {
         let Some(seat) = self.state.player(player) else {
@@ -1340,9 +1344,9 @@ impl<'a> Game<'a> {
     }
 
     fn reset_for_hypothetical(&mut self, player: &PlayerId) -> Result<(), GameError> {
-        if self.state.finished || self.state.phase != Phase::Action {
+        if self.state.finished || !matches!(self.state.phase, Phase::Strategy | Phase::Action) {
             return Err(GameError::InvalidHypotheticalTurn(
-                "the game must be in an unfinished action phase",
+                "the game must be in an unfinished strategy or action phase",
             ));
         }
         if let Some(error) = &self.blocked {
@@ -1407,6 +1411,9 @@ impl<'a> Game<'a> {
         self.state.activation_seq += 1;
         self.state.combat_round_seq += 1;
         self.state.production_seq += 1;
+        // From the strategy phase the copy only changes its phase: the end of that phase is
+        // not resolved.
+        self.state.phase = Phase::Action;
         crate::phase::begin_action_turn(&mut self.state, player);
         self.sync_timing_context();
         Ok(())
@@ -7916,6 +7923,44 @@ mod tests {
     }
 
     #[test]
+    fn hypothetical_turn_opens_from_the_strategy_phase() {
+        let (mut state, galaxy, _) = tactical_fixture();
+        let players = [PlayerId::new("a"), PlayerId::new("b")];
+        state.phase = Phase::Strategy;
+        state.active = None;
+        let table = Table::with_default(Box::new(crate::choice::SeededRandom::new(1)));
+        let mut game = Game::with_table(state, ContentStore::embedded(), table).with_galaxy(galaxy);
+        // One seat has its card; the other has none.
+        while game
+            .state
+            .players
+            .iter()
+            .all(|player| player.strategy_cards.is_empty())
+        {
+            assert_eq!(game.step().error, None);
+        }
+        assert_eq!(game.state.phase, Phase::Strategy);
+        let before = game.state.clone();
+        let choice_before = game.legal_options();
+
+        for player in &players {
+            let mut fork = game.fork();
+            fork.prepare_hypothetical_turn(player).unwrap();
+            assert_eq!(fork.state.phase, Phase::Action);
+            let choice = fork.legal_options().unwrap();
+            assert_eq!(&choice.player, player);
+            assert_eq!(choice.prompt, "action phase");
+            assert!(choice.ids().contains(&TACTICAL_ACTION_ID));
+            // The cards are as they were: the end of the strategy phase is not resolved.
+            for (seat, known) in fork.state.players.iter().zip(&before.players) {
+                assert_eq!(seat.strategy_cards, known.strategy_cards);
+            }
+        }
+        assert_eq!(game.state, before);
+        assert_eq!(game.legal_options(), choice_before);
+    }
+
+    #[test]
     fn hypothetical_turn_rejects_invalid_requests_without_changing_the_copy() {
         let (state, galaxy, ids) = tactical_fixture();
         let b = PlayerId::new("b");
@@ -7942,7 +7987,7 @@ mod tests {
             match case {
                 "unknown" => player = PlayerId::new("missing"),
                 "passed" => fork.state.player_mut(&b).unwrap().passed = true,
-                "phase" => fork.state.phase = Phase::Strategy,
+                "phase" => fork.state.phase = Phase::Status,
                 "finished" => fork.state.finished = true,
                 "blocked" => fork.blocked = Some(GameError::MissingActivePlayer),
                 "turn" => fork.state.turn_seq = u32::MAX,
