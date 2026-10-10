@@ -1,13 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { fileURLToPath } from "node:url";
 import { EXAMPLE_IDS as EXAMPLES } from "../src/mock/exampleList";
 
-// Screenshots of every example, next to the same example in the HTML click dummy.
-// Run all: `npm run shots`. Run some: `npm run shots -- -g draft-movement`. Skip the dummy: LEGACY=0.
+// Screenshots of every example.
+// Run all: `npm run shots`. Run some: `npm run shots -- -g draft-movement`.
 // One size: the design target is 1920×1080 or larger. Narrower screens are a non-goal (AGENTS.md).
 const SIZE = { width: 1920, height: 1080 };
-const LEGACY = fileURLToPath(new URL("../../web/tactical-action-demo.html", import.meta.url));
-const legacy = process.env.LEGACY !== "0";
 
 const shot = (page: Page, name: string) =>
   page.screenshot({ path: `shots/${name}.png`, animations: "disabled" });
@@ -49,13 +46,6 @@ test.describe("examples", () => {
         .evaluate((element) => element.scrollHeight - element.clientHeight);
       expect(overflow, "the step content needs vertical scroll").toBeLessThanOrEqual(0);
     });
-    if (legacy && example !== "draft-movement-cases") {
-      test(`legacy ${example}`, async ({ page }) => {
-        await page.goto(`file://${LEGACY}`);
-        await page.selectOption("#example", example);
-        await shot(page, `legacy/examples/${example}`);
-      });
-    }
   }
 });
 
@@ -160,38 +150,29 @@ test.describe("flows", () => {
     }
   });
 
-  for (const app of legacy ? ["web2", "legacy"] : ["web2"]) {
-    test(`${app} assign hits in space combat`, async ({ page }) => {
-      if (app === "web2") {
-        await page.goto("/?example=live-combat");
-      } else {
-        await page.goto(`file://${LEGACY}`);
-        await page.selectOption("#example", "live-combat");
+  test("assign hits in space combat", async ({ page }) => {
+    await page.goto("/?example=live-combat");
+    // The window at the start of the round: the key stages the card, the main button plays it.
+    await expect(
+      page.getByRole("group", { name: "Reaction · Start of combat round 1" }),
+    ).toBeVisible();
+    await page.keyboard.press("1");
+    await shot(page, "web2/flow/reaction-morale-boost");
+    await page.getByRole("button", { name: "Play Morale Boost" }).click();
+    await page.getByRole("button", { name: "Roll combat dice" }).click();
+    await shot(page, "web2/flow/combat-rolled");
+    for (let turn = 0; turn < 6; turn++) {
+      const pick = page
+        .locator("#step-panel")
+        .getByRole("button", { name: /^(Sustain damage|Destroy)/ })
+        .first();
+      if (!(await pick.count()) || (await pick.isDisabled())) {
+        break;
       }
-      if (app === "web2") {
-        // The window at the start of the round: the key stages the card, the main button plays it.
-        await expect(
-          page.getByRole("group", { name: "Reaction · Start of combat round 1" }),
-        ).toBeVisible();
-        await page.keyboard.press("1");
-        await shot(page, "web2/flow/reaction-morale-boost");
-      }
-      await page.getByRole("button", { name: "Play Morale Boost" }).click();
-      await page.getByRole("button", { name: "Roll combat dice" }).click();
-      await shot(page, `${app}/flow/combat-rolled`);
-      for (let turn = 0; turn < 6; turn++) {
-        const pick = page
-          .locator("#step-panel")
-          .getByRole("button", { name: /^(Sustain damage|Destroy)/ })
-          .first();
-        if (!(await pick.count()) || (await pick.isDisabled())) {
-          break;
-        }
-        await pick.click();
-      }
-      await shot(page, `${app}/flow/combat-assign`);
-    });
-  }
+      await pick.click();
+    }
+    await shot(page, "web2/flow/combat-assign");
+  });
 
   test("pay for production on the board", async ({ page }) => {
     await page.goto("/?example=draft-production");
@@ -519,8 +500,8 @@ test.describe("flows", () => {
       await page.keyboard.press("3");
       await expect(panel(page)).toContainText("2 / 2 placed");
       await panel(page).getByRole("button", { name: "Swap" }).click();
-      await fits(page);
       await shot(page, "web2/flow/strategy-politics-agenda");
+      await fits(page);
       await page.keyboard.press("Enter");
       await expect(panel(page)).toContainText("made Blair the speaker");
     });

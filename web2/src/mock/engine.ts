@@ -1,5 +1,5 @@
 // @ts-nocheck
-// The scripted rules engine of the click dummy, copied from web/tactical-action-demo.html.
+// The scripted rules engine of the click dummy.
 // It is not type-checked on purpose: it is throwaway code that the server replaces. Typed code
 // (selectors, the reducer) reads its state and calls its functions.
 import {

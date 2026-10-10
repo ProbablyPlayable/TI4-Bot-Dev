@@ -4,7 +4,7 @@
 
 Put the action frame from [Tactical action frame UX](2026-10-06-TACTICAL_ACTION_FRAME_UX.md) into the full game view. The game view must also show the table, the board, each type of action, the references, and past actions.
 
-The click dummy `web/tactical-action-demo.html` shows this shell. It uses fictional data. It shows the most difficult case: eight players and a board with five rings (61 systems). It can show a function that the engine does not have yet. The last section lists what the engine and the server must supply.
+The click dummy shows this shell. It uses fictional data. It shows the most difficult case: eight players and a board with five rings (61 systems). It can show a function that the engine does not have yet. The last section lists what the engine and the server must supply.
 
 This document follows the [UI/UX guidelines](2026-10-04-UI_UX_GUIDELINES.md), section 2 (stable layout) and section 3 (information where players use it).
 

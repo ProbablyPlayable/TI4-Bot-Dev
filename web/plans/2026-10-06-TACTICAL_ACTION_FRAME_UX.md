@@ -4,7 +4,7 @@
 
 Use one frame for a tactical action. The frame shows the five steps: Activation, Movement, Space combat, Invasion, Production. Draft and Live use the same frame and the same content.
 
-The click dummy `web/tactical-action-demo.html` is the reference for this frame. It is one HTML file. It uses fictional data and a fixed dice script. It does not connect to the engine.
+The click dummy is the reference for this frame. It uses fictional data and a fixed dice script. It does not connect to the engine.
 
 The dummy can show a function that the engine does not have yet. Each such function is in the section "What the engine and server must supply".
 

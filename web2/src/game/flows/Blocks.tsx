@@ -141,7 +141,7 @@ function MenuRow({ row, grouped }: { row: MenuRowView; grouped: boolean }) {
   return (
     <div
       className={cx(
-        "relative grid min-h-10 items-center gap-x-3 px-3.5 py-1.5 touch:min-h-12 [&+&]:border-t [&+&]:border-line/50",
+        "relative grid min-h-9 items-center gap-x-3 px-3.5 py-1.5 touch:min-h-12 [&+&]:border-t [&+&]:border-line/50",
         // A phone has no keys: the column of the key is not there.
         grouped
           ? "grid-cols-[30px_104px_minmax(0,1fr)_auto] phone:grid-cols-[68px_minmax(0,1fr)_auto]"
