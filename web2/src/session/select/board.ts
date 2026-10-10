@@ -150,7 +150,7 @@ export function selectBoard(
   inspected: string | null,
   task: BoardTaskView | null,
   /** The open movement step: the board shows what is staged, and a system opens its fleet. */
-  movement: { facts: MovementFacts; draft: MovementDraft } | null = null,
+  movement: { facts: MovementFacts; draft: MovementDraft; handled: string[] } | null = null,
 ): BoardView {
   const viewer = viewerSeat(update);
   const board = update.view.board;
@@ -161,9 +161,16 @@ export function selectBoard(
   );
   const move =
     movement &&
-    selectMovementBoard(update, movement.facts, movement.draft, open?.system_id ?? null);
+    selectMovementBoard(
+      update,
+      movement.facts,
+      movement.draft,
+      open?.system_id ?? null,
+      movement.handled,
+    );
   const origin =
-    movement && selectOrigin(update, movement.facts, movement.draft, open?.system_id ?? null);
+    movement &&
+    selectOrigin(update, movement.facts, movement.draft, open?.system_id ?? null, movement.handled);
   const tiles = map.map((tile) => tileView(tile, board.systems[tile.system_id], viewer));
   return {
     tiles: move ? tiles.map((tile) => withMovement(tile, move)) : tiles,
@@ -176,7 +183,19 @@ export function selectBoard(
     activeSystem: board.active_system ?? null,
     inspected: open ? open.system_id : null,
     targeting: false,
-    task,
+    // The movement is staged on the board: a system that ships can leave opens its fleet.
+    task: move
+      ? {
+          context: move.systems,
+          target: "system",
+          kind: "pick",
+          interactive: true,
+          values: Object.fromEntries(move.origins.map((id) => [id, 0])),
+          chosen: origin ? { [origin.system]: true } : {},
+          verb: "Move from",
+          unit: "system",
+        }
+      : task,
     // The fleet with its controls takes the place of the inspector of that system.
     inspector:
       open && !origin

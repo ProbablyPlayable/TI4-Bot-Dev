@@ -77,6 +77,7 @@ function plan(state: State) {
           name: E.unitName(entry.line.type) as string,
           value: entry.count - 1,
           site: entry.line.origin === ship.origin ? null : sysLabel(entry.line.origin),
+          place: place(entry.line),
         })),
       ),
       accepts:
@@ -194,6 +195,9 @@ function plan(state: State) {
     .filter((origin) => (editing ? reaches(origin) || used(origin) : used(origin)))
     .sort((a, b) => away(a) - away(b));
 
+  /** The player marked the system as done, in this movement. */
+  const marked = (origin: string) => state.handled?.[origin] === active;
+
   const card = (origin: string): OriginView => {
     const ships = shipsAt(origin)
       .map(shipRow)
@@ -227,6 +231,7 @@ function plan(state: State) {
         moving && !MAP[origin].dock && fighters > room
           ? `${plural(fighters - room, "fighter")} with no capacity here · removed`
           : null,
+      handled: moving > 0 || marked(origin),
     };
   };
 
@@ -477,6 +482,7 @@ export function movementBoard(state: State) {
     leaving,
     // The systems that the player can open: something can leave them.
     origins: it.origins.map((origin) => origin.system),
+    handled: it.origins.filter((origin) => origin.handled).map((origin) => origin.system),
     // The systems that the movement is about: they stay in full view while a system is chosen.
     systems: [
       ...new Set([it.active, ...routes.flatMap((route) => route.path), ...Object.keys(notes)]),

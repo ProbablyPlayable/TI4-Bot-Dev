@@ -36,7 +36,9 @@ export function selectShell(update: SessionUpdate, local: LocalState): ShellView
   // The activation and the movement have their own screens; every other decision is a list.
   const facts = tacticalFacts(update, local);
   const movement =
-    facts?.kind === "movement" && local.step === null ? { facts, draft: local.movement } : null;
+    facts?.kind === "movement" && local.step === null
+      ? { facts, draft: local.movement, handled: local.handled }
+      : null;
   return {
     seats: selectSeats(update),
     accent: local.staged || (movement && Object.keys(local.movement).length) ? "draft" : "live",

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { OriginView } from "../../../model";
 import { plural } from "../../../model";
-import { Button, CloseButton } from "../../../ui";
+import { Button, Icon, cx } from "../../../ui";
 import { useDispatch } from "../../context";
 import { Stays } from "./parts";
 import { CargoRow, OriginTokens, loadSource } from "./Tokens";
@@ -19,7 +19,7 @@ export function OriginSheet({ view }: { view: OriginView }) {
     <div
       role="group"
       aria-label={`Move from ${view.label}`}
-      className="absolute bottom-2.5 left-2.5 z-2 max-h-[62%] w-[430px] overflow-auto rounded-lg border border-line bg-surface/97 text-sm phone:inset-x-0 phone:bottom-0 phone:z-3 phone:max-h-[60%] phone:w-auto phone:rounded-none phone:border-x-0 phone:border-b-0 phone:bg-surface"
+      className="absolute bottom-2.5 left-2.5 z-2 max-h-[62%] w-[430px] overflow-auto rounded-lg border border-line bg-surface/97 text-sm phone:inset-x-0 phone:bottom-0 phone:z-3 phone:max-h-[70%] phone:w-auto phone:rounded-none phone:border-x-0 phone:border-b-0 phone:bg-surface"
     >
       {/* The heading and the cargo row stay in view: only the ships scroll under them. */}
       <div className="sticky top-0 z-1 bg-surface">
@@ -35,15 +35,27 @@ export function OriginSheet({ view }: { view: OriginView }) {
           <Button
             size="sm"
             tone="quiet"
-            disabled={!view.leaves}
+            disabled={!view.handled}
             onClick={() => dispatch({ type: "resetOrigin", system: view.system })}
           >
             Reset
           </Button>
-          <CloseButton
-            label="Close this fleet"
-            onClick={() => dispatch({ type: "closeInspector" })}
-          />
+          {/* Closes the fleet and marks the system on the map, also when nothing leaves it. */}
+          <button
+            type="button"
+            aria-label="Done with this system"
+            title="Done with this system · closes the fleet and marks the system on the map"
+            aria-pressed={view.handled}
+            className={cx(
+              "grid size-7 flex-none place-items-center rounded-md border touch:size-9",
+              view.handled
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-line-strong text-icon hover:bg-raised",
+            )}
+            onClick={() => dispatch({ type: "markOrigin", system: view.system })}
+          >
+            <Icon name="check" />
+          </button>
         </div>
         <CargoRow origin={view} source={source} onSelect={setChosen} />
       </div>
@@ -79,6 +91,8 @@ export function MovementSummary({ origins }: { origins: OriginView[] }) {
                   .map((ship) => `${ship.count} ${ship.name}`)
                   .join(", ")}
               </>
+            ) : origin.handled ? (
+              "✓ Nothing leaves"
             ) : (
               "Nothing staged"
             )}

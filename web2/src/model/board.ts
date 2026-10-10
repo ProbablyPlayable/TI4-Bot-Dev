@@ -44,8 +44,11 @@ export interface TileView {
    * cargo that no ship takes. A sign on the tile; the text is in the tooltip and the inspector.
    */
   note?: { sign: "stay" | "cargo"; text: string };
-  /** The open movement takes something from here: ships leave, or a ship picks up units. */
-  staged?: boolean;
+  /**
+   * The player is done with this system in the open movement: ships leave, a ship picks up
+   * units, or the player marked it.
+   */
+  handled?: boolean;
 }
 
 export interface RouteView {

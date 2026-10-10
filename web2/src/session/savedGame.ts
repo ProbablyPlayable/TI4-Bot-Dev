@@ -24,6 +24,9 @@ export type SaveStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 export const saveKey = (game: LocalGame): string =>
   `ti4.local.${game.seed}.${game.players}.${game.humans}`;
 
+/** Where the staged movement of the open movement step is kept: it is not an answer yet. */
+export const draftKey = (game: LocalGame): string => `${saveKey(game)}.movement`;
+
 const isCount = (value: unknown): value is number =>
   Number.isInteger(value) && (value as number) >= 0;
 
@@ -80,4 +83,5 @@ export function storeSavedGame(storage: SaveStorage, save: SavedGame): void {
 
 export function clearSavedGame(storage: SaveStorage, game: LocalGame): void {
   storage.removeItem(saveKey(game));
+  storage.removeItem(draftKey(game));
 }

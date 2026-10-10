@@ -39,12 +39,20 @@ interface Plan {
   draft: MovementDraft;
   tiles: Map<string, BoardTileView>;
   viewer: string;
+  /** The systems that the player marked as done. */
+  handled: string[];
 }
 
-function planOf(update: SessionUpdate, facts: MovementFacts, draft: MovementDraft): Plan {
+function planOf(
+  update: SessionUpdate,
+  facts: MovementFacts,
+  draft: MovementDraft,
+  handled: string[] = [],
+): Plan {
   return {
     facts,
     draft,
+    handled,
     tiles: new Map((update.view.board.map_tiles ?? []).map((tile) => [tile.system_id, tile])),
     viewer: update.viewer.role === "player" ? update.viewer.seat : "",
   };
@@ -84,6 +92,14 @@ function reasonOf(plan: Plan, ship: ShipFact): string | null {
     : `Needs ${name} · already used`;
 }
 
+/** Where the units of a pool are in their system: "Planet Jord", "Space area". */
+function placeOf(plan: Plan, pool: CargoPool) {
+  const planet = plan.tiles
+    .get(pool.system)
+    ?.planets?.find((item) => item.id === pool.source)?.label;
+  return pool.source ? `Planet ${planet ?? pool.source}` : "Space area";
+}
+
 function holdOf(plan: Plan, ship: ShipFact): ShipHoldView | null {
   const id = shipId(ship);
   const hold = plan.draft[id];
@@ -102,6 +118,7 @@ function holdOf(plan: Plan, ship: ShipFact): ShipHoldView | null {
         name: nameOf(from.unit, from.damaged),
         value: count - 1,
         site: from.system === ship.origin ? null : systemLabel(plan.tiles, from.system),
+        place: placeOf(plan, from),
       }));
     }),
     accepts:
@@ -125,9 +142,7 @@ const moveText = (ship: ShipFact) =>
 /** The move value of a ship that moves with Gravity Drive or the Ionian Fuel Refinery: +1 each. */
 function boostedText(ship: ShipFact): string | null {
   const boosts = Number(!!ship.move?.gravity_drive) + Number(!!ship.move?.ionian);
-  return boosts && !ship.nebula
-    ? `Move ${ship.move_value} → ${ship.move_value + boosts}`
-    : null;
+  return boosts && !ship.nebula ? `Move ${ship.move_value} → ${ship.move_value + boosts}` : null;
 }
 
 /** The ships of one system that are the same kind: one heading, one token for each. */
@@ -187,12 +202,6 @@ function shipRows(plan: Plan, ships: ShipFact[], onlyMoving = false): MoveShipVi
 
 function cargoOf(plan: Plan, origin: string, ships: ShipFact[]): CargoSourceView[] {
   const pools = [...new Set(ships.flatMap((ship) => (ship.move ? (ship.loads ?? []) : [])))];
-  const place = (pool: CargoPool) => {
-    const planet = plan.tiles
-      .get(pool.system)
-      ?.planets?.find((item) => item.id === pool.source)?.label;
-    return pool.source ? `Planet ${planet ?? pool.source}` : "Space area";
-  };
   return pools
     .sort((a, b) => a - b)
     .map((index) => {
@@ -201,7 +210,7 @@ function cargoOf(plan: Plan, origin: string, ships: ShipFact[]): CargoSourceView
         id: sourceId(index),
         unit: typeOf(pool.unit),
         name: nameOf(pool.unit, pool.damaged),
-        place: place(pool),
+        place: placeOf(plan, pool),
         site:
           pool.system === origin
             ? null
@@ -236,6 +245,7 @@ function originOf(plan: Plan, origin: string, onlyMoving = false): OriginView {
     stays: stays.join(" · ") || "Nothing",
     // Units that are left with no ship to carry them: the update does not say this yet.
     warning: null,
+    handled: moving.length > 0 || plan.handled.includes(origin),
   };
 }
 
@@ -270,8 +280,9 @@ export function selectMovement(
   update: SessionUpdate,
   facts: MovementFacts,
   draft: MovementDraft,
+  handled: string[] = [],
 ): MovementView {
-  const plan = planOf(update, facts, draft);
+  const plan = planOf(update, facts, draft, handled);
   const origins = originsOf(facts);
   const stuck = facts.ships.filter((ship) => ship.blocked && !origins.includes(ship.origin));
   const there = (update.view.board.systems[facts.active]?.units ?? []).filter(
@@ -324,9 +335,10 @@ export const selectOrigin = (
   facts: MovementFacts,
   draft: MovementDraft,
   system: string | null,
+  handled: string[] = [],
 ): OriginView | null =>
   system !== null && originsOf(facts).includes(system)
-    ? originOf(planOf(update, facts, draft), system)
+    ? originOf(planOf(update, facts, draft, handled), system)
     : null;
 
 /** What is committed to the active system: the ships that move, by the system that they leave. */
@@ -354,8 +366,9 @@ export function selectMovementBoard(
   facts: MovementFacts,
   draft: MovementDraft,
   inspected: string | null,
+  handled: string[] = [],
 ) {
-  const plan = planOf(update, facts, draft);
+  const plan = planOf(update, facts, draft, handled);
   const groups = new Map<string, ShipFact[]>();
   for (const ship of facts.ships) {
     if (ship.origin === inspected && ship.move) {
@@ -414,6 +427,7 @@ export function selectMovementBoard(
     leaving,
     arrives,
     origins,
+    handled: origins.filter((origin) => handled.includes(origin)),
     active: facts.active,
     viewer: plan.viewer,
     // The systems that the movement is about, for "Fit task".
@@ -450,6 +464,8 @@ export function withMovement(tile: TileView, move: MovementBoard): TileView {
     control: marks.length > 1 ? "contested" : (marks[0]?.seat ?? null),
     pickedUp: picked,
     note: move.notes[tile.id],
-    staged: !!gone && (gone.ships > 0 || picked > 0 || Object.keys(gone.planets).length > 0),
+    handled:
+      (!!gone && (gone.ships > 0 || picked > 0 || Object.keys(gone.planets).length > 0)) ||
+      move.handled.includes(tile.id),
   };
 }

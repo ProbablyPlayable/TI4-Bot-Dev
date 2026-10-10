@@ -139,11 +139,17 @@ test("a tactical action: the system and the movement are staged on the map", asy
   await expect(panel(page).getByText("Fleet supply")).toBeVisible();
   await expect(send(page)).toHaveText(/Move fleet/);
   // The board shows what the movement leaves and what arrives.
-  await expect(system("01")).toHaveAttribute("aria-label", /movement staged, 4 Sol ships/);
+  await expect(system("01")).toHaveAttribute("aria-label", /handled, 4 Sol ships/);
   await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
   await page.screenshot({ path: "shots/local/movement.png", animations: "disabled" });
   // Nothing was sent yet.
   await expect.poll(() => savedLine(page)).toContain("4 answers saved");
+  // A reload keeps what is staged, and with it the mark of the system.
+  await page.reload();
+  await expect(send(page)).toHaveText(/Move fleet/);
+  await expect(system("01")).toHaveAttribute("aria-label", /handled, 4 Sol ships/);
+  await system("01").click();
+  await expect(sheet.getByText("2 ships · 2 cargo")).toBeVisible();
 
   // "Move fleet" sends the whole movement: each ship and each unit is one answer of the game.
   await send(page).click();

@@ -199,7 +199,7 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
   const { linked, props } = useLink([`sys:${tile.id}`]);
   const { x, y } = hexCenter(tile);
   const strength = view === "space";
-  const label = `${tile.name}, system ${tile.id}${tile.home ? `, ${seats[tile.home].faction} home system` : ""}${tile.anomaly ? ", " + ANOMALY_LABEL[tile.anomaly] : ""}${tile.wormhole ? `, ${tile.wormhole} wormhole` : ""}${tile.commandToken ? ", your command token is here" : ""}${tile.staged ? ", movement staged" : ""}${tile.fleets.map((fleet) => `, ${plural(fleet.ships, seats[fleet.seat].faction + " ship")}`).join("")}`;
+  const label = `${tile.name}, system ${tile.id}${tile.home ? `, ${seats[tile.home].faction} home system` : ""}${tile.anomaly ? ", " + ANOMALY_LABEL[tile.anomaly] : ""}${tile.wormhole ? `, ${tile.wormhole} wormhole` : ""}${tile.commandToken ? ", your command token is here" : ""}${tile.handled ? ", handled" : ""}${tile.fleets.map((fleet) => `, ${plural(fleet.ships, seats[fleet.seat].faction + " ship")}`).join("")}`;
   // Planets and the wormhole are in one row. A system has at most three planets.
   const slots = tile.planets.length + (tile.wormhole ? 1 : 0);
   const gap = slots > 3 ? 19 : 25;
@@ -304,10 +304,10 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
           </g>
         );
       })}
-      {tile.staged && (
-        // A check mark, not only a colour: the open movement takes something from this system.
+      {tile.handled && (
+        // A check mark, not only a colour: the player is done with this system in the movement.
         <g className="t-staged" transform={`translate(${x - 25} ${y - 19})`}>
-          <title>Movement staged here</title>
+          <title>Handled in this movement</title>
           <circle r="6" />
           <path d="m-2.9 0 2.1 2.2 3.7-4.2" />
         </g>

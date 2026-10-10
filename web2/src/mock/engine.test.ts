@@ -250,7 +250,7 @@ describe("mock engine", () => {
       // A check mark on every system that the movement takes something from.
       expect(
         board.tiles
-          .filter((item) => item.staged)
+          .filter((item) => item.handled)
           .map((item) => item.id)
           .sort(),
       ).toEqual(["1", "23", "26", "31", "34"]);
@@ -332,10 +332,15 @@ describe("mock engine", () => {
         expect.objectContaining({ ship: "e-carrier#0", cargo: { infantry: 4 } }),
       );
       const tile = () => selectShell(world).board.tiles.find((item) => item.id === "58")!;
-      expect(tile().staged).toBe(true);
+      expect(tile().handled).toBe(true);
       const other = ship(world, "l-carrier").count;
       reduce(world, { type: "resetOrigin", system: "58" });
-      expect(tile().staged).toBe(false);
+      expect(tile().handled).toBe(false);
+      // A system with nothing staged gets the mark from the player. It is not a step of the draft.
+      reduce(world, { type: "markOrigin", system: "58" });
+      expect(tile().handled).toBe(true);
+      expect(origin(world, "58").leaves).toBe("");
+      expect(selectShell(world).board.origin).toBeNull();
       expect(ship(world, "e-carrier").count).toBe(0);
       expect(ship(world, "l-carrier").count).toBe(other);
       reduce(world, { type: "undo" });

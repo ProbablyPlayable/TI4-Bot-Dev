@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GameSession, Intent } from "../model";
 import { fill, poolOfSource, resetOrigin, setCount } from "./movementDraft";
-import { draftOf, stepsOf } from "./movementPlan";
+import { type MovementStep, draftOf, stepsOf } from "./movementPlan";
+import type { SaveStorage } from "./savedGame";
 import type { LocalState } from "./select/action";
 import { selectShell } from "./select/shell";
 import { tacticalFacts } from "./select/tactical";
@@ -16,6 +17,7 @@ const NOTHING: LocalState = {
   replaying: null,
   canUndo: false,
   movement: {},
+  handled: [],
   step: null,
   remaining: null,
   planNote: null,
@@ -24,6 +26,28 @@ const NOTHING: LocalState = {
 /** The label of a system as the activation step lists it, for the search field. */
 const sameSystem = (query: string, id: string) =>
   query.trim() === id || query.trim().endsWith(`#${id}`);
+
+/** Where the staged movement is kept between two visits. */
+export interface DraftStore {
+  storage: SaveStorage;
+  key: string;
+}
+
+/** The staged movement of one movement step, as the steps that "Move fleet" would send. */
+interface SavedDraft {
+  nonce: string;
+  destination: string;
+  steps: MovementStep[];
+}
+
+function readDraft(store: DraftStore | undefined): SavedDraft | null {
+  try {
+    const value = JSON.parse(store?.storage.getItem(store.key) ?? "null");
+    return value && Array.isArray(value.steps) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface LiveSession {
   /** Null until the first update. */
@@ -37,8 +61,9 @@ export interface LiveSession {
 /**
  * A `GameSession` on a transport: the game comes from the updates, and what the player stages
  * between two updates is kept here. Only the main button sends something.
+ * With `drafts`, a staged movement is still staged after a reload.
  */
-export function useLiveSession(transport: Transport | null): LiveSession {
+export function useLiveSession(transport: Transport | null, drafts?: DraftStore): LiveSession {
   const [update, setUpdate] = useState<SessionUpdate | null>(null);
   const [local, setLocal] = useState<LocalState>(NOTHING);
 
@@ -83,6 +108,14 @@ export function useLiveSession(transport: Transport | null): LiveSession {
               error: false,
             };
           }
+          // The movement that was staged for this choice before a reload.
+          const saved = again ? null : readDraft(drafts);
+          if (
+            saved?.nonce === event.update.pending_choice?.nonce &&
+            saved?.destination === facts.active
+          ) {
+            movement = draftOf(facts, saved.steps);
+          }
           remaining = null;
         } else if (facts?.kind === "activation") {
           remaining = null;
@@ -95,13 +128,33 @@ export function useLiveSession(transport: Transport | null): LiveSession {
           replaying: null,
           canUndo: event.canUndo,
           movement,
+          handled: [],
           step: null,
           remaining,
           planNote,
         };
       });
     });
-  }, [transport]);
+  }, [transport, drafts]);
+
+  // The staged movement is kept for a reload, with the choice that it belongs to.
+  useEffect(() => {
+    const facts = update?.tactical;
+    const nonce = update?.pending_choice?.nonce;
+    if (!update || !drafts) {
+      return;
+    }
+    if (facts?.kind === "movement" && nonce && Object.keys(local.movement).length) {
+      const saved: SavedDraft = {
+        nonce,
+        destination: facts.active,
+        steps: stepsOf(facts, local.movement),
+      };
+      drafts.storage.setItem(drafts.key, JSON.stringify(saved));
+    } else {
+      drafts.storage.removeItem(drafts.key);
+    }
+  }, [update, local.movement, drafts]);
 
   const session = useMemo((): GameSession | null => {
     if (!update || !transport) {
@@ -118,6 +171,8 @@ export function useLiveSession(transport: Transport | null): LiveSession {
     /** A change of the staged movement. It clears the note of the last plan. */
     const draft = (change: (now: LocalState["movement"]) => LocalState["movement"]) =>
       setLocal((now) => ({ ...now, movement: change(now.movement), planNote: null }));
+    const unmark = (keep: (system: string) => boolean) =>
+      setLocal((now) => ({ ...now, handled: now.handled.filter(keep) }));
     const send = () => {
       if (!pending) {
         return;
@@ -143,7 +198,13 @@ export function useLiveSession(transport: Transport | null): LiveSession {
         case "chooseOption":
           return stage(intent.option);
         case "toggleSystem":
-          return stage(intent.system);
+          // In a movement the fleet of a system opens at the system, and closes there.
+          return moving
+            ? setLocal((now) => ({
+                ...now,
+                inspected: now.inspected === intent.system ? null : intent.system,
+              }))
+            : stage(intent.system);
         case "findSystem": {
           const found = pending?.choice.options.find((item) => sameSystem(intent.query, item.id));
           if (found && facts?.kind === "activation") {
@@ -177,8 +238,19 @@ export function useLiveSession(transport: Transport | null): LiveSession {
           );
         }
         case "resetOrigin":
+          unmark((system) => system !== intent.system);
           return moving && draft((now) => resetOrigin(now, intent.system));
+        case "markOrigin":
+          return (
+            moving &&
+            setLocal((now) => ({
+              ...now,
+              inspected: null,
+              handled: [...new Set([...now.handled, intent.system])],
+            }))
+          );
         case "cancelEdit":
+          unmark(() => false);
           return moving && draft(() => ({}));
         default:
           // The other intents belong to screens that local play does not have yet.

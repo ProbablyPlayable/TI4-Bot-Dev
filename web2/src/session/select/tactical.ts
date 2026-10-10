@@ -141,7 +141,7 @@ function movement(
   const nothing = Object.keys(local.movement).length === 0;
   return {
     target,
-    content: selectMovement(update, facts, local.movement),
+    content: selectMovement(update, facts, local.movement, local.handled),
     footer: {
       note: local.planNote?.text ?? "This commits to the live game.",
       error: !!local.planNote?.error,

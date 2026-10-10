@@ -172,7 +172,8 @@ export function Board({ view, children }: { view: BoardView; children?: ReactNod
         <span className="pointer-events-auto flex-none">
           <Hint label="Map legend">
             {MAP_VIEWS.find((item) => item.id === mapView)!.legend} · ▼ your command token · α β
-            wormholes · inner ring: ships of one player · red dashed: contested · ✓ movement staged
+            wormholes · inner ring: ships of one player · red dashed: contested · ✓ system handled
+            in the movement
           </Hint>
         </span>
         <div

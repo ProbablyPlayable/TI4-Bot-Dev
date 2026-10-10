@@ -362,7 +362,7 @@ export function selectBoard(world: World, state: State): BoardView {
       fleets: marks,
       pickedUp,
       note: move?.notes[id],
-      staged: !!move && (!!move.leaving[id] || pickedUp > 0),
+      handled: !!move && (!!move.leaving[id] || pickedUp > 0 || move.handled.includes(id)),
     };
   });
 

@@ -206,9 +206,17 @@ export interface ShipHoldView {
   loaded: number;
   /**
    * One for each loaded unit. `value` is the count that takes this unit out again.
-   * `site` names the system on the way where the unit is picked up.
+   * `site` names the system on the way where the unit is picked up. `place` is where the unit
+   * is in its system: "Planet Jord", "Space area".
    */
-  slots: { key: string; unit: UnitType; name: string; value: number; site: string | null }[];
+  slots: {
+    key: string;
+    unit: UnitType;
+    name: string;
+    value: number;
+    site: string | null;
+    place: string;
+  }[];
   /** What this ship can load: the id of a cargo source, and the staged value that takes one more. */
   accepts: Record<string, { key: string; value: number }>;
 }
@@ -264,6 +272,8 @@ export interface OriginView {
   stays: string;
   /** Units that stay with no ship to carry them. They are removed. */
   warning: string | null;
+  /** The player is done with this system: something leaves it, or the player marked it. */
+  handled: boolean;
 }
 
 export interface RiftRowView {

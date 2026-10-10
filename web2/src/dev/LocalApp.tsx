@@ -1,10 +1,11 @@
-import { type ChangeEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { GameShell } from "../game/shell/GameShell";
 import { DemoApp } from "./DemoApp";
 import {
   type LocalGame,
   type SavedGame,
   clearSavedGame,
+  draftKey,
   loadSavedGame,
   parseSavedGame,
   saveKey,
@@ -96,7 +97,8 @@ export function LocalApp({ game }: { game: LocalGame }) {
     };
   }, [start, waits, game]);
 
-  const { session, error, replaying } = useLiveSession(transport);
+  const drafts = useMemo(() => ({ storage: localStorage, key: draftKey(game) }), [game]);
+  const { session, error, replaying } = useLiveSession(transport, drafts);
 
   const newGame = () => {
     clearSavedGame(localStorage, game);

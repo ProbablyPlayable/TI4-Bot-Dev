@@ -51,6 +51,7 @@ There are two layouts, and no others.
 
 - The shell shows one pane at a time: **Map · Players · Action**, with a tab bar at the bottom. The toolbar stays on top.
 - The footer of the action (note, payment line, main button) is under every pane, so the main button is always in reach. This is how pattern 2 holds on a phone: the choice and the button that sends it are on one screen, the rest is one tap away.
+- Exception (owner, 2026-10-10): while the fleet of a system is open on the map, the footer is not shown. The sheet has its room. The "✓" of the sheet closes it, and the footer is back.
 - The pane follows the choice (pattern 1): a choice on the board opens Map, a choice of a player opens Players, everything else opens Action. The player can switch at any time.
 - A pane may scroll down. Pattern 9 and "the open step must not need vertical scroll" are desktop rules. Nothing may be cut at the side: `e2e/phone.spec.ts` checks every example for this.
 - The player table keeps the names in view and scrolls the values sideways. A tap on a row opens the sheet of the player; there is no hover sheet.
@@ -164,15 +165,16 @@ The owner chose this design on 2026-10-10, from three that were compared.
 
 - The movement is staged on the map. A system that ships can leave opens its fleet there, in a sheet: one token for each ship. A tap moves a ship or takes it back. The panel says what leaves each system; it has no controls.
 - A ship that moves is one row: its token, then its own hold, one slot for each unit. The game rolls for each ship at a gravity rift, so the player must see what each ship carries. Ships of a kind that stay are tokens in one row.
-- What the ships of a system can load is one row of the sheet, a chip for each kind of unit with the count that is left. One chip is chosen (▸). A tap on an empty slot loads that kind; a tap on a used slot unloads. "Fill" loads the chosen kind on every ship that leaves the system, until the holds are full or none is left. A chip is the icon of the unit and the count; the name is its tooltip. The heading and this row stay in view while the ships scroll.
-- A pickup on the way has one sign, the bent arrow: on its chip, with the number of the system, and on the slot that holds the unit. A slot of a ship that does not pass the system cannot take it.
+- What the ships of a system can load is one row of the sheet, a chip for each kind of unit with the count that is left. The chips are grouped by place, and the place is text before its chips ("Space area", "Planet Jord", "#23 Planet Vefut"). One chip is chosen (▸). A tap on an empty slot loads that kind; a tap on a used slot unloads. "Fill" loads the chosen kind on every ship that leaves the system, until the holds are full or none is left. A chip is the icon of the unit and the count; the name is its tooltip. The heading and this row stay in view while the ships scroll.
+- When the ships of a system can load at more than one place, the row of a ship says in text where its cargo is from ("Planet Jord 2 · Space area 1").
+- A pickup on the way has one sign, the bent arrow: on its chip, after the number of the system, and on the slot that holds the unit. A slot of a ship that does not pass the system cannot take it.
 - Gravity Drive is a toggle on the row of a ship, where it changes what the ship does: it spares the ship a gravity rift, or the ship cannot move without it. One ship of the action has it; the toggle of another ship names that ship. The game chooses the path, and the row shows what the path means ("⚄ Rift roll").
-- A system that the movement takes something from has a check mark. The count of the player's ships shows "now → after" in the standard view.
+- A system that the player is done with has a check mark: the movement takes something from it, or the player marked it. The "✓" of the sheet closes the sheet and marks the system; the sheet has no "×". A tap on the system closes the sheet with no mark. The mark of the player is kept in the page only, until the movement is sent: a reload loses it. The panel says "✓ Nothing leaves" for a marked system with nothing staged. The count of the player's ships shows "now → after" in the standard view.
 - The paths of the ships are drawn for the open system only, with the marks of that path (rift roll, Gravity Drive). The game chooses the path. The map shows no cargo labels.
 - Exception to "a choice is staged, then sent": a draft records every change of the movement at once, and the later steps are checked again. The step has no main button and no "Reset selection", so the footer is empty and the sheet has the room. The reason: a draft is private, every change is one step of undo, and the step tabs go on. Live keeps "Move fleet", because that sends to the game.
 - The active system opens the list of what is committed to it: the ships that were there, then the ships that move, by the system that they leave, each with its hold. It is read-only; a system in the list opens its sheet.
 - The demo data follows the game: before a movement, ships of two players are never in one system. Ground forces of two players can be on different planets of one system.
-- The sheet has a small "Reset": it takes back what leaves that system, and its check mark.
+- The sheet has a small "Reset": it takes back what leaves that system, and its check mark, also one that the player set.
 - The read-only view of a movement (a recorded step in Live, History) is the same tokens in the panel, one band for each system.
 
 ## Battle table
@@ -199,7 +201,8 @@ The owner chose this design on 2026-10-10, from three that were compared.
 - A local game has no bar at the bottom. "Settings" (a header button on desktop; the item after the other-app item in "Reference and more" on a phone) opens the Settings sheet, which is a reference sheet: the seed, the seats, the saved answers, New game, Export and Import. Without the shell (loading, a saved game of another engine, a notice) the page has a row with only "Settings". The demo has its own bar and no Settings.
 - `src/session/` turns an update of the game into the view models. It imports `model` only, and it decides no rule: a value that needs a rule comes from the engine.
 - A decision without a dedicated screen is one list in the action panel.
-- The activation and the movement of a tactical action use the screens of these steps. The facts come from the engine with the update (`tactical`), and "Move fleet" sends the staged movement as one plan (`Transport.submitPlan`). A plan that the game refuses is taken back whole; one undo takes a movement back whole.
+- The activation and the movement of a tactical action use the screens of these steps. In the movement the systems that ships can leave are the choice on the board, as in the demo, so a phone stays on the map. The facts come from the engine with the update (`tactical`), and "Move fleet" sends the staged movement as one plan (`Transport.submitPlan`). A plan that the game refuses is taken back whole; one undo takes a movement back whole.
 - In local play the game decides when a ship uses Gravity Drive: only when the ship cannot arrive without it. The toggle is then on and locked. The free toggle of the Movement section is not offered there.
 - The game is saved in `localStorage` as its seed and the ids of the answers (`src/session/savedGame.ts`). A reload and an undo play it again from the seed.
+- The staged movement of the open movement step is saved too (`draftKey`), with the number of its choice. After a reload it is staged again, so its systems keep their check marks.
 - The details, the measurements and the limits are in `crates/ti4-wasm/README.md`.

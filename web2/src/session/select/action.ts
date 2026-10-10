@@ -22,6 +22,8 @@ export interface LocalState {
   canUndo: boolean;
   /** The staged movement of the open movement step. */
   movement: MovementDraft;
+  /** The systems of the open movement that the player marked as done. */
+  handled: string[];
   /** The step of the tactical action that is in view, when it is not the open one. */
   step: number | null;
   /** The steps of a movement that another decision stopped. They are staged again when the movement goes on. */

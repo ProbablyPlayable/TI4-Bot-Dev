@@ -544,11 +544,19 @@ export function reduce(world: World, intent: Intent) {
           delete state.edit.value[key];
         }
       }
+      state.handled = { ...state.handled, [intent.system]: undefined };
       state.edit.dirty = true;
       announce(E.validation(state) || `Movement from ${MAP[intent.system].name} reset.`);
       recordMove();
       break;
     }
+    case "markOrigin":
+      if (state.edit?.step === 1) {
+        // A mark of this page only: it is not a step of the draft.
+        state.handled = { ...state.handled, [intent.system]: E.activeId(state) };
+        state.inspect = null;
+      }
+      break;
     case "closeInspector":
       state.inspect = null;
       break;

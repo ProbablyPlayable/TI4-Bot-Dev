@@ -34,6 +34,8 @@ export type Intent =
   | { type: "setBoost"; ship: string | null }
   /** Takes back everything that leaves with the ships of one system. */
   | { type: "resetOrigin"; system: SystemId }
+  /** The player is done with one system of the movement: it gets its mark, and its fleet closes. */
+  | { type: "markOrigin"; system: SystemId }
   | { type: "setPlacement"; unit: UnitType; place: string }
   | { type: "setPayment"; source: string; value: number }
   /** Stages a suggested payment on the map, or clears the staged payment. */

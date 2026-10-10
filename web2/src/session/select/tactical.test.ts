@@ -21,6 +21,7 @@ const local = (change: Partial<LocalState> = {}): LocalState => ({
   replaying: null,
   canUndo: false,
   movement: {},
+  handled: [],
   step: null,
   remaining: null,
   planNote: null,
@@ -168,7 +169,23 @@ it("shows the staged movement in the panel and on the board", () => {
   // Two carriers, a destroyer and three fighters; a carrier, the destroyer and a fighter leave.
   expect(home.fleets).toEqual([{ seat: "a", ships: 3, strength: 0, was: 6 }]);
   expect(home.planets[0].groundForces).toBe(3);
-  expect(home.staged).toBe(true);
+  expect(home.handled).toBe(true);
+  // The origins are the choice on the board, so a phone stays on the map.
+  expect(board.task).toMatchObject({
+    interactive: true,
+    verb: "Move from",
+    chosen: { "01": true },
+  });
+  expect(Object.keys(board.task!.values)).toEqual(board.taskSystems.filter((id) => id !== "23"));
+  expect(carrier.hold!.slots.map((slot) => slot.place)).toEqual([
+    "Space area",
+    "Planet Jord",
+    "Planet Jord",
+  ]);
+  // A system where nothing is staged has the mark only when the player set it.
+  const marked = (handled: string[]) =>
+    selectShell(movement, local({ handled })).board.tiles.find((tile) => tile.id === "01")!.handled;
+  expect([marked([]), marked(["01"])]).toEqual([false, true]);
   const target = board.tiles.find((tile) => tile.id === "23")!;
   expect(target.fleets).toEqual([{ seat: "a", ships: 3, strength: 0, was: 0 }]);
   expect(board.taskSystems.sort()).toEqual(["01", "23"]);

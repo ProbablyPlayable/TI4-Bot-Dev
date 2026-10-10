@@ -54,6 +54,10 @@ test.describe("movement", () => {
       const marks = await page.locator(".galaxy .t-staged").count();
       await sheet.getByRole("button", { name: "Reset" }).tap();
       await expect(page.locator(".galaxy .t-staged")).toHaveCount(marks - 1);
+      // The check of the sheet closes it and marks the system, also when nothing leaves it.
+      await sheet.getByRole("button", { name: "Done with this system" }).tap();
+      await expect(sheet).toBeHidden();
+      await expect(page.locator(".galaxy .t-staged")).toHaveCount(marks);
       await pane(page, "Action").click();
       await shot(page, `movement/${example}-action`);
     });
@@ -67,7 +71,7 @@ test.describe("movement", () => {
       .getByRole("group", { name: "Move from Lodor · #26" })
       .getByRole("button", { name: "Carrier 1 of 1", exact: true })
       .tap();
-    await page.getByRole("button", { name: "Close this fleet" }).tap();
+    await page.getByRole("button", { name: "Done with this system" }).tap();
     await page.getByRole("button", { name: /^Move from Vefut, system 31/ }).tap();
     const sheet = page.getByRole("group", { name: "Move from Vefut · #31" });
     await shot(page, "movement/rift");
@@ -111,7 +115,7 @@ test.describe("movement", () => {
       .getByRole("group", { name: "Map view" })
       .getByRole("button", { name: "Space combat" })
       .tap();
-    await sheet.getByRole("button", { name: "Close this fleet" }).tap();
+    await sheet.getByRole("button", { name: "Done with this system" }).tap();
     await shot(page, "movement/many-ships-space");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
       page.viewportSize()!.width,

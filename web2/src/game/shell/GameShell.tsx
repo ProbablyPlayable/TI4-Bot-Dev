@@ -195,7 +195,10 @@ export function GameShell({
                 </div>
                 {sheet}
               </div>
-              <ActionFooter view={footerOf(view.action)} />
+              {/* An open fleet has the room of the footer. Its check mark gives the footer back. */}
+              {!(pane === "map" && view.board.origin) && (
+                <ActionFooter view={footerOf(view.action)} />
+              )}
               <nav
                 aria-label="Panes"
                 className="flex border-t border-line bg-well pb-(--inset-bottom,env(safe-area-inset-bottom))"

@@ -45,7 +45,6 @@ function SourceChip({
       {source.site && <Icon name="pickup" className="size-3.5 text-cyan" />}
       {/* The icon names the unit; the name is the tooltip and the accessible name. */}
       <Icon name={source.unit} className="size-4" />
-      {source.site && `#${source.site.system}`}
       <strong className="font-mid text-text tabular-nums">{source.left}</strong>
     </button>
   );
@@ -66,7 +65,10 @@ export function CargoRow({
   onSelect: (id: string) => void;
 }) {
   const dispatch = useDispatch();
-  const first = origin.cargo.findIndex((item) => item.site);
+  // The place is said once, before the chips of that place.
+  const placeOf = (item: CargoSourceView) => `${item.site?.system ?? ""}:${item.place}`;
+  const opens = (index: number) =>
+    index === 0 || placeOf(origin.cargo[index - 1]) !== placeOf(origin.cargo[index]);
   const canFill =
     !!source &&
     origin.ships.some((ship) => ship.units.some((unit) => unit.hold?.accepts[source.id]));
@@ -81,7 +83,17 @@ export function CargoRow({
         {origin.cargo.length === 0 && <span className="text-xs text-faint">Nothing to load</span>}
         {origin.cargo.map((item, index) => (
           <span key={item.id} className="contents">
-            {index === first && <span className="mx-0.5 h-4 flex-none border-l border-line" />}
+            {opens(index) && (
+              <span
+                className={cx(
+                  "flex-none text-xs whitespace-nowrap text-muted",
+                  index > 0 && "ml-1 border-l border-line pl-2",
+                )}
+              >
+                {item.site && `#${item.site.system} `}
+                {item.place}
+              </span>
+            )}
             <SourceChip
               source={item}
               pressed={item.id === source?.id}
@@ -190,7 +202,8 @@ function Slots({
             )}
           </>
         );
-        const name = slot && `${slot.name}${slot.site ? `, picked up at ${slot.site}` : ""}`;
+        const name =
+          slot && `${slot.name}, ${slot.place}${slot.site ? `, picked up at ${slot.site}` : ""}`;
         if (!editing) {
           return (
             <span key={index} className={box} title={name || "Empty slot"}>
@@ -265,6 +278,7 @@ function UnitRow({
   source,
   editing,
   route,
+  places,
 }: {
   ship: MoveShipView;
   unit: ShipUnitView;
@@ -272,11 +286,23 @@ function UnitRow({
   editing: boolean;
   /** False when the heading of the kind names the path: every ship that moves takes it. */
   route: boolean;
+  /** The ships of the system can load at more than one place: the row says where its cargo is from. */
+  places: boolean;
 }) {
+  const from = new Map<string, number>();
+  for (const slot of (places && unit.hold?.slots) || []) {
+    const place = slot.site ? `${slot.site}, ${slot.place}` : slot.place;
+    from.set(place, (from.get(place) ?? 0) + 1);
+  }
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <Token ship={ship} unit={unit} editing={editing} />
       {unit.hold && <Slots unit={unit} source={source} editing={editing} />}
+      {from.size > 0 && (
+        <span className="text-xs text-muted">
+          {[...from].map(([place, count]) => `${place} ${count}`).join(" · ")}
+        </span>
+      )}
       {unit.move && <span className="text-xs text-muted">{unit.move}</span>}
       {unit.boost && <Boost unit={unit} editing={editing} />}
       {unit.riftRoll && (
@@ -299,10 +325,12 @@ function Kind({
   ship,
   source,
   editing,
+  places,
 }: {
   ship: MoveShipView;
   source: CargoSourceView | null;
   editing: boolean;
+  places: boolean;
 }) {
   const { linked, props } = useLink(ship.link);
   const stays = ship.units.filter((unit) => !unit.moves);
@@ -338,6 +366,7 @@ function Kind({
           source={source}
           editing={editing}
           route={!shared}
+          places={places}
         />
       ))}
       {stays.length > 0 && (
@@ -363,10 +392,13 @@ export function OriginTokens({
   source?: CargoSourceView | null;
   editing?: boolean;
 }) {
+  // A read-only view has no load row: there the row of a ship always says where its cargo is from.
+  const places =
+    !editing || new Set(origin.cargo.map((item) => item.place + item.site?.system)).size > 1;
   return (
     <div>
       {origin.ships.map((ship) => (
-        <Kind key={ship.key} ship={ship} source={source} editing={editing} />
+        <Kind key={ship.key} ship={ship} source={source} editing={editing} places={places} />
       ))}
     </div>
   );

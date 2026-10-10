@@ -32,7 +32,8 @@ test("phone: a game of eight is played through the decision list", async ({ page
   for (let count = 0; count < 12; count++) {
     const before = await savedLine();
     const system = page.locator("g.system.target");
-    if (await system.count()) {
+    const moving = /Move/.test((await send.textContent()) ?? "");
+    if (!moving && (await system.count())) {
       await pane("Map").click();
       // The system next to the home of this seat, so that the movement has ships in range.
       const near = system.filter({ hasText: "#23" });
@@ -41,21 +42,26 @@ test("phone: a game of eight is played through the decision list", async ({ page
         path: "shots/phone/local/system-choice.png",
         animations: "disabled",
       });
-    } else if (await send.isDisabled()) {
+    } else if (!moving && (await send.isDisabled())) {
       await pane("Action").click();
       const rows = page.locator("#step-panel").getByRole("button", { pressed: false });
       // A tactical action when there is one, so that the run has a choice on the map.
       const tactical = rows.and(page.getByRole("button", { name: "Take a tactical action" }));
       await ((await tactical.count()) ? tactical : rows).first().click();
-    } else if (!moved) {
-      // The first movement: the fleet of a system opens in a sheet over the map.
+    } else if (moving && !moved) {
+      // The first movement: the map stays open, and the fleet of a system opens in a sheet over
+      // it. The sheet has the room of the footer.
       moved = true;
-      await pane("Map").click();
+      await expect(pane("Map")).toHaveAttribute("aria-pressed", "true");
       await page.locator("g.system").filter({ hasText: "#01" }).click();
       const sheet = page.getByRole("group", { name: /^Move from / });
       await sheet.getByRole("button", { name: /^Carrier 1 of / }).click();
-      await expect(send).toHaveText(/Move fleet/);
+      await expect(send).toBeHidden();
       await page.screenshot({ path: "shots/phone/local/movement.png", animations: "disabled" });
+      // The check of the sheet closes it: the main button is back.
+      await sheet.getByRole("button", { name: "Done with this system" }).click();
+      await expect(send).toHaveText(/Move fleet/);
+      await expect(page.locator(".galaxy .t-staged")).toHaveCount(1);
     }
     // The main button is under every pane, in view.
     await expect(send).toBeInViewport({ ratio: 1 });
