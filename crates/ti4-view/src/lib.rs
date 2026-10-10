@@ -7,6 +7,7 @@
 
 pub mod map;
 pub mod maps;
+pub mod planning;
 pub mod projection;
 pub mod status;
 pub mod tactical;

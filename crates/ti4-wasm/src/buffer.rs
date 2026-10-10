@@ -15,8 +15,16 @@ pub const RESPONSE_CAPACITY: usize = 256 * 1024;
 /// Early in a game of eight an update is about 40 KiB (2026-10-09).
 pub const UPDATE_CAPACITY: usize = 512 * 1024;
 
+/// The largest request of the host, in bytes: the script of a draft. A step is about 150 bytes.
+pub const REQUEST_CAPACITY: usize = 64 * 1024;
+/// The largest outcome of a draft, in bytes: two updates, where the draft stopped and where
+/// its movement began.
+pub const DRAFT_CAPACITY: usize = 1024 * 1024;
+
 pub static RESPONSE: Mutex<Buffer<RESPONSE_CAPACITY>> = Mutex::new(Buffer::new());
 pub static UPDATE: Mutex<Buffer<UPDATE_CAPACITY>> = Mutex::new(Buffer::new());
+pub static REQUEST: Mutex<Buffer<REQUEST_CAPACITY>> = Mutex::new(Buffer::new());
+pub static DRAFT: Mutex<Buffer<DRAFT_CAPACITY>> = Mutex::new(Buffer::new());
 
 pub struct Buffer<const N: usize> {
     bytes: [u8; N],
@@ -48,6 +56,18 @@ impl<const N: usize> Buffer<N> {
     #[must_use]
     pub fn as_ptr(&self) -> *const u8 {
         self.bytes.as_ptr()
+    }
+
+    /// Where the host writes a request, before it tells its length with [`Buffer::filled`].
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
+    }
+
+    /// The host wrote `len` bytes at [`Buffer::as_mut_ptr`]. False when that is more than fits.
+    pub fn filled(&mut self, len: usize) -> bool {
+        self.len = len.min(N);
+        len <= N
     }
 
     #[must_use]

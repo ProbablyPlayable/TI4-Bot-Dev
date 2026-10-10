@@ -14,9 +14,11 @@
 
 pub mod buffer;
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use ti4_content::ContentStore;
@@ -28,12 +30,13 @@ use ti4_model::id::PlayerId;
 use ti4_model::state::GameState;
 use ti4_view::map::{build_board_tiles, create_game_with_template};
 use ti4_view::maps::{TemplateLoader, default_template_for};
+use ti4_view::planning::draft::{DraftBase, DraftStep, run_draft};
 use ti4_view::projection::{project_game_view_full, project_session_update};
 use ti4_view::status::ViewerRole;
 use ti4_view::tactical::project_tactical_facts;
 use ti4_view::view::{BoardTileView, GameView};
 
-use crate::buffer::{RESPONSE, TooLarge, UPDATE, store};
+use crate::buffer::{DRAFT, REQUEST, RESPONSE, TooLarge, UPDATE, store};
 
 const SEATS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const ROUNDS: u32 = 50;
@@ -191,14 +194,32 @@ struct Host {
     recent: VecDeque<(u64, String)>,
     /// How many choices the host had been asked at the oldest checkpoint.
     oldest: Option<u64>,
+    /// The seats of the game, and which of them the host answers (bit 0 is seat `a`).
+    players: usize,
+    humans: u32,
+    /// The game waits before a decision of a random seat ([`ti4_set_stepping`]), not in a choice.
+    paused: bool,
 }
 
 impl Host {
     /// Whether the answer before the pending choice can be taken back from a checkpoint.
     fn can_undo(&self) -> bool {
         // The pending choice has the number `asked`, so the answer before it is `asked - 1`.
+        // Before a decision of a random seat no choice is pending: the last answer is `asked`.
         self.oldest
-            .is_some_and(|oldest| oldest + 1 < self.asked && !self.left)
+            .is_some_and(|oldest| oldest + 1 < self.asked + u64::from(self.paused) && !self.left)
+    }
+
+    /// The seat that the host is shown the game as: the seat asked last, or its first seat.
+    fn shown_seat(&self) -> Option<PlayerId> {
+        self.viewer.clone().or_else(|| {
+            SEATS
+                .iter()
+                .take(self.players)
+                .enumerate()
+                .find(|(index, _)| self.humans >> index & 1 == 1)
+                .map(|(_, seat)| PlayerId::new(*seat))
+        })
     }
 }
 
@@ -211,14 +232,23 @@ static HOST: Mutex<Host> = Mutex::new(Host {
     script: VecDeque::new(),
     recent: VecDeque::new(),
     oldest: None,
+    players: 0,
+    humans: 0,
+    paused: false,
 });
+
+/// The answer of the host that lets a random seat decide. See [`ti4_set_stepping`].
+pub const GO: i32 = -3;
+
+/// The host is asked before each decision of a random seat.
+static STEPPING: AtomicBool = AtomicBool::new(false);
 
 /// The answer of the host that takes back its last answer. See [`ti4_can_undo`].
 pub const UNDO: i32 = -2;
 
 /// How many checkpoints are kept: one after each step that asked the host. An answer older than
 /// these is taken back by playing the game again from its seed, which the host does itself.
-const CHECKPOINTS: usize = 32;
+const CHECKPOINT_LIMIT: usize = 32;
 
 /// The stream of the seats that decide at random. It is here, not inside the table, so that a
 /// checkpoint can keep its position.
@@ -229,6 +259,9 @@ struct RandomSeat;
 
 impl Decider for RandomSeat {
     fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        if STEPPING.load(Ordering::Relaxed) {
+            wait_for_go(choice)?;
+        }
         RANDOM
             .lock()
             .expect("random lock")
@@ -236,6 +269,64 @@ impl Decider for RandomSeat {
             .expect("a played game has a random stream")
             .choose(choice)
     }
+}
+
+/// Wait until the host lets the seat of `choice` decide. The host is shown the game as its own
+/// seat sees it, with no choice of its own; the turn status names the seat that decides.
+fn wait_for_go(choice: &Choice) -> Result<(), IllegalChoice> {
+    let failed = |reason: &str| IllegalChoice::DeciderFailed {
+        player: choice.player.clone(),
+        prompt: choice.prompt.clone(),
+        reason: reason.to_owned(),
+    };
+    let viewer = {
+        let mut host = host();
+        if host.left {
+            return Err(failed(LEFT));
+        }
+        if host.undo {
+            return Err(failed(TAKEN_BACK));
+        }
+        host.paused = true;
+        host.shown_seat()
+            .map_or(ViewerRole::Spectator, ViewerRole::Player)
+    };
+    let shown = show(&viewer, choice, "");
+    let index = if shown.is_ok() { host_ask() } else { LEAVE };
+    UPDATE.lock().expect("update lock").clear();
+    let mut host = host();
+    if let Err(error) = shown {
+        host.too_large = Some(error);
+    }
+    if index == GO {
+        host.paused = false;
+        return Ok(());
+    }
+    if index == UNDO && host.can_undo() {
+        // As if a choice with the next number were pending: `take_back` opens the one before it.
+        host.paused = false;
+        host.asked += 1;
+        host.undo = true;
+        return Err(failed(TAKEN_BACK));
+    }
+    host.paused = false;
+    host.left = true;
+    Err(failed(LEFT))
+}
+
+/// The answer that leaves the game.
+const LEAVE: i32 = -1;
+
+thread_local! {
+    /// The game after each step that asked the host, oldest first; at first, the game at its
+    /// start. Here, not in [`play`], so that a draft can start from the last one while the game
+    /// is parked in a choice. A game is not `Send`, so this is not a static behind a lock.
+    static CHECKPOINTS: RefCell<VecDeque<Checkpoint>> = const { RefCell::new(VecDeque::new()) };
+    /// How many steps the game finished since the last checkpoint. None of them asked the host.
+    static SINCE: Cell<usize> = const { Cell::new(0) };
+    /// The game at its last finished step, for a draft. Made when the first draft asks for it,
+    /// and dropped when the game goes on.
+    static DRAFT_BASE: RefCell<Option<Game<'static>>> = const { RefCell::new(None) };
 }
 
 /// The game between two steps, with what the game does not hold itself.
@@ -339,22 +430,30 @@ const TAKEN_BACK: &str = "the host took back its last answer";
 
 /// Write what the asked seat is shown, and its choice, into the update buffer.
 fn offer(choice: &Choice, nonce: u64) -> Result<(), TooLarge> {
+    let mut number = NonceText::default();
+    let _ = write!(number, "{nonce}");
+    show(
+        &ViewerRole::Player(choice.player.clone()),
+        choice,
+        number.as_str(),
+    )
+}
+
+/// Write what `viewer` is shown while the game waits in `choice` into the update buffer. The
+/// choice itself is in the update only when it is the viewer's.
+fn show(viewer: &ViewerRole, choice: &Choice, nonce: &str) -> Result<(), TooLarge> {
     let latest = LATEST.lock().expect("latest lock");
     let Some(latest) = latest.as_ref() else {
         return Ok(());
     };
-    let mut number = NonceText::default();
-    let _ = write!(number, "{nonce}");
-    let mut update = project_session_update(
-        &latest.state,
-        &ViewerRole::Player(choice.player.clone()),
-        Some((choice, number.as_str())),
-        &latest.tiles,
-    );
+    let mut update =
+        project_session_update(&latest.state, viewer, Some((choice, nonce)), &latest.tiles);
     // Only a seat of the host is shown these, so the random seats do not pay for them.
-    update.tactical = latest.galaxy.as_ref().and_then(|galaxy| {
-        project_tactical_facts(&latest.state, ContentStore::embedded(), POK, galaxy, choice)
-    });
+    if update.pending_choice.is_some() {
+        update.tactical = latest.galaxy.as_ref().and_then(|galaxy| {
+            project_tactical_facts(&latest.state, ContentStore::embedded(), POK, galaxy, choice)
+        });
+    }
     store(
         &mut UPDATE.lock().expect("update lock"),
         "the update for the host",
@@ -430,31 +529,38 @@ fn play(seed: u64, players: usize, human_mask: u32) -> Result<usize, Failure> {
     let mut game = new_game(content, seed, players)?;
     game.table = host_table(players, human_mask);
     *RANDOM.lock().expect("random lock") = Some(SeededRandom::new(seed));
-    *host() = Host::default();
+    *host() = Host {
+        players,
+        humans: human_mask,
+        ..Host::default()
+    };
+    CHECKPOINTS.with_borrow_mut(VecDeque::clear);
     *LATEST.lock().expect("latest lock") = Some(latest_of(&game, content));
     let target = game.state.round.saturating_add(ROUNDS);
     let mut stopped = None;
-    // The game after each step that asked the host, oldest first; at first, the game at its start.
-    // A copy after every step would cost a third of the run. With these, an undo plays the steps
-    // of the random seats since the checkpoint again, which is the wait before any choice.
-    let mut checkpoints: VecDeque<Checkpoint> = VecDeque::with_capacity(CHECKPOINTS + 1);
+    // A checkpoint is made after each step that asked the host ([`CHECKPOINTS`]). A copy after
+    // every step would cost a third of the run. With these, an undo plays the steps of the
+    // random seats since the checkpoint again, which is the wait before any choice.
     let mut marked = None;
     while stopped.is_none() && game.state.round < target && !game.state.finished && !host().left {
         let asked = host().asked;
         if marked != Some(asked) {
-            checkpoints.push_back(Checkpoint {
-                game: game.fork(),
-                random: RANDOM.lock().expect("random lock").clone(),
-                asked,
-                decisions: game.table.log.records.len(),
+            let oldest = CHECKPOINTS.with_borrow_mut(|checkpoints| {
+                checkpoints.push_back(Checkpoint {
+                    game: game.fork(),
+                    random: RANDOM.lock().expect("random lock").clone(),
+                    asked,
+                    decisions: game.table.log.records.len(),
+                });
+                if checkpoints.len() > CHECKPOINT_LIMIT {
+                    checkpoints.pop_front();
+                }
+                checkpoints.front().map_or(asked, |first| first.asked)
             });
-            if checkpoints.len() > CHECKPOINTS {
-                checkpoints.pop_front();
-            }
+            SINCE.set(0);
             marked = Some(asked);
             let mut host = host();
             // An answer from before the oldest checkpoint cannot be taken back from one.
-            let oldest = checkpoints.front().map_or(asked, |first| first.asked);
             host.oldest = Some(oldest);
             while host
                 .recent
@@ -464,11 +570,18 @@ fn play(seed: u64, players: usize, human_mask: u32) -> Result<usize, Failure> {
                 host.recent.pop_front();
             }
         }
+        DRAFT_BASE.take();
+        // No borrow of the checkpoints is held here: the step may park in a choice, and a
+        // draft reads them then.
         let error = game.step().error;
+        DRAFT_BASE.take();
         if std::mem::take(&mut host().undo) {
-            game = take_back(&mut checkpoints, game, players, human_mask);
+            game = CHECKPOINTS
+                .with_borrow_mut(|checkpoints| take_back(checkpoints, game, players, human_mask));
+            SINCE.set(0);
             marked = Some(host().asked);
         } else {
+            SINCE.set(SINCE.get() + 1);
             stopped = error.map(RunError::from);
         }
         if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
@@ -546,6 +659,89 @@ fn take_back(
     game
 }
 
+/// A seat of the host inside a draft base: the steps up to the base asked the host nothing.
+struct NotAsked;
+
+impl Decider for NotAsked {
+    fn choose(&mut self, choice: &Choice) -> Result<ChoiceOption, IllegalChoice> {
+        Err(IllegalChoice::DeciderFailed {
+            player: choice.player.clone(),
+            prompt: choice.prompt.clone(),
+            reason: "a step before the draft base asked the host".to_owned(),
+        })
+    }
+}
+
+/// The game at its last finished step: the last checkpoint, and the steps of the random seats
+/// since then played again on a copy of their stream. The game that is parked is not touched.
+fn draft_base() -> Result<Game<'static>, Failure> {
+    let (players, humans) = {
+        let host = host();
+        (host.players, host.humans)
+    };
+    CHECKPOINTS.with_borrow(|checkpoints| {
+        let checkpoint = checkpoints
+            .back()
+            .ok_or_else(|| setup("no game is played: a draft needs one"))?;
+        let mut game = checkpoint.game.fork();
+        let random = checkpoint
+            .random
+            .clone()
+            .ok_or_else(|| setup("the game has no random stream"))?;
+        game.table = Table::with_default(Box::new(random));
+        for (index, seat) in SEATS.iter().take(players).enumerate() {
+            if humans >> index & 1 == 1 {
+                game.table.seat(PlayerId::new(*seat), Box::new(NotAsked));
+            }
+        }
+        for _ in 0..SINCE.get() {
+            if let Some(error) = game.step().error {
+                return Err(Failure::Run(error.into()));
+            }
+        }
+        Ok(game)
+    })
+}
+
+/// Run the draft script of the request buffer as the next turn of the host's seat, on a copy
+/// of the game. The outcome is in the draft buffer.
+fn draft() -> Result<usize, Failure> {
+    #[derive(serde::Deserialize)]
+    struct Request {
+        script: Vec<DraftStep>,
+    }
+    let request: Request = serde_json::from_slice(REQUEST.lock().expect("request lock").as_bytes())
+        .map_err(|error| setup(format_args!("the draft request is not read: {error}")))?;
+    let player = host()
+        .shown_seat()
+        .ok_or_else(|| setup("no seat is played here: a draft is of one seat"))?;
+    if DRAFT_BASE.with_borrow(Option::is_none) {
+        let base = draft_base()?;
+        DRAFT_BASE.set(Some(base));
+    }
+    let latest = LATEST.lock().expect("latest lock");
+    let latest = latest
+        .as_ref()
+        .ok_or_else(|| setup("no game is played: a draft needs one"))?;
+    let outcome = DRAFT_BASE.with_borrow(|base| {
+        let base = DraftBase {
+            game: base.as_ref().expect("the base was made above"),
+            content: ContentStore::embedded(),
+            sources: POK,
+            tiles: &latest.tiles,
+            galaxy: latest.galaxy.as_ref(),
+        };
+        run_draft(&base, &player, &request.script)
+    });
+    let mut buffer = DRAFT.lock().expect("draft lock");
+    Ok(store(
+        &mut buffer,
+        "the outcome of a draft",
+        "DRAFT_CAPACITY",
+        &outcome,
+    )?)
+}
+
 /// The status of an export: a length, negated when the response buffer holds an error text.
 fn status(result: Result<usize, Failure>) -> i32 {
     let length = |bytes: usize| i32::try_from(bytes).expect("a buffer is smaller than 2 GiB");
@@ -574,6 +770,53 @@ pub extern "C" fn ti4_run_seeded(seed: u32, players: u32, max_steps: u32) -> i32
 #[unsafe(no_mangle)]
 pub extern "C" fn ti4_play(seed: u32, players: u32, human_mask: u32) -> i32 {
     status(play(u64::from(seed), players as usize, human_mask))
+}
+
+/// Ask the host before each decision of a random seat (1), or let these seats play on (0). The
+/// host is then asked with an update that has no pending choice, and answers [`GO`]. The seat
+/// decides from the seeded stream either way, so the game is the same game.
+///
+/// Only a flag is set: the host may call this while the game waits.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_set_stepping(on: u32) {
+    STEPPING.store(on != 0, Ordering::Relaxed);
+}
+
+/// Where the host writes a request before the export that reads it. Constant for the life of
+/// the instance; `REQUEST_CAPACITY` bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_request_ptr() -> *mut u8 {
+    REQUEST.lock().expect("request lock").as_mut_ptr()
+}
+
+/// Run a draft: the request buffer holds `{"script": [...]}` in `request_len` bytes, the steps
+/// of `ti4_view::planning::draft::DraftStep`. The script is played as the next turn of the
+/// host's seat on a copy of the game at its last finished step, and the outcome
+/// (`DraftOutcome`) is left at [`ti4_draft_ptr`] with the returned length. A status below 0 is
+/// the negated length of an error text in the response buffer.
+///
+/// The game itself is not touched, so the host calls this while the game waits in a choice.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_draft(request_len: u32) -> i32 {
+    if !REQUEST
+        .lock()
+        .expect("request lock")
+        .filled(request_len as usize)
+    {
+        return status(Err(setup(format_args!(
+            "ti4-wasm buffer full: the request is {request_len} bytes, but REQUEST_CAPACITY is {} \
+             bytes. Raise REQUEST_CAPACITY in crates/ti4-wasm/src/buffer.rs and rebuild, or make \
+             the request smaller.",
+            buffer::REQUEST_CAPACITY
+        ))));
+    }
+    status(draft())
+}
+
+/// Where the outcome of the last [`ti4_draft`] is kept. Constant for the life of the instance.
+#[unsafe(no_mangle)]
+pub extern "C" fn ti4_draft_ptr() -> *const u8 {
+    DRAFT.lock().expect("draft lock").as_ptr()
 }
 
 /// Whether the host may answer the pending choice with [`UNDO`]: 1 when a checkpoint holds the
@@ -606,6 +849,25 @@ pub extern "C" fn ti4_update_len() -> u32 {
 #[must_use]
 pub fn update() -> String {
     String::from_utf8_lossy(UPDATE.lock().expect("update lock").as_bytes()).into_owned()
+}
+
+/// Run a draft script (JSON, see [`ti4_draft`]) and return its outcome, for callers on the
+/// native side.
+///
+/// # Errors
+/// The error text of the export.
+pub fn draft_native(request: &str) -> Result<String, String> {
+    {
+        let mut buffer = REQUEST.lock().expect("request lock");
+        buffer.clear();
+        std::io::Write::write_all(&mut *buffer, request.as_bytes())
+            .map_err(|_| "the request does not fit REQUEST_CAPACITY".to_owned())?;
+    }
+    let status = status(draft());
+    if status < 0 {
+        return response(status);
+    }
+    Ok(String::from_utf8_lossy(DRAFT.lock().expect("draft lock").as_bytes()).into_owned())
 }
 
 /// The response of the last export, for callers on the native side.
@@ -1017,5 +1279,117 @@ mod tests {
         assert!(!loads.is_empty());
         assert_eq!(named, loads);
         assert!(seen[5].get("tactical").is_none(), "a hold has no facts");
+        let live_movement = seen[4].clone();
+        drop(seen);
+
+        // A draft at the turn menu plays the same tactical action on a copy: it shows the
+        // movement that the game then shows, and the game is as it was.
+        let drafted = Arc::new(Mutex::new((0, Vec::<serde_json::Value>::new())));
+        let sink = drafted.clone();
+        set_native_host(move |update| {
+            let value: serde_json::Value = serde_json::from_str(update).unwrap();
+            let (asked, outcomes) = &mut *sink.lock().unwrap();
+            let script = ["pok8imperial", "no"];
+            let Some(wanted) = script.get(*asked) else {
+                for script in [
+                    r#"[]"#,
+                    r#"[{"kind":"choose","option_id":"tactical"},
+                        {"kind":"choose","option_id":"23"},
+                        {"kind":"move","origin":"01","unit":"sol_carrier","damaged":false,
+                         "gravity_drive":false,"ionian":false},
+                        {"kind":"done_loading"},
+                        {"kind":"done_moving"}]"#,
+                ] {
+                    let outcome = draft_native(&format!(r#"{{"script":{script}}}"#)).unwrap();
+                    outcomes.push(serde_json::from_str(&outcome).unwrap());
+                }
+                assert_eq!(
+                    crate::update(),
+                    update,
+                    "a draft leaves the update as it was"
+                );
+                return -1;
+            };
+            *asked += 1;
+            let index = options(&value).iter().position(|have| have == wanted);
+            i32::try_from(index.unwrap()).unwrap()
+        });
+        ti4_play(3, 8, 1);
+        let (_, outcomes) = &*drafted.lock().unwrap();
+        assert_eq!(outcomes[0]["stop"]["kind"], "open");
+        assert_eq!(options(&outcomes[0]["update"]), ["tactical"]);
+        assert_eq!(
+            outcomes[1]["stop"]["kind"], "complete",
+            "{}",
+            outcomes[1]["stop"]
+        );
+        assert_eq!(outcomes[1]["consumed"], 5);
+        assert_eq!(
+            outcomes[1]["movement"]["tactical"],
+            live_movement["tactical"]
+        );
+        assert_eq!(
+            outcomes[1]["movement"]["view"]["board"],
+            live_movement["view"]["board"]
+        );
+        let arrived = outcomes[1]["update"]["view"]["board"]["systems"]["23"]["units"]
+            .as_array()
+            .unwrap();
+        assert!(
+            arrived
+                .iter()
+                .any(|unit| unit["unit_type"] == "sol_carrier")
+        );
+
+        // With stepping the host is asked before each decision of a random seat. The seats
+        // still follow the seed: the same answers reach the same position. An undo there
+        // opens the last choice of the host again.
+        #[derive(Default)]
+        struct Stepped {
+            answers: usize,
+            pauses: usize,
+            undone: bool,
+            again: bool,
+            reached: String,
+        }
+        let stepped = Arc::new(Mutex::new(Stepped::default()));
+        let sink = stepped.clone();
+        ti4_set_stepping(1);
+        set_native_host(move |update| {
+            let mut stepped = sink.lock().unwrap();
+            let value: serde_json::Value = serde_json::from_str(update).unwrap();
+            if value.get("pending_choice").is_none() {
+                stepped.pauses += 1;
+                assert_eq!(value["viewer"]["seat"], "a");
+                assert_ne!(value["turn_status"]["seat"], "a");
+                if stepped.answers >= 10 && !stepped.undone {
+                    assert_eq!(ti4_can_undo(), 1);
+                    stepped.undone = true;
+                    return UNDO;
+                }
+                return GO;
+            }
+            if stepped.undone && !stepped.again {
+                // The choice of the last answer, with its number.
+                let number = stepped.answers.to_string();
+                assert_eq!(value["pending_choice"]["nonce"], number.as_str());
+                stepped.answers -= 1;
+                stepped.again = true;
+            }
+            if stepped.answers == ANSWERS {
+                update.clone_into(&mut stepped.reached);
+                return -1;
+            }
+            let count = options(&value).len();
+            let index = (stepped.answers * 7) % count;
+            stepped.answers += 1;
+            i32::try_from(index).unwrap()
+        });
+        ti4_play(3, 8, 1);
+        ti4_set_stepping(0);
+        let stepped = stepped.lock().unwrap();
+        assert!(stepped.pauses > 0);
+        assert!(stepped.again, "the undo opened the last choice again");
+        assert_eq!(stepped.reached, reached);
     }
 }

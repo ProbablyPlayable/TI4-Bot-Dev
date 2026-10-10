@@ -36,6 +36,8 @@ The size of `ti4_wasm.wasm`; brotli at quality 11.
   breakdown below are without them.
 - With the map templates and their builder the file is 4.52 MB raw and 1.13 MB with gzip
   (brotli not measured). The table and the numbers above are from before that.
+- With the draft (the planning checks of `ti4-view`, the request and draft buffers) the file is
+  4.65 MB raw and 1.17 MB with gzip (2026-10-10; brotli not measured).
 - Speed: 2000 steps take about 7–12 s with `wasm-release` and about 6 s with `--release`, in
   Node. That is 3–6 ms for a step.
 
@@ -108,7 +110,8 @@ have to be migrated when the engine changes.
 
 - Everything that crosses the boundary is in a fixed static buffer (`src/buffer.rs`): the result
   of an export (`RESPONSE_CAPACITY`, 256 KiB) and the update for the host (`UPDATE_CAPACITY`,
-  512 KiB). A full game state is about 40 KiB. An update of a game of eight is 26 KiB at the
+  512 KiB), the request of the host (`REQUEST_CAPACITY`, 64 KiB) and the outcome of a draft
+  (`DRAFT_CAPACITY`, 1 MiB: two updates). A full game state is about 40 KiB. An update of a game of eight is 26 KiB at the
   start, and the largest of one full game (seed 3) was 42 KiB.
 - A buffer never grows and never moves. The host reads every result at the same address.
 - A value is serialized directly into its buffer. No intermediate `String` or `Value` is built.
@@ -146,6 +149,10 @@ Plain C ABI, no `wasm-bindgen`. The crate has its own `[lints]` because the boun
 | `ti4_run_seeded(seed, players, max_steps) -> status` | Random deciders on all seats; the result is the state. |
 | `ti4_play(seed, players, human_mask) -> status` | Plays a game to its end. A seat whose bit is set in the mask (bit 0 is seat `a`) is answered by the host through `host.ask`; the others decide at random. |
 | `ti4_can_undo() -> 0 or 1` | While the game waits in a choice: whether the host may answer it with `-2`. |
+| `ti4_set_stepping(0 or 1)` | Whether the host is asked before each decision of a random seat. See "Stepping". |
+| `ti4_request_ptr()` | Where the host writes a request (`REQUEST_CAPACITY`, 64 KiB) before the export that reads it. |
+| `ti4_draft(request_len) -> status` | Runs a draft script on a copy of the game. See "A draft". |
+| `ti4_draft_ptr()` | The address of the outcome of the last `ti4_draft` (`DRAFT_CAPACITY`, 1 MiB). |
 | `ti4_response_ptr()` | The address of the result or the error of the last export. |
 | `ti4_update_ptr()`, `ti4_update_len()` | The update for the host: while the game waits in a choice, and after `ti4_play` has returned. Length 0 when there is none. |
 
@@ -164,6 +171,18 @@ answer before this choice, when `ti4_can_undo` returns 1: that choice is asked a
 same number and the same update. Any other negative answer leaves the game: every later choice fails without asking, the run unwinds, and `ti4_play` returns with
 `stopped` set. A choice with one option is asked like any other, as on the server: the engine
 itself skips the choices that need no answer.
+
+### Stepping
+
+With `ti4_set_stepping(1)` a random seat asks the host before it decides. The update is then the
+view of the host's seat (the seat that was asked last, or its first seat) with no
+`pending_choice`; `turn_status` names the seat that decides. The host answers `-3` (`GO`), and
+the seat draws from the seeded stream as always. `-2` takes back the last answer of the host,
+when `ti4_can_undo` returns 1. Any other answer leaves the game.
+
+- A step is not a choice: it has no number, makes no checkpoint, and is not in a saved game. The
+  game with steps is the same game.
+- The export only sets a flag, so the host calls it at any time.
 
 ## Decisions with JSPI
 
@@ -252,6 +271,46 @@ Limits:
   are removed after the movement, space cannon, and the read-only view of a past movement.
   Units that stay behind with no ship that carries them get no warning.
 - The later steps (space cannon, combat, invasion, production) are still lists.
+
+### A draft
+
+A draft is the next tactical action of a seat, tried on a copy of the game: its activation and
+its movement. `web2` shows it in the Draft workspace.
+
+- The host writes `{"script": [...]}` at `ti4_request_ptr()` and calls `ti4_draft(length)`. A
+  step of the script is `{"kind":"choose","option_id":…}` or a step of a movement plan
+  (`DraftStep` in `ti4-view/src/planning/draft.rs`). The script of a tactical action is
+  `choose tactical`, `choose <system>`, then the movement.
+- The run forks the game at its last finished step, gives the seat a hypothetical turn
+  (`Game::prepare_hypothetical_turn`), answers from the script, and stops at the first question
+  that the script does not answer. Nothing is kept between two runs: a changed script is run
+  again from its start. So the export returns at once and needs no second stack, and undo and
+  redo of a draft are a list of scripts in the page.
+- The outcome (`DraftOutcome`) has `update`, where the run ended, in the shape of a live update
+  with `tactical`; `movement`, the update at the first ship to move, which a whole movement is
+  staged against; `consumed`, how many steps fit; and `stop`: `open`, `complete` (the script
+  ends the movement and the game offers that), `refused` with the step, `stopped` or `failed`.
+- The run does not answer "done moving": what follows rolls dice or asks other seats.
+- What a draft may show is checked as on the server (`ti4-view/src/planning/audit.rs`): only
+  audited offers, no dice, nothing that the seat did not know. The other seats take no optional
+  reactions. These checks and the recorded-decision adapters were moved from `ti4-server`,
+  which re-exports them; its `PlanningRunner` is a worker thread around the same checks.
+- The game at its last finished step is not kept: the checkpoints are made only after a step
+  that asked the host. The base of a draft is the last checkpoint with the steps of the random
+  seats since then played again on a copy of their stream, as an undo does. It is made for the
+  first draft at a choice and dropped when the game goes on. The checkpoints are in a
+  `thread_local` for this (a `Game` is not `Send`); the game that is parked is not touched.
+- A test plays the same answers live and compares: the movement that the draft shows is the
+  movement that the game then shows.
+- The seat of a draft is the seat that was asked last (with stepping: also while another seat
+  decides).
+
+Limits:
+
+- Only the activation and the movement. A question of the seat before its turn menu (a
+  start-of-turn ability) stops the draft at its first step.
+- The matching of a movement step to an option is now in three places: `DraftStep` in
+  `ti4-view`, `planAnswer` in `web2` (for the live plan) and `batch.rs` in the server.
 
 ### The saved game
 
@@ -385,7 +444,7 @@ content does not have.
   `ti4-view`. `ti4-engine`, `ti4-view`, `ti4-server`, `ti4-bot-agent` and `ti4-wasm` pass their
   tests. `ti4-advisor` uses the moved paths through the re-exports of `ti4-server` and was not
   built (it needs libtorch).
-- The only UI query is the `tactical` field of the update. No bots other than random. Undo and resume are replays from the seed; a stored
+- The UI queries are the `tactical` field of the update and the draft. No bots other than random. Undo and resume are replays from the seed; a stored
   position that can be resumed would need the engine to stop at step boundaries only.
 
 ## Commands
