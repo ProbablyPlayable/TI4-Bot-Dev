@@ -14,15 +14,33 @@ const panel = (page: Page) => page.locator("#step-panel");
 /** The main button of the footer: "Send", "Activate system", "Move fleet". Enter does what it says. */
 const send = (page: Page) => page.locator('footer button[aria-keyshortcuts="Enter"]');
 const heading = (page: Page) => panel(page).getByRole("heading").first();
-const bar = (page: Page) => page.getByRole("navigation", { name: "Local game" });
+const settings = (page: Page) => page.getByRole("complementary", { name: "Settings" });
 const undo = (page: Page) => page.getByRole("button", { name: "Undo" });
+
+/** Opens the Settings sheet from the header. */
+async function openSettings(page: Page) {
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(settings(page)).toBeVisible();
+}
+
+/** The line of the Settings sheet ("Local game · seed 42 · 8 seats · 4 answers saved"). Read, then closed. */
+async function savedLine(page: Page) {
+  await openSettings(page);
+  const line =
+    (await settings(page)
+      .getByText(/^Local game · seed/)
+      .textContent()) ?? "";
+  await page.keyboard.press("Escape");
+  await expect(settings(page)).toBeHidden();
+  return line;
+}
 
 /**
  * Answers the open choice: with the first system when it is on the board, with nothing when the
  * main button already has something to send (a movement of no ship), or else with its first row.
  */
 async function answer(page: Page) {
-  const saved = (await bar(page).textContent()) ?? "";
+  const saved = await savedLine(page);
   const system = page.locator("g.system.target");
   if (await system.count()) {
     await system.first().click();
@@ -32,7 +50,7 @@ async function answer(page: Page) {
   await expect(send(page)).toBeEnabled();
   await send(page).click();
   // The answer is saved, and the next choice is open.
-  await expect(bar(page)).not.toHaveText(saved);
+  await expect.poll(() => savedLine(page)).not.toBe(saved);
   await expect(send(page)).toBeVisible();
 }
 
@@ -104,7 +122,7 @@ test("a tactical action: the system and the movement are staged on the map", asy
   // Movement: nothing is staged, and moving nothing is what the main button says.
   await expect(heading(page)).toHaveText("Movement");
   await expect(send(page)).toHaveText(/Move nothing/);
-  await expect(bar(page)).toContainText("4 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("4 answers saved");
   // The system with the ships opens its fleet on the map.
   await system("01").click();
   const sheet = page.getByRole("group", { name: /^Move from Jord/ });
@@ -125,11 +143,11 @@ test("a tactical action: the system and the movement are staged on the map", asy
   await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
   await page.screenshot({ path: "shots/local/movement.png", animations: "disabled" });
   // Nothing was sent yet.
-  await expect(bar(page)).toContainText("4 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("4 answers saved");
 
   // "Move fleet" sends the whole movement: each ship and each unit is one answer of the game.
   await send(page).click();
-  await expect(bar(page)).toContainText("10 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("10 answers saved");
   await expect(heading(page)).not.toHaveText("Movement");
   await expect(system("23")).toHaveAttribute("aria-label", /2 Sol ships/);
   await expect(system("01")).toHaveAttribute("aria-label", /4 Sol ships/);
@@ -138,12 +156,12 @@ test("a tactical action: the system and the movement are staged on the map", asy
   // One undo takes the movement back whole; one more opens the activation again.
   await undo(page).click();
   await expect(heading(page)).toHaveText("Movement");
-  await expect(bar(page)).toContainText("4 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("4 answers saved");
   await expect(send(page)).toHaveText(/Move nothing/);
   await expect(system("23")).not.toHaveAttribute("aria-label", /Sol ship/);
   await undo(page).click();
   await expect(heading(page)).toHaveText("Activation");
-  await expect(bar(page)).toContainText("3 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("3 answers saved");
   expect(errors).toEqual([]);
 });
 
@@ -182,17 +200,17 @@ test("a reload goes on where the game was, and undo takes back one answer", asyn
   }
   const open = await heading(page).textContent();
   const round = await page.getByText(/^Round \d+ · /).textContent();
-  await expect(bar(page)).toContainText("20 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("20 answers saved");
 
   await page.reload();
   await expect(send(page)).toBeDisabled();
   await expect(heading(page)).toHaveText(open ?? "");
   await expect(page.getByText(/^Round \d+ · /)).toHaveText(round ?? "");
-  await expect(bar(page)).toContainText("20 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("20 answers saved");
 
   // Undo opens the choice that was answered last, and the same answer leads to the same game.
   await undo(page).click();
-  await expect(bar(page)).toContainText("19 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("19 answers saved");
   await expect(heading(page)).toHaveText(prompts[19]);
   await expect(send(page)).toBeDisabled();
   await answer(page);
@@ -201,14 +219,15 @@ test("a reload goes on where the game was, and undo takes back one answer", asyn
   // Three in a row, without waiting for a replay: the engine goes back to its checkpoints.
   for (const left of [19, 18, 17]) {
     await undo(page).click();
-    await expect(bar(page)).toContainText(`${left} answers saved`);
+    await expect.poll(() => savedLine(page)).toContain(`${left} answers saved`);
     await expect(heading(page)).toHaveText(prompts[left]);
   }
   await expect(page.getByText(/^Replaying /)).toHaveCount(0);
 
-  await bar(page).getByRole("button", { name: "New game" }).click();
+  await openSettings(page);
+  await settings(page).getByRole("button", { name: "New game" }).click();
   await expect(heading(page)).toHaveText(prompts[0]);
-  await expect(bar(page)).toContainText("0 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("0 answers saved");
   await expect(undo(page)).toHaveCount(0);
 });
 
@@ -222,10 +241,12 @@ test("an exported game is imported in another browser and opens at the same choi
     await answer(page);
   }
   const open = await heading(page).textContent();
+  await openSettings(page);
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    bar(page).getByRole("button", { name: "Export" }).click(),
+    settings(page).getByRole("button", { name: "Export" }).click(),
   ]);
+  await page.keyboard.press("Escape");
   const path = await download.path();
 
   const other = await (await browser.newContext()).newPage();
@@ -233,15 +254,16 @@ test("an exported game is imported in another browser and opens at the same choi
   await other.goto("/?local=3&players=8&humans=1");
   await expect(send(other)).toBeDisabled();
   await other.getByLabel("Saved game file").setInputFiles(path);
-  await expect(bar(other)).toContainText("seed 5");
-  await expect(bar(other)).toContainText("6 answers saved");
+  await expect.poll(() => savedLine(other)).toContain("seed 5");
+  await expect.poll(() => savedLine(other)).toContain("6 answers saved");
   await expect(heading(other)).toHaveText(open ?? "");
 
   // A file that is no saved game is refused, and says why.
   await other
     .getByLabel("Saved game file")
     .setInputFiles({ name: "x.json", mimeType: "application/json", buffer: Buffer.from("{}") });
-  await expect(bar(other).getByRole("alert")).toContainText("format undefined");
+  await openSettings(other);
+  await expect(settings(other).getByRole("alert")).toContainText("format undefined");
   await other.context().close();
 });
 
@@ -257,10 +279,10 @@ test("a saved game of another engine build is not replayed without a word", asyn
   await expect(page.getByText("was played by another build of the engine")).toBeVisible();
   await page.getByRole("button", { name: "Replay anyway" }).click();
   await expect(send(page)).toBeDisabled();
-  await expect(bar(page)).toContainText("1 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("1 answers saved");
   // The next answer is saved with this engine.
   await answer(page);
-  await expect(bar(page)).toContainText("2 answers saved");
+  await expect.poll(() => savedLine(page)).toContain("2 answers saved");
 
   // An answer that the game does not offer stops the replay and names the answer.
   await page.evaluate(() => {

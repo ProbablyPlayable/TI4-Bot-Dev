@@ -11,15 +11,26 @@ test("phone: a game of eight is played through the decision list", async ({ page
   await page.goto("/?local=3&players=8&humans=1");
   // The main button of the footer: "Send", "Activate system", "Move nothing".
   const send = page.locator('footer button[aria-keyshortcuts="Enter"]');
-  const saved = page.getByRole("navigation", { name: "Local game" });
   const pane = (name: string) =>
     page.getByRole("navigation", { name: "Panes" }).getByRole("button", { name });
+  // On a phone, Settings is an item of "Reference and more", not a button of the header.
+  const savedLine = async () => {
+    await page.getByRole("button", { name: "Reference and more" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+    const line = page
+      .getByRole("complementary", { name: "Settings" })
+      .getByText(/^Local game · seed/);
+    const text = (await line.textContent()) ?? "";
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("complementary", { name: "Settings" })).toBeHidden();
+    return text;
+  };
   await expect(send).toBeDisabled();
   await page.screenshot({ path: "shots/phone/local/first-choice.png", animations: "disabled" });
   // A later movement moves nothing: the main button already says so.
   let moved = false;
   for (let count = 0; count < 12; count++) {
-    const before = (await saved.textContent()) ?? "";
+    const before = await savedLine();
     const system = page.locator("g.system.target");
     if (await system.count()) {
       await pane("Map").click();
@@ -49,7 +60,7 @@ test("phone: a game of eight is played through the decision list", async ({ page
     // The main button is under every pane, in view.
     await expect(send).toBeInViewport({ ratio: 1 });
     await send.click();
-    await expect(saved).not.toHaveText(before);
+    await expect.poll(savedLine).not.toBe(before);
     await expect(send).toBeVisible();
     // Nothing is cut at the side.
     const width = page.viewportSize()!.width;

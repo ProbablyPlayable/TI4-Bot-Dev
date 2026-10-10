@@ -1,6 +1,23 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { shortcuts, type GameSession, type Intent } from "../../model";
-import { Badge, Button, Dialog, InlineNote, LiveRegion, Toast, cx, usePhone } from "../../ui";
+import {
+  Badge,
+  Button,
+  Dialog,
+  Drawer,
+  InlineNote,
+  LiveRegion,
+  Toast,
+  cx,
+  usePhone,
+} from "../../ui";
 import { ActionFooter, ActionPanel, footerOf } from "../action/ActionPanel";
 import { Board } from "../board/Board";
 import { GameProvider } from "../context";
@@ -30,7 +47,16 @@ type Pane = (typeof PANES)[number][0];
  * each of them.
  * It needs a `GameSession` and nothing else. State that only changes what is in view lives here.
  */
-export function GameShell({ session, other }: { session: GameSession; other?: OtherGame }) {
+export function GameShell({
+  session,
+  other,
+  settings,
+}: {
+  session: GameSession;
+  other?: OtherGame;
+  /** The content of the Settings sheet. `close` shuts the sheet, for an action that ends it. */
+  settings?: (close: () => void) => ReactNode;
+}) {
   const { view } = session;
   const [drawer, setDrawer] = useState<string | null>(null);
   const [tableOpen, setTableOpen] = useState(true);
@@ -111,6 +137,16 @@ export function GameShell({ session, other }: { session: GameSession; other?: Ot
       onClose={() => setDrawer(null)}
     />
   );
+  const close = () => setDrawer(null);
+  // Settings is a sheet like the reference sheets, in the same place.
+  const sheet =
+    drawer === "settings"
+      ? settings && (
+          <Drawer title="Settings" onClose={close}>
+            {settings(close)}
+          </Drawer>
+        )
+      : reference;
   const players = (
     <PlayerTable
       view={view.players}
@@ -139,6 +175,7 @@ export function GameShell({ session, other }: { session: GameSession; other?: Ot
             onDrawer={toggleDrawer}
             phone={phone}
             other={other}
+            settings={!!settings}
           />
           {phone ? (
             <>
@@ -156,7 +193,7 @@ export function GameShell({ session, other }: { session: GameSession; other?: Ot
                 <div className={paneClass("action")} inert={pane !== "action"}>
                   <ActionPanel view={view.action} reveal={view.reveal} footer={false} />
                 </div>
-                {reference}
+                {sheet}
               </div>
               <ActionFooter view={footerOf(view.action)} />
               <nav
@@ -182,7 +219,7 @@ export function GameShell({ session, other }: { session: GameSession; other?: Ot
             </>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_1040px]">
-              <Board view={view.board}>{reference}</Board>
+              <Board view={view.board}>{sheet}</Board>
               <div className="flex min-h-0 min-w-0 flex-col border-l border-line">
                 {players}
                 <ActionPanel view={view.action} reveal={view.reveal} />

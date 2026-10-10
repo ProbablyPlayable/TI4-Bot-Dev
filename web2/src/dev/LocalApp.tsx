@@ -13,7 +13,7 @@ import {
 import type { Transport } from "../session/transport";
 import { useLiveSession } from "../session/useLiveSession";
 import { type Engine, createWasmTransport, loadEngine } from "../session/wasmTransport";
-import { Button } from "../ui";
+import { Button, Drawer } from "../ui";
 
 // Not an import: the file is built by scripts/build-wasm.sh and is not in the repository. Without
 // it the rest of web2 still builds, and this page says how to build it.
@@ -39,6 +39,16 @@ export function LocalApp({ game }: { game: LocalGame }) {
   const [answers, setAnswers] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
   const [transport, setTransport] = useState<Transport | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Without the shell nothing else closes the Settings sheet: Esc does, as in the shell.
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setSettingsOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
 
   useEffect(() => {
     let stale = false;
@@ -91,6 +101,7 @@ export function LocalApp({ game }: { game: LocalGame }) {
   const newGame = () => {
     clearSavedGame(localStorage, game);
     setAnyway(false);
+    setSettingsOpen(false);
     setStart((now) => (now.kind === "ready" ? { ...now, saved: null } : now));
   };
   const exportGame = () => {
@@ -121,6 +132,39 @@ export function LocalApp({ game }: { game: LocalGame }) {
   };
   const file = useRef<HTMLInputElement>(null);
 
+  // The Settings sheet. The shell shows it in its sheet slot; a page without the shell shows it below.
+  const settingsView = (close: () => void) => (
+    <>
+      <p className="text-muted">
+        {`Local game · seed ${game.seed} · ${game.players} seats · ${answers} answers saved`}
+      </p>
+      {importError && (
+        <p role="alert" className="mt-3 text-red">
+          {importError}
+        </p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          tone="quiet"
+          size="sm"
+          disabled={answers === 0}
+          onClick={() => {
+            newGame();
+            close();
+          }}
+        >
+          New game
+        </Button>
+        <Button tone="quiet" size="sm" disabled={answers === 0} onClick={exportGame}>
+          Export
+        </Button>
+        <Button tone="quiet" size="sm" onClick={() => file.current?.click()}>
+          Import
+        </Button>
+      </div>
+    </>
+  );
+
   // The engine did not load: the demo is shown with the reason, so the page is never empty.
   if (start.kind === "failed") {
     return <DemoApp notice={`Local game unavailable. ${start.message}`} />;
@@ -148,42 +192,44 @@ export function LocalApp({ game }: { game: LocalGame }) {
       </Notice>
     );
   } else {
-    body = <GameShell session={session} other={{ label: "Demo", href: "/?example=live-picker" }} />;
+    body = (
+      <GameShell
+        session={session}
+        other={{ label: "Demo", href: "/?example=live-picker" }}
+        settings={settingsView}
+      />
+    );
   }
 
+  // The shell has the toolbar, and the toolbar has the Settings entry. Without the shell the page
+  // has a row of its own, so Import and New game stay in reach.
+  const inShell = !waits && !!session;
   return (
-    // The bar is under the shell, so it has the bottom edge of the screen, not the shell.
-    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] [--inset-bottom:0px]">
-      {body}
-      <nav
-        aria-label="Local game"
-        className="flex items-center gap-2 border-t border-line bg-surface px-3 py-1 pb-[max(4px,env(safe-area-inset-bottom))] text-sm text-muted"
-      >
-        <span className="mr-auto truncate" role={importError ? "alert" : undefined}>
-          {importError ? (
-            <span className="text-red">{importError}</span>
-          ) : (
-            `Local game · seed ${game.seed} · ${game.players} seats · ${answers} answers saved`
-          )}
-        </span>
-        <Button tone="quiet" size="sm" disabled={answers === 0} onClick={newGame}>
-          New game
-        </Button>
-        <Button tone="quiet" size="sm" disabled={answers === 0} onClick={exportGame}>
-          Export
-        </Button>
-        <Button tone="quiet" size="sm" onClick={() => file.current?.click()}>
-          Import
-        </Button>
-        <input
-          ref={file}
-          type="file"
-          accept="application/json,.json"
-          aria-label="Saved game file"
-          hidden
-          onChange={importGame}
-        />
-      </nav>
+    <div className="flex h-dvh flex-col">
+      {!inShell && (
+        <header className="flex min-h-12 items-center gap-3.5 border-b border-line bg-surface px-4 pt-[max(6px,env(safe-area-inset-top))] pb-1.5">
+          <strong className="mr-auto text-sm font-semibold">Local game</strong>
+          <Button tone="quiet" size="sm" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </Button>
+        </header>
+      )}
+      <div className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
+        {body}
+        {!inShell && settingsOpen && (
+          <Drawer title="Settings" onClose={() => setSettingsOpen(false)}>
+            {settingsView(() => setSettingsOpen(false))}
+          </Drawer>
+        )}
+      </div>
+      <input
+        ref={file}
+        type="file"
+        accept="application/json,.json"
+        aria-label="Saved game file"
+        hidden
+        onChange={importGame}
+      />
     </div>
   );
 }

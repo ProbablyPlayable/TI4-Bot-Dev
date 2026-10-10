@@ -57,7 +57,7 @@ There are two layouts, and no others.
 - A phone has no hover and no keys. A shortcut key is not shown. A name that desktop cuts with "…" takes a second line where the full name is only on hover (the technology tree, the action picker).
 - The map zooms with two fingers; the "+" and "−" buttons are not shown under a finger. "Fit task" and "Fit board" stay, in the row of the map views.
 - Exception to "no short variants of labels" (owner, 2026-10-10): the map views and the two fit buttons are icons on a phone, so that they are one row. The name is the tooltip and the accessible name. Desktop keeps the words.
-- The reference sheets and the draft menu are one menu in the toolbar. A sheet covers the pane.
+- The reference sheets, the draft menu and (in a local game) Settings are one menu in the toolbar. A sheet covers the pane.
 - The app can be installed (`public/manifest.webmanifest`): fullscreen, locked to portrait. There is no service worker: the game is live, and the CDN already caused stale bundles once. The icons come from `scripts/make-icons.mjs`.
 - A new screen is checked in both layouts. Short variants of labels are still not allowed; restructure the row instead.
 
@@ -196,6 +196,7 @@ The owner chose this design on 2026-10-10, from three that were compared.
 - The bare address `/` is that game with `DEFAULT_GAME` (seed 42, 8 seats, seat A played here), so the installed app opens it. `?example=…` is the demo and `?gallery` the gallery; they get no local game.
 - If the engine does not load (missing file, or no JSPI), the demo opens with the reason in a line above the shell.
 - The header has a link to the other app: "Demo" in a local game, "Local game" in the demo. On desktop it is a button after the reference sheets; on a phone it is the last item of "Reference and more". A page load, not a game choice.
+- A local game has no bar at the bottom. "Settings" (a header button on desktop; the item after the other-app item in "Reference and more" on a phone) opens the Settings sheet, which is a reference sheet: the seed, the seats, the saved answers, New game, Export and Import. Without the shell (loading, a saved game of another engine, a notice) the page has a row with only "Settings". The demo has its own bar and no Settings.
 - `src/session/` turns an update of the game into the view models. It imports `model` only, and it decides no rule: a value that needs a rule comes from the engine.
 - A decision without a dedicated screen is one list in the action panel.
 - The activation and the movement of a tactical action use the screens of these steps. The facts come from the engine with the update (`tactical`), and "Move fleet" sends the staged movement as one plan (`Transport.submitPlan`). A plan that the game refuses is taken back whole; one undo takes a movement back whole.

@@ -22,6 +22,7 @@ export function Toolbar({
   onDrawer,
   phone = false,
   other,
+  settings = false,
 }: {
   view: ToolbarView;
   drawer: string | null;
@@ -29,6 +30,8 @@ export function Toolbar({
   /** A phone has the reference sheets in the menu: the row has no room for four buttons. */
   phone?: boolean;
   other?: OtherGame;
+  /** The local game has a Settings sheet, opened like the reference sheets. */
+  settings?: boolean;
 }) {
   const dispatch = useDispatch();
   const tab = (mode: Workspace, label: string, disabled = false, title?: string) => (
@@ -100,6 +103,17 @@ export function Toolbar({
           {other.label}
         </Button>
       )}
+      {settings && !phone && (
+        <Button
+          tone="quiet"
+          size="sm"
+          active={drawer === "settings"}
+          aria-expanded={drawer === "settings"}
+          onClick={() => onDrawer("settings")}
+        >
+          Settings
+        </Button>
+      )}
       {view.draft && (
         <div className="flex items-center gap-1.5 phone:order-last phone:w-full phone:[&>:last-child]:flex-1">
           <Button
@@ -139,6 +153,7 @@ export function Toolbar({
             ...REFERENCES.map(([id, label]) => ({ label, onSelect: () => onDrawer(id) })),
             ...(view.draft ? draftItems : []),
             ...(other ? [{ label: other.label, onSelect: () => location.assign(other.href) }] : []),
+            ...(settings ? [{ label: "Settings", onSelect: () => onDrawer("settings") }] : []),
           ]}
         />
       )}
