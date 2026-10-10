@@ -39,7 +39,7 @@ use std::sync::Arc;
 
 use ti4_content::ContentStore;
 use ti4_model::content_types::{ContentType, SourceSet};
-use ti4_model::id::{ActionCardId, PlayerId};
+use ti4_model::id::{ActionCardId, PlayerId, SystemId};
 use ti4_model::state::{GameState, Player};
 
 use crate::decision_context::{DecisionContext, DecisionSource};
@@ -76,6 +76,16 @@ fn actor_is_not(event: &Event, player: &PlayerId, _state: &GameState) -> bool {
     event
         .text("player")
         .is_some_and(|who| who != player.as_str())
+}
+
+/// Courageous to the End: the destroyed ship belongs to the holder and the event states that
+/// the removal happened during a space combat. The effect source in `cause` is independent.
+fn your_ship_destroyed_during_space_combat(
+    event: &Event,
+    player: &PlayerId,
+    state: &GameState,
+) -> bool {
+    actor_is(event, player, state) && event.boolean("during_space_combat") == Some(true)
 }
 
 /// "When you are negotiating a transaction" — Black Market Dealings. The event names the
@@ -147,12 +157,73 @@ fn direct_hit_guard(event: &Event, player: &PlayerId, state: &GameState) -> bool
 /// someone else, and the card being played is not one of the four Sabotage copies — Sabotage
 /// cancels other cards being played, not itself (1.15 would otherwise let a chain of
 /// Sabotages spend the whole deck for nothing).
+fn system_contains_player_units(event: &Event, player: &PlayerId, state: &GameState) -> bool {
+    if let Some(system) = event.text("system") {
+        let sys = state.system_state(&SystemId::new(system));
+        return sys.units.iter().any(|u| u.owner == *player);
+    }
+    false
+}
+
+fn system_contains_player_structures(event: &Event, player: &PlayerId, state: &GameState) -> bool {
+    if let Some(system) = event.text("system") {
+        let sys = state.system_state(&SystemId::new(system));
+        return sys.units.iter().any(|u| {
+            u.owner == *player && (u.type_id.as_str() == "spacedock" || u.type_id.as_str() == "pds")
+        });
+    }
+    false
+}
+
+fn system_contains_player_command_token(
+    event: &Event,
+    player: &PlayerId,
+    state: &GameState,
+) -> bool {
+    if let Some(system) = event.text("system") {
+        let sys = state.system_state(&SystemId::new(system));
+        return sys.command_tokens.contains(player);
+    }
+    false
+}
+
+fn system_contains_player_ships(event: &Event, player: &PlayerId, state: &GameState) -> bool {
+    if let Some(system) = event.text("system") {
+        let sys = state.system_state(&SystemId::new(system));
+        return sys
+            .units
+            .iter()
+            .any(|u| u.owner == *player && u.type_id.as_str().ends_with("ship"));
+    }
+    false
+}
+
+fn system_contains_other_player_ships(event: &Event, player: &PlayerId, state: &GameState) -> bool {
+    if let Some(system) = event.text("system") {
+        let sys = state.system_state(&SystemId::new(system));
+        return sys
+            .units
+            .iter()
+            .any(|u| u.owner != *player && u.type_id.as_str().ends_with("ship"));
+    }
+    false
+}
+
 fn another_players_card_is_not_sabotage(
     event: &Event,
     player: &PlayerId,
     state: &GameState,
 ) -> bool {
-    actor_is_not(event, player, state) && !is_sabotage_play(event)
+    actor_is_not(event, player, state)
+        && !is_sabotage_play(event)
+        // Last Bastion commander: "Your action cards cannot be canceled by 'Sabotage'".
+        && !event.text("player").is_some_and(|actor| {
+            crate::promissory::has_commander_ability(
+                state,
+                &PlayerId::new(actor),
+                "bastioncommander",
+            )
+        })
 }
 
 /// The `ACTION_CARD_PLAYED` payload names one of the four Sabotage copies.
@@ -279,7 +350,9 @@ pub fn window_table() -> BTreeMap<&'static str, Window> {
         ),
         (
             "After you activate a system that contains 1 or more of your ships",
-            guarded("SYSTEM_ACTIVATED", After, actor_is),
+            guarded("SYSTEM_ACTIVATED", After, |e, p, s| {
+                actor_is(e, p, s) && system_contains_player_ships(e, p, s)
+            }),
         ),
         (
             "When another player plays an action card other than 'Sabotage'",
@@ -289,7 +362,9 @@ pub fn window_table() -> BTreeMap<&'static str, Window> {
         // them is whose activation it was, which is exactly what the guard is for.
         (
             "After you activate a system that contains another player's ships",
-            guarded("SYSTEM_ACTIVATED", After, actor_is),
+            guarded("SYSTEM_ACTIVATED", After, |e, p, s| {
+                actor_is(e, p, s) && system_contains_other_player_ships(e, p, s)
+            }),
         ),
         (
             "After you activate an anomaly",
@@ -297,15 +372,21 @@ pub fn window_table() -> BTreeMap<&'static str, Window> {
         ),
         (
             "After another player activates a system that contains your units",
-            guarded("SYSTEM_ACTIVATED", After, actor_is_not),
+            guarded("SYSTEM_ACTIVATED", After, |e, p, s| {
+                actor_is_not(e, p, s) && system_contains_player_units(e, p, s)
+            }),
         ),
         (
             "After another player activates a system that contains 1 of your command tokens",
-            guarded("SYSTEM_ACTIVATED", After, actor_is_not),
+            guarded("SYSTEM_ACTIVATED", After, |e, p, s| {
+                actor_is_not(e, p, s) && system_contains_player_command_token(e, p, s)
+            }),
         ),
         (
             "After another player activates a system that contains 1 or more of your structures",
-            guarded("SYSTEM_ACTIVATED", After, actor_is_not),
+            guarded("SYSTEM_ACTIVATED", After, |e, p, s| {
+                actor_is_not(e, p, s) && system_contains_player_structures(e, p, s)
+            }),
         ),
         (
             "At the start of a combat",
@@ -413,7 +494,11 @@ pub fn window_table() -> BTreeMap<&'static str, Window> {
         // hits, losing the last ship -- and `After` for one that reacts to it having happened.
         (
             "After 1 of your ships is destroyed during a space combat",
-            guarded("SHIP_DESTROYED", After, actor_is),
+            guarded(
+                "SHIP_DESTROYED",
+                After,
+                your_ship_destroyed_during_space_combat,
+            ),
         ),
         (
             "When your last ship in the active system is destroyed",
@@ -571,6 +656,12 @@ pub fn playable_now(
     let Some(seat) = state.player(player) else {
         return Vec::new();
     };
+    // A faction card that stops this player playing action cards (Yssaril Transparasteel
+    // Plating). Deliberately not `laws::action_cards_forbidden`: Political Censure is not enforced
+    // in reaction windows today and this must not start it.
+    if crate::factions::hooks_economy::action_cards_forbidden(state, player) {
+        return Vec::new();
+    }
     // Cards lying on Garbozia are played "as if they were in your hand", so they are read beside
     // it rather than through a path of their own -- every guard below applies to them unchanged.
     let salvaged = crate::legendary::salvaged(state, player);
@@ -578,6 +669,11 @@ pub fn playable_now(
         .iter()
         .chain(salvaged.iter())
         .filter(|alias| {
+            // Check if the card is set to Never in the player's reaction modes.
+            if seat.reaction_card_modes.get(*alias) == Some(&ti4_model::state::ReactionMode::Never)
+            {
+                return false;
+            }
             window_for(content, alias).is_some_and(|window| {
                 window.event == event.event_type
                     && window.relation == relation
@@ -666,24 +762,23 @@ pub fn announce(
     // inside the window, where it holds no resolver): announce each removal through the game's
     // resolver now, so the event's own WHEN and AFTER windows open around it. The ship is off
     // the board before this runs, so `last` is read from the position a reacting card would see.
-    for (system, owner, unit_type) in std::mem::take(&mut context.state.pending_destructions) {
-        let remaining = crate::combat::ships_of(
-            context.state,
-            context.content,
-            context.sources,
-            &owner,
-            &system,
-        )
-        .len();
+    for (system, owner, unit_type, cause, during_space_combat) in
+        std::mem::take(&mut context.state.pending_destructions)
+    {
         // The same handoff the combat window's own emissions make: a reacting effect that
         // needs to know which ship was destroyed cannot read the event once the window runs.
         context.state.last_ship_destroyed =
             Some((system.clone(), owner.clone(), unit_type.clone()));
-        let mut payload = BTreeMap::new();
-        payload.insert("system".to_owned(), system.to_string().into());
-        payload.insert("player".to_owned(), owner.to_string().into());
-        payload.insert("unit".to_owned(), unit_type.to_string().into());
-        payload.insert("last".to_owned(), (remaining == 0).into());
+        let payload = crate::combat::ship_destroyed_payload(
+            context.state,
+            context.content,
+            context.sources,
+            &system,
+            &owner,
+            &unit_type,
+            &cause,
+            during_space_combat,
+        );
         let destroyed = context.event_sequence.next("SHIP_DESTROYED", payload)?;
         resolver.emit_with_context(context, destroyed, |_, _| {})?;
     }
@@ -718,6 +813,48 @@ fn announce_discard(
         .next("ACTION_CARD_DISCARDED", payload)?;
     resolver.emit_with_context(context, discarded, |_, _| {})?;
     Ok(())
+}
+
+/// Open the windows for the card events faction hooks staged
+/// (`factions::hooks_cards::{discard_chosen, take_revealed_action_card}`), oldest first, and
+/// return how many were announced.
+///
+/// A hook runs with a `TimingContext`, which has no resolver, so it can only stage; whoever owns
+/// both a context and the resolver calls this after the hook returns. A staged discard becomes
+/// `ACTION_CARD_DISCARDED` exactly as a played card's does (the pile and
+/// `last_action_discarded` are set by [`announce_discard`]); a staged take becomes the new
+/// `ACTION_CARD_TAKEN` (`player` = taker, `from`; deliberately no card id). With nothing staged — every game
+/// without a faction module — this does nothing at all.
+///
+/// # Errors
+/// [`TimingError`] when a window cannot be resolved.
+pub fn announce_staged_card_events(
+    context: &mut TimingContext<'_>,
+    resolver: &mut Resolver,
+) -> Result<usize, TimingError> {
+    use crate::factions::hooks_cards::{StagedCardEvent, drain_staged, has_staged};
+    if !has_staged(context.state) {
+        return Ok(0);
+    }
+    let staged = drain_staged(context.state);
+    let count = staged.len();
+    for event in staged {
+        match event {
+            StagedCardEvent::Discarded { player, card } => {
+                announce_discard(context, resolver, &player, &card)?;
+            }
+            StagedCardEvent::Taken { player, from, .. } => {
+                let mut payload = BTreeMap::new();
+                payload.insert("player".to_owned(), player.to_string().into());
+                payload.insert("from".to_owned(), from.to_string().into());
+                // No `card`: which card moved is known to the taker and the owner only, and
+                // a typed event is evaluated in every seat's window.
+                let taken = context.event_sequence.next("ACTION_CARD_TAKEN", payload)?;
+                resolver.emit_with_context(context, taken, |_, _| {})?;
+            }
+        }
+    }
+    Ok(count)
 }
 
 /// The choice kind the oracle offers reaction cards under (engine/reactions.py:320–324).
@@ -803,7 +940,14 @@ fn slot(owner_name: &str, player: &PlayerId, event_type: &str, relation: Relatio
                         context.state.phase,
                         context.state.round,
                     )
-                    .about_battle(context.state),
+                    .about_battle(context.state)
+                    .with_trigger(
+                        crate::decision_context::DecisionTrigger::from_event(
+                            event,
+                            relation_name(relation),
+                            &resolver.emission_chain(event),
+                        ),
+                    ),
                 );
                 match context.ask_seeing(&choice) {
                     Ok(answer) => ActionCardId::new(answer.id),
@@ -855,6 +999,9 @@ pub fn arm(resolver: &mut Resolver, state: &GameState) {
     windows.sort_unstable();
     windows.dedup();
 
+    resolver.register(crate::leaders::ssruu_l1z1x_activation_abilities(state));
+    resolver.register(crate::factions::borrowed_round_agents::abilities(state));
+
     for seat in &state.players {
         let owner_name = crate::promissory::faction_name(state, &seat.id);
         for (event_type, relation) in &windows {
@@ -865,6 +1012,13 @@ pub fn arm(resolver: &mut Resolver, state: &GameState) {
         resolver.register([instinct_training(&owner_name, &seat.id)]);
         // The same for a leader that acts in a window rather than as an action.
         resolver.register([l1z1x_agent(&owner_name, &seat.id)]);
+        // Per-faction modules (`crate::factions`), after the shared slots so existing ordering
+        // in every window is unchanged.
+        resolver.register(crate::factions::timing_abilities(
+            state,
+            &owner_name,
+            &seat.id,
+        ));
     }
 }
 
@@ -919,7 +1073,7 @@ fn l1z1x_agent(owner_name: &str, player: &PlayerId) -> Ability {
         player.clone(),
         "SYSTEM_ACTIVATED",
         Relation::After,
-        Arc::new(move |_event, _resolver, context| {
+        Arc::new(move |event, resolver, context| {
             let target = context
                 .state
                 .active
@@ -937,13 +1091,20 @@ fn l1z1x_agent(owner_name: &str, player: &PlayerId) -> Ability {
                     crate::choice::ChoiceOption::decline(),
                 ],
             )
-            .contextualized(DecisionContext::new(
-                owner.clone(),
-                DecisionSource::Content("l1z1xagent".to_owned()),
-                "l1z1x_agent_swap",
-                context.state.phase,
-                context.state.round,
-            ));
+            .contextualized(
+                DecisionContext::new(
+                    owner.clone(),
+                    DecisionSource::Content("l1z1xagent".to_owned()),
+                    "l1z1x_agent_swap",
+                    context.state.phase,
+                    context.state.round,
+                )
+                .with_trigger(crate::decision_context::DecisionTrigger::from_event(
+                    event,
+                    "after",
+                    &resolver.emission_chain(event),
+                )),
+            );
             let Ok(answer) = context.ask_seeing(&choice) else {
                 return Ok(());
             };
@@ -965,12 +1126,10 @@ fn l1z1x_agent(owner_name: &str, player: &PlayerId) -> Ability {
 
 /// Whether `player` can use Instinct Training now: holds it ready, with a strategy token.
 fn instinct_training_ready(state: &GameState, player: &PlayerId) -> bool {
-    let card = ti4_model::id::TechnologyId::new("it");
-    state.player(player).is_some_and(|seat| {
-        seat.technologies.contains(&card)
-            && !seat.exhausted_technologies.contains(&card)
-            && seat.strategic_tokens > 0
-    })
+    crate::technology::technology_text_ready(state, player, "it")
+        && state
+            .player(player)
+            .is_some_and(|seat| seat.strategic_tokens > 0)
 }
 
 /// Instinct Training (Xxcha): "You may exhaust this card and spend 1 token from your strategy pool
@@ -984,7 +1143,7 @@ fn instinct_training(owner_name: &str, player: &PlayerId) -> Ability {
         player.clone(),
         "ACTION_CARD_PLAYED",
         Relation::When,
-        Arc::new(move |event, _resolver, context| {
+        Arc::new(move |event, resolver, context| {
             let card = event.text("card").unwrap_or_default().to_owned();
             let choice = crate::choice::Choice::new(
                 owner.clone(),
@@ -998,13 +1157,22 @@ fn instinct_training(owner_name: &str, player: &PlayerId) -> Ability {
                     crate::choice::ChoiceOption::decline(),
                 ],
             )
-            .contextualized(DecisionContext::new(
-                owner.clone(),
-                DecisionSource::Content("it".to_owned()),
-                "instinct_training_cancel",
-                context.state.phase,
-                context.state.round,
-            ));
+            .contextualized(
+                DecisionContext::new(
+                    owner.clone(),
+                    DecisionSource::Content("it".to_owned()),
+                    "instinct_training_cancel",
+                    context.state.phase,
+                    context.state.round,
+                )
+                .with_trigger(
+                    crate::decision_context::DecisionTrigger::from_event(
+                        event,
+                        "when",
+                        &resolver.emission_chain(event),
+                    ),
+                ),
+            );
             let Ok(answer) = context.ask_seeing(&choice) else {
                 return Ok(());
             };
@@ -1013,9 +1181,9 @@ fn instinct_training(owner_name: &str, player: &PlayerId) -> Ability {
             }
             if let Some(seat) = context.state.player_mut(&owner) {
                 seat.strategic_tokens -= 1;
-                seat.exhausted_technologies
-                    .insert(ti4_model::id::TechnologyId::new("it"));
             }
+            crate::technology::exhaust_technology_text(context.state, &owner, "it");
+            crate::supply::note_strategy_token_spent(context.state, &owner, "instinct_training");
             event.cancel();
             Ok(())
         }),
@@ -1104,6 +1272,14 @@ mod tests {
         Event::new(1, event_type, payload)
     }
 
+    /// A `SYSTEM_ACTIVATED` event: the player who activated, and the system.
+    fn system_activation_event(who: &str, system: &str) -> Event {
+        let mut payload = BTreeMap::new();
+        payload.insert("player".to_owned(), who.to_owned().into());
+        payload.insert("system".to_owned(), system.to_owned().into());
+        Event::new(1, "SYSTEM_ACTIVATED", payload)
+    }
+
     #[test]
     fn a_component_action_is_not_a_reaction() {
         // Forty-two cards read "Action". Treating one as a reaction would offer it in a window
@@ -1146,6 +1322,45 @@ mod tests {
         assert!(
             playable_now(&state, content, &player(), &theirs, Relation::After).is_empty(),
             "another player's activation is not yours"
+        );
+    }
+
+    #[test]
+    fn courageous_requires_the_destroyed_ship_to_be_lost_during_space_combat() {
+        let content = ContentStore::embedded();
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state.player_mut(&player()).unwrap().action_cards = vec![ActionCardId::new("courageous")];
+        let destroyed = |during_space_combat: bool| {
+            let mut payload = BTreeMap::new();
+            payload.insert("player".to_owned(), "a".into());
+            payload.insert("system".to_owned(), "18".into());
+            payload.insert("unit".to_owned(), "cruiser".into());
+            payload.insert("cause".to_owned(), "action_card:direct_hit".into());
+            payload.insert("during_space_combat".to_owned(), during_space_combat.into());
+            Event::new(1, "SHIP_DESTROYED", payload)
+        };
+
+        assert_eq!(
+            playable_now(
+                &state,
+                content,
+                &player(),
+                &destroyed(true),
+                Relation::After,
+            ),
+            vec![ActionCardId::new("courageous")],
+            "the effect source remains Direct Hit while the independent window fact qualifies"
+        );
+        assert!(
+            playable_now(
+                &state,
+                content,
+                &player(),
+                &destroyed(false),
+                Relation::After,
+            )
+            .is_empty(),
+            "the same effect outside combat does not open Courageous"
         );
     }
 
@@ -1506,6 +1721,519 @@ mod tests {
         assert_eq!(
             state.player(&player()).unwrap().action_cards,
             [ActionCardId::new("silence_space")]
+        );
+    }
+
+    /// Emit `event_type` with `payload` through an armed resolver and return every decision the
+    /// table asked, context included.
+    fn asked_for(
+        mut state: GameState,
+        event_type: &str,
+        payload: BTreeMap<String, serde_json::Value>,
+        answers: &[&str],
+    ) -> Vec<crate::choice::Choice> {
+        let (decider, seen) = crate::choice::Capturing::new(Box::new(
+            crate::choice::Scripted::new(answers.iter().map(|answer| (*answer).to_owned())),
+        ));
+        let mut table = crate::choice::Table::with_default(Box::new(decider));
+        let seats: Vec<PlayerId> = state.players.iter().map(|seat| seat.id.clone()).collect();
+        let mut resolver = Resolver::new(
+            seats.clone(),
+            seats.first().cloned(),
+            crate::choice::Table::default(),
+        );
+        arm(&mut resolver, &state);
+        let content = ContentStore::embedded();
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(0);
+        let mut event_sequence = crate::event::EventSequence::new();
+        let mut context = TimingContext {
+            state: &mut state,
+            content,
+            sources: POK,
+            table: &mut table,
+            dice: &mut dice,
+            rng: &mut rng,
+            event_sequence: &mut event_sequence,
+            galaxy: None,
+        };
+        let event = context.event_sequence.next(event_type, payload).unwrap();
+        resolver
+            .emit_with_context(&mut context, event, |_, _| {})
+            .unwrap();
+        let asked = seen.borrow().clone();
+        asked
+    }
+
+    fn payload(pairs: &[(&str, serde_json::Value)]) -> BTreeMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect()
+    }
+
+    fn only_trigger(asked: &[crate::choice::Choice]) -> crate::decision_context::DecisionTrigger {
+        asked
+            .iter()
+            .find_map(|choice| choice.context.as_ref().and_then(|c| c.trigger.clone()))
+            .expect("a reaction decision carries its trigger")
+    }
+
+    /// (questions asked, decisions recorded, skip notes)
+    type Asked = (Vec<String>, Vec<(String, String)>, Vec<Vec<String>>);
+
+    /// Emit through an armed resolver with seat `reactor` answered by `NeverOffer` over a decider
+    /// that records every question it is really asked. Returns (questions asked, decisions
+    /// recorded, skip notes).
+    fn asked_with_never(
+        mut state: GameState,
+        reactor: &str,
+        never: &[&str],
+        event_type: &str,
+        payload: BTreeMap<String, serde_json::Value>,
+    ) -> Asked {
+        use std::sync::{Arc, Mutex};
+        struct Recorder(Arc<Mutex<Vec<String>>>);
+        impl crate::choice::Decider for Recorder {
+            fn choose(
+                &mut self,
+                choice: &crate::choice::Choice,
+            ) -> Result<crate::choice::ChoiceOption, crate::choice::IllegalChoice> {
+                self.0.lock().unwrap().push(choice.prompt.clone());
+                crate::choice::AlwaysDecline.choose(choice)
+            }
+        }
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let skipped = Arc::new(Mutex::new(Vec::new()));
+        let set: crate::reaction_modes::NeverSet = Arc::new(Mutex::new(
+            never.iter().map(|name| (*name).to_owned()).collect(),
+        ));
+        let sink = skipped.clone();
+        let wrapper =
+            crate::reaction_modes::NeverOffer::new(Box::new(Recorder(asked.clone())), set)
+                .on_skip(move |_, cards| sink.lock().unwrap().push(cards.to_vec()));
+        let mut table = crate::choice::Table::with_default(Box::new(Recorder(asked.clone())));
+        table.seat(PlayerId::new(reactor), Box::new(wrapper));
+        let seats: Vec<PlayerId> = state.players.iter().map(|seat| seat.id.clone()).collect();
+        let mut resolver = Resolver::new(
+            seats.clone(),
+            seats.first().cloned(),
+            crate::choice::Table::default(),
+        );
+        arm(&mut resolver, &state);
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(0);
+        let mut event_sequence = crate::event::EventSequence::new();
+        let mut context = TimingContext {
+            state: &mut state,
+            content: ContentStore::embedded(),
+            sources: POK,
+            table: &mut table,
+            dice: &mut dice,
+            rng: &mut rng,
+            event_sequence: &mut event_sequence,
+            galaxy: None,
+        };
+        let event = context.event_sequence.next(event_type, payload).unwrap();
+        resolver
+            .emit_with_context(&mut context, event, |_, _| {})
+            .unwrap();
+        let recorded = table
+            .log
+            .records
+            .iter()
+            .map(|record| (record.player.to_string(), record.chosen.clone()))
+            .collect();
+        let questions = asked.lock().unwrap().clone();
+        let notes = skipped.lock().unwrap().clone();
+        (questions, recorded, notes)
+    }
+
+    #[test]
+    fn a_never_card_window_is_declined_unasked_and_journaled_as_a_decline() {
+        let build = || {
+            let mut state = crate::fixtures::game(&["a", "b"]);
+            state
+                .player_mut(&PlayerId::new("a"))
+                .unwrap()
+                .action_cards
+                .clear();
+            state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
+                vec![ActionCardId::new("sabo1"), ActionCardId::new("sabo2")];
+            state
+        };
+        let play = || payload(&[("player", "a".into()), ("card", "fs1".into())]);
+        // Offered as before when the seat has no preference.
+        let (asked, recorded, notes) =
+            asked_with_never(build(), "b", &[], "ACTION_CARD_PLAYED", play());
+        assert_eq!(asked.len(), 1, "the window is asked: {asked:?}");
+        assert_eq!(recorded, vec![("b".to_owned(), "decline".to_owned())]);
+        assert!(notes.is_empty());
+        // Never: all copies by name, nothing asked, the same decline is journaled.
+        let (asked, recorded, notes) =
+            asked_with_never(build(), "b", &["Sabotage"], "ACTION_CARD_PLAYED", play());
+        assert!(asked.is_empty(), "skipped without asking: {asked:?}");
+        assert_eq!(recorded, vec![("b".to_owned(), "decline".to_owned())]);
+        assert_eq!(notes, vec![vec!["Sabotage".to_owned()]]);
+        // Another card name set to Never leaves Sabotage offered.
+        let (asked, _, notes) =
+            asked_with_never(build(), "b", &["Flank Speed"], "ACTION_CARD_PLAYED", play());
+        assert_eq!(asked.len(), 1);
+        assert!(notes.is_empty());
+        // The preference belongs to one seat: the wrapper sits on "a", the holder is "b".
+        let (asked, _, notes) =
+            asked_with_never(build(), "a", &["Sabotage"], "ACTION_CARD_PLAYED", play());
+        assert_eq!(asked.len(), 1);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn a_never_card_leaves_the_same_seats_other_cards_offered() {
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
+        state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
+            vec![ActionCardId::new("silence_space"), ActionCardId::new("fs1")];
+        let (asked, _, notes) = asked_with_never(
+            state,
+            "a",
+            &["Sabotage"],
+            "SYSTEM_ACTIVATED",
+            payload(&[("player", "a".into()), ("system", "27".into())]),
+        );
+        assert!(
+            !asked.is_empty(),
+            "the seat is still asked about its other cards"
+        );
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn a_played_card_opens_sabotage_with_who_played_what() {
+        use crate::decision_context::TriggerKind;
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards
+            .clear();
+        state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
+            vec![ActionCardId::new("sabo1")];
+        let asked = asked_for(
+            state,
+            "ACTION_CARD_PLAYED",
+            payload(&[("player", "a".into()), ("card", "fs1".into())]),
+            &["decline"],
+        );
+        let trigger = only_trigger(&asked);
+        assert_eq!(trigger.kind, TriggerKind::ActionCardPlayed);
+        assert_eq!(trigger.actor, Some(PlayerId::new("a")));
+        assert_eq!(trigger.card.as_deref(), Some("fs1"));
+        assert_eq!(trigger.relation, "when");
+        assert_eq!(trigger.event_type, "ACTION_CARD_PLAYED");
+        assert_eq!(trigger.event_id, 1);
+        assert!(trigger.chain.is_empty());
+        let context = asked[0].context.as_ref().unwrap();
+        assert_eq!(
+            context.actor,
+            PlayerId::new("b"),
+            "the asked seat is the reactor"
+        );
+    }
+
+    #[test]
+    fn a_system_activation_names_the_player_and_the_system_on_both_steps() {
+        use crate::decision_context::TriggerKind;
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
+            vec![ActionCardId::new("silence_space"), ActionCardId::new("fs1")];
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
+        let asked = asked_for(
+            state,
+            "SYSTEM_ACTIVATED",
+            payload(&[("player", "a".into()), ("system", "27".into())]),
+            &["reaction:generic:SYSTEM_ACTIVATED:after", "fs1", "decline"],
+        );
+        let outer = asked[0].context.as_ref().unwrap().trigger.clone().unwrap();
+        assert_eq!(outer.kind, TriggerKind::SystemActivated);
+        assert_eq!(outer.actor, Some(PlayerId::new("a")));
+        assert_eq!(outer.system, Some(SystemId::new("27")));
+        assert_eq!(outer.relation, "after");
+        let inner = asked
+            .iter()
+            .find(|choice| {
+                choice
+                    .context
+                    .as_ref()
+                    .is_some_and(|c| c.subtype == "play_reaction_after_SYSTEM_ACTIVATED")
+            })
+            .expect("several differently named cards ask the inner step");
+        assert_eq!(
+            inner.context.as_ref().unwrap().trigger.as_ref(),
+            Some(&outer),
+            "the inner decision repeats the outer's trigger"
+        );
+    }
+
+    #[test]
+    fn a_fleet_arrival_names_the_system_and_what_arrived() {
+        use crate::decision_context::TriggerKind;
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
+            vec![ActionCardId::new("experimental")];
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .action_cards
+            .clear();
+        let asked = asked_for(
+            state,
+            "SHIP_MOVED",
+            payload(&[
+                ("player", "a".into()),
+                ("system", "27".into()),
+                (
+                    "units",
+                    serde_json::json!([{"owner": "a", "unit_type": "cruiser", "count": 2}]),
+                ),
+            ]),
+            &["decline"],
+        );
+        let trigger = only_trigger(&asked);
+        assert_eq!(trigger.kind, TriggerKind::ShipMoved);
+        assert_eq!(trigger.system, Some(SystemId::new("27")));
+        assert_eq!(trigger.units.len(), 1);
+        assert_eq!(trigger.units[0].unit_type, "cruiser");
+        assert_eq!(trigger.units[0].count, 2);
+    }
+
+    #[test]
+    fn a_strategic_action_names_the_strategy_card() {
+        use crate::decision_context::TriggerKind;
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state
+            .player_mut(&PlayerId::new("a"))
+            .unwrap()
+            .action_cards
+            .clear();
+        state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
+            vec![ActionCardId::new("coup")];
+        let asked = asked_for(
+            state,
+            "STRATEGIC_ACTION_BEGAN",
+            payload(&[("player", "a".into()), ("card", "pok1leadership".into())]),
+            &["decline"],
+        );
+        let trigger = only_trigger(&asked);
+        assert_eq!(trigger.kind, TriggerKind::StrategicActionBegan);
+        assert_eq!(trigger.actor, Some(PlayerId::new("a")));
+        assert_eq!(trigger.card.as_deref(), Some("pok1leadership"));
+        assert_eq!(trigger.relation, "when");
+    }
+
+    #[test]
+    fn every_mapped_window_event_has_a_trigger_kind() {
+        // A new window can never silently fall back to `other`.
+        for window in window_table().values() {
+            assert_ne!(
+                crate::trigger::kind_of(window.event),
+                crate::decision_context::TriggerKind::Other,
+                "{} has no trigger kind",
+                window.event
+            );
+        }
+    }
+
+    #[test]
+    fn the_trigger_is_not_part_of_the_recorded_decision_or_the_context_canon() {
+        use crate::decision_context::DecisionTrigger;
+        let event = event_with_card("ACTION_CARD_PLAYED", "a", "fs1");
+        let plain = DecisionContext::new(
+            PlayerId::new("b"),
+            DecisionSource::Reaction("ACTION_CARD_PLAYED".to_owned()),
+            "reaction_when_ACTION_CARD_PLAYED",
+            ti4_model::state::Phase::Action,
+            1,
+        );
+        let with = plain
+            .clone()
+            .with_trigger(DecisionTrigger::from_event(&event, "when", &[]));
+        assert_eq!(plain.canonical(), with.canonical());
+        let choice = crate::choice::Choice::new(
+            PlayerId::new("b"),
+            "when ACTION_CARD_PLAYED",
+            vec![crate::choice::ChoiceOption::decline()],
+        )
+        .contextualized(with.clone());
+        let mut log = crate::choice::DecisionLog::default();
+        log.record(&choice, &crate::choice::ChoiceOption::decline());
+        assert_eq!(log.records[0].context.as_ref().unwrap().trigger, None);
+        let record = crate::choice::DecisionRecord {
+            player: PlayerId::new("b"),
+            prompt: "when ACTION_CARD_PLAYED".to_owned(),
+            chosen: "decline".to_owned(),
+            offered: vec!["decline".to_owned()],
+            context: Some(with),
+        };
+        let stripped = crate::choice::DecisionRecord {
+            context: Some(plain),
+            ..record.clone()
+        };
+        for version in [
+            crate::fingerprint::CanonicalHashVersion::V1,
+            crate::fingerprint::CanonicalHashVersion::V2,
+        ] {
+            assert_eq!(
+                crate::fingerprint::decision_hash(version, &record),
+                crate::fingerprint::decision_hash(version, &stripped)
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_context_without_a_trigger_still_reads_and_a_trigger_round_trips() {
+        let old = r#"{"version":1,"actor":"b","source":{"Reaction":"X"},"subtype":"reaction_when_X","phase":"action","round":1,"optional":true,"target":null,"outstanding":[]}"#;
+        let context: DecisionContext = serde_json::from_str(old).expect("old shape reads");
+        assert!(context.trigger.is_none());
+        let json = serde_json::to_string(&context).unwrap();
+        assert!(!json.contains("trigger"), "absent stays absent on the wire");
+        let event = event_with_card("ACTION_CARD_PLAYED", "a", "fs1");
+        let with = context.with_trigger(crate::decision_context::DecisionTrigger::from_event(
+            &event,
+            "when",
+            &[],
+        ));
+        let back: DecisionContext =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
+    }
+
+    #[test]
+    fn hits_and_votes_never_name_the_wrong_seat_or_an_outcome() {
+        use crate::decision_context::{DecisionTrigger, TriggerKind};
+        let mut hits = BTreeMap::new();
+        hits.insert("player".to_owned(), "victim".into());
+        hits.insert("gunner".to_owned(), "shooter".into());
+        hits.insert("hits".to_owned(), 3.into());
+        let cannon =
+            DecisionTrigger::from_event(&Event::new(5, "SPACE_CANNON_HITS", hits), "when", &[1, 2]);
+        assert_eq!(cannon.kind, TriggerKind::SpaceCannonHits);
+        assert_eq!(cannon.actor, Some(PlayerId::new("shooter")));
+        assert_eq!(cannon.subject, Some(PlayerId::new("victim")));
+        assert_eq!(cannon.hits, Some(3));
+        assert_eq!(cannon.chain, [1, 2]);
+        let mut votes = BTreeMap::new();
+        votes.insert("player".to_owned(), "a".into());
+        votes.insert("outcome".to_owned(), "for".into());
+        let cast = DecisionTrigger::from_event(&Event::new(6, "VOTES_CAST", votes), "after", &[]);
+        assert_eq!(cast.kind, TriggerKind::VotesCast);
+        let json = serde_json::to_string(&cast).unwrap();
+        assert!(
+            !json.contains("outcome") && !json.contains("\"for\""),
+            "{json}"
+        );
+        let mut agenda = BTreeMap::new();
+        agenda.insert("player".to_owned(), "an outcome".into());
+        agenda.insert("elected_player".to_owned(), "b".into());
+        let resolved =
+            DecisionTrigger::from_event(&Event::new(7, "AGENDA_RESOLVED", agenda), "when", &[]);
+        assert_eq!(
+            resolved.actor, None,
+            "player here is the outcome, not a seat"
+        );
+        assert_eq!(resolved.subject, Some(PlayerId::new("b")));
+    }
+
+    #[test]
+    fn reaction_conditions_are_checked_before_offering() {
+        // Decoy Operation window: "After another player activates a system that contains
+        // 1 or more of your structures". The card should only be offered if the activated
+        // system actually contains the player's structures, not always when another player activates.
+        let content = ContentStore::embedded();
+        let b = PlayerId::new("b");
+        let mut state = crate::fixtures::game(&["a", "b"]);
+
+        // Player B holds Decoy Operation
+        state.player_mut(&b).unwrap().action_cards = vec![ActionCardId::new("decoy")];
+
+        // Player A activates system 33 (Corneeq)
+        let activation = system_activation_event("a", "33");
+
+        // Player B has no structures in system 33, so Decoy Operation should not be offered
+        assert!(
+            playable_now(&state, content, &b, &activation, Relation::After).is_empty(),
+            "Decoy Operation should not be offered when the system contains no structures"
+        );
+
+        // Place a Space Dock for player B in system 33
+        let spacedock =
+            ti4_model::Unit::new(ti4_model::id::UnitTypeId::new("spacedock"), b.clone());
+        state.system_mut(&SystemId::new("33")).units.push(spacedock);
+
+        // Now Decoy Operation should be offered
+        assert_eq!(
+            playable_now(&state, content, &b, &activation, Relation::After),
+            vec![ActionCardId::new("decoy")],
+            "Decoy Operation should be offered when the system contains the player's structures"
+        );
+    }
+
+    /// BF-00h-cards: staged card events are announced oldest first; with none staged nothing runs.
+    #[test]
+    fn staged_card_events_are_announced_through_their_windows() {
+        use crate::factions::hooks_cards::{
+            RevealScope, discard_chosen, reveal_hand, take_revealed_action_card,
+        };
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
+            vec![ActionCardId::new("bribery")];
+        state.player_mut(&PlayerId::new("b")).unwrap().action_cards =
+            vec![ActionCardId::new("dh1")];
+        let mut resolver = crate::fixtures::armed_resolver(&state);
+        let mut table = crate::choice::Table::new();
+        let announced = crate::fixtures::with_context(&mut state, POK, None, &mut table, |ctx| {
+            assert_eq!(
+                announce_staged_card_events(ctx, &mut resolver).unwrap(),
+                0,
+                "nothing staged, nothing emitted"
+            );
+            assert!(resolver.log().is_empty());
+            let (a, b) = (PlayerId::new("a"), PlayerId::new("b"));
+            assert!(discard_chosen(ctx.state, &a, &ActionCardId::new("bribery")));
+            reveal_hand(ctx.state, &a, &b, RevealScope::Choice, "mi");
+            assert!(take_revealed_action_card(
+                ctx.state,
+                &a,
+                &b,
+                &ActionCardId::new("dh1")
+            ));
+            announce_staged_card_events(ctx, &mut resolver).unwrap()
+        });
+        assert_eq!(announced, 2);
+        let log = resolver.log().join(
+            "
+",
+        );
+        let discarded = log
+            .find("emit ACTION_CARD_DISCARDED")
+            .expect("discard announced");
+        let taken = log.find("emit ACTION_CARD_TAKEN").expect("take announced");
+        assert!(discarded < taken, "oldest first: {log}");
+        assert_eq!(
+            state.discarded_action_cards,
+            [ActionCardId::new("bribery")],
+            "the pile is set when the discard is announced"
+        );
+        assert_eq!(
+            state.last_action_discarded,
+            Some((PlayerId::new("a"), ActionCardId::new("bribery")))
         );
     }
 }

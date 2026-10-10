@@ -36,9 +36,9 @@ async function startMovement(page: Page, request: APIRequestContext) {
   expect(forward).toBeDefined();
 
   await openPlayerGame(page, gameId, session);
-  await page.locator('[data-testid="choice-option"][data-option-id="tactical"]').click();
-  await page.getByTestId("submit-choice-button").click();
-  await page.getByTestId(`system-hex-${border!.system_id}`).click();
+  await page.getByTestId("turn-bar-tactical").click();
+  await expect(page.getByTestId("system-activation-bar")).toBeVisible();
+  await page.getByTestId(`system-hex-${border!.system_id}`).dispatchEvent("click");
   await page.getByTestId("confirm-activation-btn").click();
   const tray = page.getByTestId("tactical-movement-tray");
   await expect(tray).toBeVisible();
@@ -69,7 +69,7 @@ test.describe("Tactical fleet rally", () => {
     await page.getByTestId(`rally-inc-${forwardId}-cruiser`).click();
     // The same selection includes a planet-sourced load for the carrier.
     await page.getByTestId("rally-inc-cargo-01-sol_infantry-jord").click();
-    await expect(page.getByTestId("cargo-capacity-gauge-01")).toContainText("1 /");
+    await expect(page.getByTestId("cargo-capacity-gauge-01")).toContainText("1 loaded /");
     await expect(page.getByTestId("fleet-supply-gauge")).not.toHaveAttribute(
       "data-warning",
       "true",
@@ -210,10 +210,7 @@ test.describe("Tactical fleet rally", () => {
     expect(p1Action.pending_choice?.choice.player).toBe(p1.id);
 
     // Select tactical action
-    await expect(pageP1.getByTestId("pending-choice-dialog")).toBeVisible();
-    await pageP1.locator('[data-testid="choice-option"][data-option-id="tactical"]').click();
-    await expect(pageP1.getByTestId("submit-choice-button")).toBeEnabled();
-    await pageP1.getByTestId("submit-choice-button").click();
+    await pageP1.getByTestId("turn-bar-tactical").click();
 
     // Select an adjacent system at distance 1 from home system 01 to activate
     await expect
@@ -270,7 +267,7 @@ test.describe("Tactical fleet rally", () => {
       "data-warning",
       "true",
     );
-    await expect(pageP1.getByTestId("cargo-capacity-gauge-01")).toContainText("6 /");
+    await expect(pageP1.getByTestId("cargo-capacity-gauge-01")).toContainText("6 loaded /");
 
     // Commit moves and capture batch request/response
     const batchRequestPromise = pageP1.waitForRequest((req) =>

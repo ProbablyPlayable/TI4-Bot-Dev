@@ -227,4 +227,135 @@ describe("AgendaBallotModal", () => {
 
     expect(screen.getByTestId("agenda-error-banner")).toHaveTextContent("Council voting timeout");
   });
+
+  it("displays agenda card information when available", () => {
+    const onSubmit = vi.fn();
+    const onClose = vi.fn();
+
+    const choice: PendingChoiceDto = {
+      actor: "seat_1",
+      nonce: "35",
+      prompt: "vote for which outcome",
+      context: {
+        subtype: "cast_vote",
+        details: {
+          agenda_card: {
+            name: "Sling Relay",
+            yes_outcome: "All players may move their ships in non-home systems.",
+            no_outcome: "Players cannot move ships during this agenda phase.",
+          },
+        },
+      },
+      options: [
+        { id: "FOR", label: "FOR", kind: "vote", payload: { current_votes: 3 } },
+        { id: "AGAINST", label: "AGAINST", kind: "vote", payload: { current_votes: 2 } },
+      ],
+    };
+
+    render(
+      <AgendaBallotModal
+        isOpen={true}
+        choice={choice}
+        viewerSeat="seat_1"
+        onSubmit={onSubmit}
+        onClose={onClose}
+      />,
+    );
+
+    expect(screen.getByTestId("agenda-card-display")).toBeInTheDocument();
+    expect(screen.getByTestId("agenda-card-name")).toHaveTextContent("Sling Relay");
+    expect(screen.getByTestId("agenda-yes-outcome")).toHaveTextContent(
+      "All players may move their ships in non-home systems.",
+    );
+    expect(screen.getByTestId("agenda-no-outcome")).toHaveTextContent(
+      "Players cannot move ships during this agenda phase.",
+    );
+  });
+
+  it("does not display agenda card section when agenda_card is not provided", () => {
+    const onSubmit = vi.fn();
+    const onClose = vi.fn();
+
+    const choice: PendingChoiceDto = {
+      actor: "seat_1",
+      nonce: "36",
+      prompt: "vote for which outcome",
+      context: {
+        subtype: "cast_vote",
+      },
+      options: [{ id: "FOR", label: "FOR" }],
+    };
+
+    render(
+      <AgendaBallotModal
+        isOpen={true}
+        choice={choice}
+        viewerSeat="seat_1"
+        onSubmit={onSubmit}
+        onClose={onClose}
+      />,
+    );
+
+    expect(screen.queryByTestId("agenda-card-display")).not.toBeInTheDocument();
+  });
+});
+
+describe("AgendaBallotModal map selection", () => {
+  const exhaustChoice: PendingChoiceDto = {
+    actor: "seat_1",
+    nonce: "40",
+    prompt: "exhaust planets to vote",
+    context: { subtype: "vote_exhaust_planet" },
+    options: [
+      {
+        id: "jord",
+        label: "Exhaust Jord for 2 votes",
+        kind: "vote_planet",
+        payload: { planet: "jord" },
+      },
+      {
+        id: "moll",
+        label: "Exhaust Moll for 1 votes",
+        kind: "vote_planet",
+        payload: { planet: "moll" },
+      },
+      { id: "decline", label: "Done", kind: "decline" },
+    ],
+  };
+
+  it("toggles a planet picked on the map into and out of the vote basket", () => {
+    const onSelectOption = vi.fn();
+    const props = {
+      isOpen: true,
+      choice: exhaustChoice,
+      viewerSeat: "seat_1",
+      onSubmit: vi.fn(),
+      onClose: vi.fn(),
+      onSelectOption,
+    };
+    const { rerender } = render(<AgendaBallotModal {...props} selectedOptionId="jord" />);
+    expect(screen.getByTestId("planet-card-jord")).toHaveAttribute("data-staged", "true");
+    expect(screen.getByTestId("staged-votes-counter")).toHaveTextContent("+2 Votes");
+    // The pick is consumed so a second click on the same planet registers again.
+    expect(onSelectOption).toHaveBeenCalledWith("");
+
+    rerender(<AgendaBallotModal {...props} selectedOptionId="" />);
+    rerender(<AgendaBallotModal {...props} selectedOptionId="jord" />);
+    expect(screen.getByTestId("planet-card-jord")).toHaveAttribute("data-staged", "false");
+    expect(screen.getByTestId("staged-votes-counter")).toHaveTextContent("+0 Votes");
+  });
+
+  it("ignores map picks that are not offered planets", () => {
+    render(
+      <AgendaBallotModal
+        isOpen
+        choice={exhaustChoice}
+        viewerSeat="seat_1"
+        onSubmit={vi.fn()}
+        onClose={vi.fn()}
+        selectedOptionId="decline"
+      />,
+    );
+    expect(screen.getByTestId("staged-votes-counter")).toHaveTextContent("+0 Votes");
+  });
 });

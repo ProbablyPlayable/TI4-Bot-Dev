@@ -3217,6 +3217,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pollster"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+
+[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3575,6 +3581,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "percent-encoding",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4417,6 +4424,7 @@ dependencies = [
  "ti4-content",
  "ti4-engine",
  "ti4-model",
+ "ti4-view",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower-http",
@@ -4481,6 +4489,32 @@ dependencies = [
  "ti4-sim",
  "tracing",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "ti4-view"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "ti4-content",
+ "ti4-engine",
+ "ti4-model",
+]
+
+[[package]]
+name = "ti4-wasm"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ti4-content",
+ "ti4-engine",
+ "ti4-model",
+ "ti4-view",
 ]
 
 [[package]]

@@ -1,0 +1,227 @@
+// The activation and the movement of a tactical action, on the screens of these two steps. The
+// later steps of the action are still decisions in the list (`selectAction`).
+import type {
+  ActionButtonView,
+  ActivationView,
+  FooterView,
+  StepContentView,
+  StepTabView,
+  TacticalActionView,
+} from "../../model";
+import { plural } from "../../model";
+import type { ActivationFacts, MovementFacts, SessionUpdate, TacticalFacts } from "../wire";
+import { type LocalState, openChoice } from "./action";
+import { selectMovement, systemLabel } from "./movement";
+import { ANOMALIES, WORMHOLES, factionName } from "./names";
+
+const STEPS = ["Activation", "Movement", "Space combat", "Invasion", "Production"];
+
+/** The facts of the open choice, when it is the activation or the movement of the viewer. */
+export function tacticalFacts(update: SessionUpdate, local: LocalState): TacticalFacts | null {
+  const subtype = openChoice(update, local)?.context?.subtype;
+  const facts = update.tactical;
+  return (facts?.kind === "activation" && subtype === "activate_system") ||
+    (facts?.kind === "movement" && subtype === "movement_step")
+    ? facts
+    : null;
+}
+
+const tilesOf = (update: SessionUpdate) =>
+  new Map((update.view.board.map_tiles ?? []).map((tile) => [tile.system_id, tile]));
+
+const UNDO: ActionButtonView = { label: "Undo", tone: "quiet", intent: { type: "undo" } };
+
+function activation(
+  update: SessionUpdate,
+  local: LocalState,
+  facts: ActivationFacts,
+): { content: ActivationView; footer: FooterView; target: string | null } {
+  const tiles = tilesOf(update);
+  const reach = facts.systems.find((item) => item.system === local.staged);
+  const tile = reach && tiles.get(reach.system);
+  const label = reach ? systemLabel(tiles, reach.system) : null;
+  return {
+    target: label,
+    content: {
+      kind: "activation",
+      editing: true,
+      draft: false,
+      tacticPool: [facts.tactic_tokens, facts.tactic_tokens - 1],
+      systems: facts.systems.map((item) => ({
+        id: item.system,
+        label: systemLabel(tiles, item.system),
+      })),
+      active: null,
+      chosen: reach
+        ? {
+            system: reach.system,
+            label: label!,
+            facts:
+              [
+                ...(tile?.anomalies ?? []).map((name) =>
+                  name in ANOMALIES ? name.charAt(0).toUpperCase() + name.slice(1) : name,
+                ),
+                ...(tile?.wormholes ?? []).map((name) => `${WORMHOLES[name] ?? name} wormhole`),
+                plural(tile?.planets?.length ?? 0, "planet"),
+              ].join(" · ") || "Empty space",
+            commandToken: false,
+            shipsInRange: reach.ships,
+            originsInRange: reach.origins,
+            production: reach.production ?? 0,
+            cannon: reach.cannon ?? 0,
+          }
+        : null,
+    },
+    footer: {
+      note: label ? `Selected: ${label}` : "Choose a system on the map.",
+      error: false,
+      actions: [
+        ...(local.canUndo ? [UNDO] : []),
+        ...(reach
+          ? [
+              {
+                label: "Clear",
+                tone: "quiet" as const,
+                key: "Escape",
+                intent: { type: "clearChoice" as const },
+              },
+            ]
+          : []),
+        {
+          label: "Activate system",
+          tone: "primary",
+          disabled: !reach,
+          key: "Enter",
+          arrow: true,
+          intent: { type: "commitEdit" },
+        },
+      ],
+    },
+  };
+}
+
+function movement(
+  update: SessionUpdate,
+  local: LocalState,
+  facts: MovementFacts,
+): { content: StepContentView; footer: FooterView; target: string } {
+  const tiles = tilesOf(update);
+  const target = systemLabel(tiles, facts.active);
+  if (local.step === 0) {
+    // The recorded activation, read-only. The token of this activation is already spent.
+    const pool =
+      update.view.players.find((player) => player.id === update.pending_choice?.choice.player)
+        ?.tactic_tokens ?? 0;
+    return {
+      target,
+      content: {
+        kind: "activation",
+        editing: false,
+        draft: false,
+        chosen: null,
+        systems: [],
+        active: { system: facts.active, name: tiles.get(facts.active)?.label ?? "System" },
+        tacticPool: [pool + 1, pool],
+      },
+      footer: {
+        note: "Viewing activation. The action is at movement.",
+        error: false,
+        actions: [
+          {
+            label: "Continue to movement",
+            tone: "primary",
+            key: "Enter",
+            arrow: true,
+            intent: { type: "returnToCurrent" },
+          },
+        ],
+      },
+    };
+  }
+  const nothing = Object.keys(local.movement).length === 0;
+  return {
+    target,
+    content: selectMovement(update, facts, local.movement, local.handled),
+    footer: {
+      note: local.planNote?.text ?? "This commits to the live game.",
+      error: !!local.planNote?.error,
+      actions: [
+        ...(local.canUndo ? [UNDO] : []),
+        ...(nothing
+          ? []
+          : [
+              {
+                label: "Reset selection",
+                key: "Escape",
+                intent: { type: "cancelEdit" as const },
+              },
+            ]),
+        {
+          label: nothing ? "Move nothing" : "Move fleet",
+          tone: "primary",
+          key: "Enter",
+          arrow: true,
+          intent: { type: "commitEdit" },
+        },
+      ],
+    },
+  };
+}
+
+export function selectTactical(
+  update: SessionUpdate,
+  local: LocalState,
+  facts: TacticalFacts,
+): TacticalActionView {
+  const current = facts.kind === "activation" ? 0 : 1;
+  const selected = facts.kind === "movement" && local.step === 0 ? 0 : current;
+  const view =
+    facts.kind === "activation" ? activation(update, local, facts) : movement(update, local, facts);
+  const seat = update.pending_choice?.choice.player ?? "";
+  const faction = factionName(
+    update.view.players.find((player) => player.id === seat)?.faction ?? seat,
+  );
+  const ships = Object.keys(local.movement).length;
+  const tabs = STEPS.map((name, step): StepTabView => {
+    const status = step < current ? "done" : step === current ? "decision" : "future";
+    return {
+      name,
+      status,
+      caption:
+        step === 0 && facts.kind === "movement"
+          ? `#${facts.active}`
+          : step === 1 && current === 1 && ships
+            ? plural(ships, "ship")
+            : "",
+    };
+  });
+  return {
+    kind: "tactical",
+    title: "Tactical action",
+    subtitle: `${view.target ?? "No system chosen"} · ${faction}`,
+    badge: { tone: "live", label: "In progress" },
+    past: null,
+    tabs,
+    selected,
+    current,
+    contentKey: `tactical:${selected}`,
+    uncommitted: null,
+    interrupt: null,
+    closing: [],
+    task: {
+      step: selected,
+      title: STEPS[selected],
+      pill:
+        selected !== current
+          ? { tone: "done", label: "Resolved" }
+          : local.remaining === null && local.planNote && !local.planNote.error
+            ? { tone: "live", label: "Your decision · movement goes on" }
+            : { tone: "live", label: "Your decision" },
+      trail: [],
+      edit: null,
+      help: [],
+      content: view.content,
+      footer: view.footer,
+    },
+  };
+}

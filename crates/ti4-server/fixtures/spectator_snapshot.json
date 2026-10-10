@@ -98,13 +98,15 @@
               "unit_type": "carrier",
               "owner": "seat_a",
               "planet": null,
-              "damaged": false
+              "damaged": false,
+              "galvanized": false
             },
             {
               "unit_type": "fighter",
               "owner": "seat_a",
               "planet": null,
-              "damaged": false
+              "damaged": false,
+              "galvanized": false
             }
           ]
         }
@@ -186,6 +188,7 @@
           "?",
           "?"
         ],
+        "reaction_card_modes": {},
         "breakthrough": null,
         "relic_fragments": {},
         "relics": [],
@@ -260,6 +263,7 @@
         "action_cards": [
           "?"
         ],
+        "reaction_card_modes": {},
         "breakthrough": null,
         "relic_fragments": {},
         "relics": [],
@@ -334,6 +338,7 @@
         "action_cards": [
           "?"
         ],
+        "reaction_card_modes": {},
         "breakthrough": null,
         "relic_fragments": {},
         "relics": [],

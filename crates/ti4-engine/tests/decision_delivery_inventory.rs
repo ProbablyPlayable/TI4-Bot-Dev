@@ -267,6 +267,407 @@ struct Producer {
 
 const PRODUCERS: &[Producer] = &[
     Producer {
+        module: "invasion.rs",
+        function: "assign_selected_ground_hit_in_timing",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "yssaril.rs",
+        function: "borrowed_stall_tactics",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "argent.rs",
+        function: "ask_option_for",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "sardakk.rs",
+        function: "skip_to_commit",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "muaat.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "nekro.rs",
+        function: "take_from",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "nekro_units.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naaz.rs",
+        function: "ask_checked",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naaz.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naaz.rs",
+        function: "borrowed_agent",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naaz.rs",
+        function: "offer_supercharge",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "saar.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "agent_use",
+        count: 2,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "bioplasmosis",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "mitosis",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "perform_component",
+        count: 2,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "stymie",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "arborec.rs",
+        function: "warrior_returns",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "ghost.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naalu.rs",
+        function: "foresight",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "naalu.rs",
+        function: "hero",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Yssaril breakthrough Deepgloom Executable: when another player draws action cards, each
+        // holder of the breakthrough is asked whether the drawing player may use Scheming. The
+        // holder sees the table, the requester does not.
+        module: "yssaril.rs",
+        function: "action_card_draw_requested",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "yssaril.rs",
+        function: "action_cards_drawn",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "yssaril.rs",
+        function: "commander_look",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "yssaril.rs",
+        function: "kyver_decisions",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "mentak.rs",
+        function: "ask_among",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Cabal: Vortex picks which reinforcement unit to capture (BF-cabal.md CB-06).
+        module: "cabal.rs",
+        function: "vortex_perform",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Cabal: The Stillness of Stars picks which reinforcement unit to capture (CB-07).
+        module: "cabal.rs",
+        function: "stillness_of_stars",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Cabal: Al'Raith Ix Ianovar moves up to two ingress tokens into gravity rifts (CB-11).
+        module: "cabal.rs",
+        function: "alraith",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Keleres (BF-keleres.md, BF-keleres-units.md).
+        module: "keleres.rs",
+        function: "laws_order",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Keleres agent: offered once per payment window (BF-keleres.md).
+        module: "keleres.rs",
+        function: "offer_agent",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Keleres (BF-keleres.md, BF-keleres-units.md).
+        module: "keleres_units.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Keleres (BF-keleres.md, BF-keleres-units.md).
+        module: "production.rs",
+        function: "agency_supply_network",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Mahact: Edict opponent, Scepter system (BF-mahact.md).
+        module: "mahact.rs",
+        function: "ask_among",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Mahact units: Crimson Legionnaire, Starlancer, Airo Shir Aur (BF-mahact-units.md).
+        module: "mahact_units.rs",
+        function: "legionnaire",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "mahact_units.rs",
+        function: "legionnaire_returns",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "mahact_units.rs",
+        function: "offer_starlancer",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "mahact_units.rs",
+        function: "use_leader_timed",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Empyrean: Void Tether placement (BF-empyrean.md).
+        module: "empyrean.rs",
+        function: "tether_place",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Empyrean: Voidwatch, the mover gives a promissory note (BF-empyrean.md).
+        module: "empyrean.rs",
+        function: "voidwatch",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Empyrean units: Watcher's mech, Dynamo, notes (BF-empyrean-units.md).
+        module: "empyrean_units.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Nomad: Future Sight, Thunder's Paradox, hero (BF-nomad.md).
+        module: "nomad.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Nomad agents: Mercer's removals and planet, The Cavalry's ship (BF-nomad-agents.md).
+        module: "nomad_agents.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Slumberstate Computing: fight or coexist when Coalescence forces a ground combat.
+        module: "invasion.rs",
+        function: "coexist_instead",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Slumberstate Computing: the Titans pick a planet, its controller allows the sleeper.
+        module: "titans_leaders.rs",
+        function: "sleeper_allowance",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Titans: Terragenesis, Awaken and Ouranos questions share one helper (BF-titans.md).
+        module: "titans.rs",
+        function: "ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Crimson commander: gain a commodity or convert one (BF-COMMANDERS-ALLIANCE-OCT5).
+        module: "borrowed_commanders.rs",
+        function: "crimson_ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        // Ral Nel commander: retreat destination and ships (BF-COMMANDERS-ALLIANCE-OCT5).
+        module: "borrowed_commanders.rs",
+        function: "ralnel_ask",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "argent.rs",
+        function: "afb_excess",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "argent.rs",
+        function: "extra_die_effect",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "argent.rs",
+        function: "strike_wing_effect",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "htp",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "imperator",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "reclaimer",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "leader_strategy_follower_choices",
+        count: 1,
+        delivery: Delivery::ObservedVia("game.rs::step_leader_followers"),
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "use_leader_strategy_primary",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "winnu.rs",
+        function: "use_leader",
+        count: 2,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "sardakk.rs",
+        function: "exotrireme",
+        count: 2,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "sardakk.rs",
+        function: "supremacy",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "yin.rs",
+        function: "ask_one",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "action_cards.rs",
+        function: "place_units_choosing",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    // BF-00h-cards: hidden-hand choices for faction effects.
+    Producer {
+        module: "action_cards.rs",
+        function: "choose_from_own_hand",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "action_cards.rs",
+        function: "take_from_revealed_hand",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
         module: "action_cards.rs",
         function: "choose_crashlanding_ground",
         count: 1,
@@ -310,7 +711,7 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "action_cards.rs",
-        function: "pick",
+        function: "pick_detailed",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
@@ -357,15 +758,16 @@ const PRODUCERS: &[Producer] = &[
         delivery: Delivery::ObservedHere,
     },
     Producer {
-        // Wrath of Kenara: how many near-miss dice to buy +1 on, or decline.
+        // Wrath of Kenara: how many near-miss dice to buy +1 on, or decline. The question sits in
+        // the purchase half, inside the Keleres agent's goods window (`wrath_of_kenara` opens it).
         module: "combat.rs",
-        function: "wrath_of_kenara",
+        function: "wrath_of_kenara_buy",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
     Producer {
         module: "combat.rs",
-        function: "choose_casualty",
+        function: "choose_casualty_owing",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
@@ -398,7 +800,7 @@ const PRODUCERS: &[Producer] = &[
         module: "combat.rs",
         function: "pending_choice",
         count: 4,
-        delivery: Delivery::ObservedVia("game.rs::step_aftermath"),
+        delivery: Delivery::ObservedVia("game.rs::step_aftermath_inner"),
     },
     Producer {
         module: "draft.rs",
@@ -463,8 +865,10 @@ const PRODUCERS: &[Producer] = &[
         delivery: Delivery::ObservedHere,
     },
     Producer {
+        // Munitions Reserves, asked inside the Keleres agent's goods window that
+        // `space_combat_round_started` opens.
         module: "faction_abilities.rs",
-        function: "space_combat_round_started",
+        function: "munitions_offer",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
@@ -502,7 +906,7 @@ const PRODUCERS: &[Producer] = &[
         module: "game.rs",
         function: "pending_choice",
         count: 1,
-        delivery: Delivery::ObservedVia("game.rs::step_aftermath"),
+        delivery: Delivery::ObservedVia("game.rs::step_aftermath_inner"),
     },
     Producer {
         // OP-08: end the turn, or do what does not take an action (and Fleet Logistics' second).
@@ -545,7 +949,7 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "invasion.rs",
-        function: "absorb_ground",
+        function: "absorb_ground_with_origin",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
@@ -577,7 +981,7 @@ const PRODUCERS: &[Producer] = &[
         module: "invasion.rs",
         function: "pending_choice",
         count: 3,
-        delivery: Delivery::ObservedVia("game.rs::step_aftermath"),
+        delivery: Delivery::ObservedVia("game.rs::step_aftermath_inner"),
     },
     Producer {
         module: "laws.rs",
@@ -590,8 +994,20 @@ const PRODUCERS: &[Producer] = &[
         // ready, whether to remove the infantry, gain-or-replenish, which system to gather in,
         // and per-technology swap or keep.
         module: "leaders.rs",
-        function: "use_leader",
+        function: "dispatch_leader",
         count: 7,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "borrowed_round_agents.rs",
+        function: "resolve_copy",
+        count: 1,
+        delivery: Delivery::ObservedHere,
+    },
+    Producer {
+        module: "leaders.rs",
+        function: "ssruu_l1z1x_activation_abilities",
+        count: 1,
         delivery: Delivery::ObservedHere,
     },
     Producer {
@@ -653,13 +1069,13 @@ const PRODUCERS: &[Producer] = &[
         module: "production.rs",
         function: "placement_choice",
         count: 1,
-        delivery: Delivery::ObservedVia("game.rs::step_aftermath"),
+        delivery: Delivery::ObservedVia("game.rs::step_aftermath_inner"),
     },
     Producer {
         module: "production.rs",
         function: "pending_choice",
         count: 2,
-        delivery: Delivery::ObservedVia("game.rs::step_aftermath"),
+        delivery: Delivery::ObservedVia("game.rs::step_aftermath_inner"),
     },
     Producer {
         module: "production.rs",
@@ -701,7 +1117,7 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "relics.rs",
-        function: "crown_of_emphidia_explore",
+        function: "crown_of_emphidia_explore_with",
         count: 1,
         delivery: Delivery::ObservedHere,
     },
@@ -743,7 +1159,7 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "strategy.rs",
-        function: "secondary_choice",
+        function: "secondary_question",
         count: 3,
         delivery: Delivery::ObservedVia("game.rs::step_secondary"),
     },
@@ -762,12 +1178,25 @@ const PRODUCERS: &[Producer] = &[
     Producer {
         module: "strategy_cards.rs",
         function: "doctor_sucaban",
+        count: 1,
+        delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
+    },
+    Producer {
+        // Deepwrought commander: the researcher's reduction, then the holder's payment.
+        module: "strategy_cards.rs",
+        function: "deepwrought_commander",
         count: 2,
         delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
     },
     Producer {
         module: "strategy_cards.rs",
-        function: "gain_tokens",
+        function: "trade_infantry_for_research",
+        count: 1,
+        delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
+    },
+    Producer {
+        module: "strategy_cards.rs",
+        function: "gain_tokens_offering",
         count: 1,
         delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
     },
@@ -797,8 +1226,8 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "strategy_cards.rs",
-        function: "place_structure",
-        count: 1,
+        function: "place_structure_step",
+        count: 2, // the spot, then a PDS or a module alternative (Hecatoncheires)
         delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
     },
     Producer {
@@ -826,6 +1255,15 @@ const PRODUCERS: &[Producer] = &[
         delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
     },
     Producer {
+        // Brother Omar and any other research waiver: when a faction waiver is the only way past
+        // the prerequisites, the player chooses the waiver and then its exact cost. Both questions
+        // are built in `resolve_research` and delivered through `strategy_cards::ask`.
+        module: "strategy_cards.rs",
+        function: "resolve_research",
+        count: 2,
+        delivery: Delivery::ObservedVia("strategy_cards.rs::ask"),
+    },
+    Producer {
         module: "strategy_cards.rs",
         function: "specialist_compounds",
         count: 2,
@@ -845,7 +1283,7 @@ const PRODUCERS: &[Producer] = &[
     },
     Producer {
         module: "tactical.rs",
-        function: "activation_options",
+        function: "activation_options_with",
         count: 1,
         delivery: Delivery::ObservedVia("game.rs::step"),
     },
@@ -945,12 +1383,84 @@ const PRODUCERS: &[Producer] = &[
     Producer {
         module: "vote.rs",
         function: "pending_choice",
-        count: 3,
+        // Outcome, planets, Gila's trade goods (hacancommander), tiebreak, Mahact's Recombine
+        // and Tribute stages.
+        count: 6,
         delivery: Delivery::ObservedVia("game.rs::step_vote"),
     },
 ];
 
 const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
+    // BF faction modules (crates/ti4-engine/src/factions/).
+    ("invasion.rs", "fight_committed_planet", 1),
+    ("invasion.rs", "assign_selected_ground_hit_in_timing", 1),
+    ("yssaril.rs", "borrowed_stall_tactics", 1),
+    ("argent.rs", "ask_option_for", 1),
+    ("sardakk.rs", "skip_to_commit", 1),
+    ("muaat.rs", "ask", 1),
+    ("nekro.rs", "take_from", 1),
+    ("nekro_units.rs", "ask", 1),
+    // Null Reference (Nekro): the ability production window's unit-type and placement questions.
+    ("production.rs", "produce_unit_by_ability", 1),
+    ("naaz.rs", "ask", 1),
+    ("naaz.rs", "ask_checked", 1),
+    ("naaz.rs", "borrowed_agent", 1),
+    ("naaz.rs", "offer_supercharge", 1),
+    ("saar.rs", "ask", 1),
+    ("arborec.rs", "agent_use", 2),
+    ("arborec.rs", "bioplasmosis", 1),
+    ("arborec.rs", "mitosis", 1),
+    ("arborec.rs", "perform_component", 2),
+    ("arborec.rs", "stymie", 1),
+    ("arborec.rs", "warrior_returns", 1),
+    ("ghost.rs", "ask", 1),
+    ("naalu.rs", "foresight", 1),
+    ("naalu.rs", "hero", 1),
+    ("yssaril.rs", "action_cards_drawn", 1),
+    ("yssaril.rs", "action_card_draw_requested", 1),
+    ("yssaril.rs", "commander_look", 1),
+    ("yssaril.rs", "kyver_decisions", 1),
+    // Deepgloom Executable runs the trade window itself, so its choices are asked here rather
+    // than through `game.rs::step_trade`.
+    ("yssaril.rs", "deepgloom_transaction", 1),
+    ("mentak.rs", "ask_among", 1),
+    ("borrowed_commanders.rs", "ralnel_ask", 1),
+    ("borrowed_commanders.rs", "crimson_ask", 1),
+    ("titans.rs", "ask", 1),
+    ("cabal.rs", "vortex_perform", 1),
+    ("cabal.rs", "stillness_of_stars", 1),
+    ("cabal.rs", "alraith", 1),
+    ("nomad.rs", "ask", 1),
+    ("keleres.rs", "laws_order", 1),
+    ("keleres.rs", "offer_agent", 1),
+    ("keleres_units.rs", "ask", 1),
+    ("production.rs", "agency_supply_network", 2),
+    ("empyrean.rs", "tether_place", 1),
+    ("empyrean.rs", "voidwatch", 1),
+    ("mahact.rs", "ask_among", 1),
+    ("mahact_units.rs", "legionnaire", 1),
+    ("mahact_units.rs", "legionnaire_returns", 1),
+    ("mahact_units.rs", "offer_starlancer", 1),
+    ("mahact_units.rs", "use_leader_timed", 1),
+    ("empyrean_units.rs", "ask", 1),
+    ("nomad.rs", "temporal_command_suite", 1),
+    ("nomad_agents.rs", "ask", 1),
+    ("invasion.rs", "coexist_instead", 1),
+    ("titans_leaders.rs", "sleeper_allowance", 1),
+    ("argent.rs", "afb_excess", 1),
+    ("argent.rs", "extra_die_effect", 1),
+    ("argent.rs", "strike_wing_effect", 1),
+    ("winnu.rs", "htp", 1),
+    ("winnu.rs", "imperator", 1),
+    ("winnu.rs", "reclaimer", 1),
+    ("winnu.rs", "use_leader", 3),
+    ("winnu.rs", "use_leader_strategy_primary", 1),
+    ("game.rs", "step_leader_followers", 1),
+    ("sardakk.rs", "exotrireme", 2),
+    ("sardakk.rs", "supremacy", 1),
+    ("yin.rs", "ask_one", 1),
+    ("action_cards.rs", "choose_from_own_hand", 1),
+    ("action_cards.rs", "take_from_revealed_hand", 1),
     ("action_cards.rs", "choose_crashlanding_ground", 1),
     ("action_cards.rs", "choose_crashlanding_planet", 1),
     ("action_cards.rs", "confusing", 1),
@@ -958,7 +1468,9 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
     ("action_cards.rs", "exchange_program", 1),
     ("action_cards.rs", "ghost_squad", 1),
     ("action_cards.rs", "in_the_silence_of_space", 1),
-    ("action_cards.rs", "pick", 1),
+    ("action_cards.rs", "pick_detailed", 1),
+    // BF-00b: placement from reinforcements by a faction effect; asks its own choice.
+    ("action_cards.rs", "place_units_choosing", 1),
     ("action_cards.rs", "predicted_outcome", 1),
     ("action_cards.rs", "public_disgrace", 1),
     ("action_cards.rs", "reparations", 2),
@@ -968,16 +1480,16 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
     ("agenda_effects.rs", "resolve_with", 1),
     ("choice.rs", "ask_seeing", 1),
     ("choice.rs", "drive", 1),
-    ("combat.rs", "choose_casualty", 1),
+    ("combat.rs", "choose_casualty_owing", 1),
     ("combat.rs", "choose_reroll_dice", 1),
     ("combat.rs", "heart_ixth", 1),
     ("combat.rs", "offer_sustain", 1),
     ("combat.rs", "roll_round", 1),
-    ("combat.rs", "wrath_of_kenara", 1),
+    ("combat.rs", "wrath_of_kenara_buy", 1),
     ("exploration.rs", "ask", 1),
+    ("faction_abilities.rs", "munitions_offer", 1),
     ("faction_abilities.rs", "perform_component", 2),
     ("faction_abilities.rs", "production_biomes", 1),
-    ("faction_abilities.rs", "space_combat_round_started", 1),
     ("faction_abilities.rs", "strategy_resolved", 1),
     ("faction_techs.rs", "offer_nullification_field", 1),
     ("faction_techs.rs", "offer_quantum_datahub", 1),
@@ -985,7 +1497,7 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
     ("faction_techs.rs", "offer_spatial_conduit", 1),
     ("fleet.rs", "remove_one", 1),
     ("game.rs", "step", 1),
-    ("game.rs", "step_aftermath", 1),
+    ("game.rs", "step_aftermath_inner", 1),
     ("game.rs", "step_event_scoring", 1),
     ("game.rs", "step_scoring", 1),
     ("game.rs", "step_secondary", 1),
@@ -999,19 +1511,21 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
     ("game.rs", "committee_formation", 1),
     ("game.rs", "imperial_arbiter", 2),
     ("game.rs", "minister_of_war", 1),
-    ("invasion.rs", "absorb_ground", 1),
+    ("invasion.rs", "absorb_ground_with_origin", 1),
     ("invasion.rs", "commit_ground_forces", 1),
     ("invasion.rs", "drive", 1),
     ("production.rs", "integrated_economy", 1),
     ("production.rs", "pay_with_observation_credit", 1),
     ("production.rs", "produce_one", 2),
-    ("production.rs", "resolve", 1),
+    // BF-00b: ability-driven production delivers `ProductionWindow::pending_choice` itself.
+    ("production.rs", "produce_by_ability_capped", 1),
+    ("production.rs", "resolve_timed", 1),
     ("production.rs", "sling_relay", 2),
     ("reactions.rs", "instinct_training", 1),
     ("reactions.rs", "l1z1x_agent", 1),
     ("reactions.rs", "slot", 1),
     ("relics.rs", "codex", 1),
-    ("relics.rs", "crown_of_emphidia_explore", 1),
+    ("relics.rs", "crown_of_emphidia_explore_with", 1),
     ("relics.rs", "grant_chosen_technology", 1),
     ("relics.rs", "offer_dominus_orb", 1),
     ("relics.rs", "stellar_converter", 1),
@@ -1021,8 +1535,10 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
     ("invasion.rs", "apply_bombard_plan", 1),
     ("invasion.rs", "dunlain_reaper", 1),
     ("laws.rs", "offer_discard", 1),
-    ("leaders.rs", "use_leader", 7),
+    ("leaders.rs", "dispatch_leader", 7),
     ("leaders.rs", "offer_production_hero", 1),
+    ("borrowed_round_agents.rs", "resolve_copy", 1),
+    ("leaders.rs", "ssruu_l1z1x_activation_abilities", 1),
     ("legendary.rs", "end_turn", 1),
     ("legendary.rs", "pass", 1),
     ("legendary.rs", "place_on_own_planet", 1),
@@ -1040,6 +1556,9 @@ const OBSERVED_ASKS: &[(&str, &str, usize)] = &[
 ];
 
 const VIEWLESS_ASKS: &[(&str, &str, usize)] = &[("timing.rs", "pick", 1)];
+
+/// The one engine module that implements Decider around another decider.
+const DECIDER_WRAPPER: &str = "reaction_modes.rs";
 
 fn expected_sites() -> BTreeMap<Site, usize> {
     let mut expected = BTreeMap::new();
@@ -1089,6 +1608,21 @@ fn expected_sites() -> BTreeMap<Site, usize> {
             count,
         );
     }
+    // NeverOffer is itself a Decider: it narrows a reaction window and hands
+    // the question to the decider it wraps. It sits behind Table like any other.
+    for (function, operation) in [
+        ("choose", Operation::ChooseDirect),
+        ("choose_seeing", Operation::ChooseObservedDirect),
+    ] {
+        expected.insert(
+            Site {
+                module: DECIDER_WRAPPER.to_owned(),
+                function: function.to_owned(),
+                operation,
+            },
+            2,
+        );
+    }
     expected
 }
 
@@ -1105,7 +1639,18 @@ fn delivery_site(target: &str, operation: Operation) -> Site {
 
 #[test]
 fn every_producer_and_delivery_site_matches_the_reviewed_registry() {
-    assert_eq!(scan(), expected_sites());
+    let actual = scan();
+    let expected = expected_sites();
+    let differences: Vec<_> = actual
+        .keys()
+        .chain(expected.keys())
+        .filter(|site| actual.get(*site) != expected.get(*site))
+        .map(|site| (site, actual.get(site), expected.get(site)))
+        .collect();
+    assert!(
+        differences.is_empty(),
+        "unreviewed decision sites: {differences:?}"
+    );
 }
 
 #[test]
@@ -1169,6 +1714,7 @@ fn no_engine_module_calls_a_decider_around_table() {
                 site.operation,
                 Operation::ChooseDirect | Operation::ChooseObservedDirect
             ) && site.module != "choice.rs"
+                && site.module != DECIDER_WRAPPER
         })
         .collect();
     assert!(

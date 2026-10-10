@@ -5,6 +5,7 @@ import { BoardView, PendingChoiceDto } from "../protocol/types.ts";
 import { deriveChoiceRendererModel } from "../presentation/choiceModel.ts";
 import { PlayerIdentityProvider } from "../presentation/PlayerIdentity.tsx";
 import type { LobbyDto } from "../protocol/types.ts";
+import { WorkspaceContext } from "./WorkspaceContext.tsx";
 
 const choice: PendingChoiceDto = {
   prompt: "Choose a strategy card",
@@ -27,6 +28,60 @@ function renderShell(pendingChoice: PendingChoiceDto | null = null) {
 }
 
 describe("GameShell", () => {
+  it("retires queued draft production on refresh while a build receipt is pending", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    const produce: PendingChoiceDto = {
+      actor: "p1",
+      nonce: "planning:1",
+      prompt: "produce in 18",
+      context: {
+        subtype: "produce_unit",
+        target: { System: "18" },
+        outstanding: [{ amount: 3, paid: 0 }],
+      },
+      options: [
+        {
+          id: "build|fighter|1",
+          kind: "produce",
+          label: "Fighter",
+          payload: { unit: "fighter", production_spent: 1, cost: 1, available_resources: 3 },
+        },
+        { id: "done_producing", kind: "decline", label: "Done" },
+      ],
+    };
+    const view = (refreshKey: string, actionable: boolean, nonce: string) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <GameShell
+          header={<div>Header</div>}
+          board={<div>Board</div>}
+          playerSheet={<div>Players</div>}
+          events={[]}
+          choice={{ ...produce, nonce }}
+          viewerSeat="p1"
+          onSubmitChoice={onSubmit}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(view("1:1", true, "planning:1"));
+    fireEvent.click(screen.getByTestId("produce-unit-btn-build|fighter|1"));
+    fireEvent.click(screen.getByTestId("produce-unit-btn-build|fighter|1"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm builds" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    rerender(view("2:2", false, "planning:2"));
+    await act(async () => resolve());
+    rerender(view("2:2", true, "planning:3"));
+    await act(async () => {});
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("build|fighter|1");
+    expect(screen.queryByText(/remaining staged/i)).not.toBeInTheDocument();
+  });
   it("routes only battle-associated reactions and their card selection into the overlay", async () => {
     const board: BoardView = {
       systems: {
@@ -813,5 +868,168 @@ describe("GameShell", () => {
 
     expect(screen.getByTestId("production-builder-drawer")).toBeInTheDocument();
     expect(screen.queryByTestId("pending-choice-dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("planet selection dispatch", () => {
+  const miningChoice: PendingChoiceDto = {
+    actor: "p1",
+    nonce: "mining-1",
+    prompt: "Mining Initiative: mine which planet",
+    context: {
+      subtype: "mining_initiative_pick_planet",
+      source: { ActionCard: "mining_initiative" },
+    },
+    options: [
+      { id: "lodor", kind: "planet", label: "Lodor", payload: { planet: "lodor", system: "26" } },
+      { id: "quann", kind: "planet", label: "Quann", payload: { planet: "quann", system: "25" } },
+    ],
+  };
+
+  it("renders the planet selection bar instead of the generic modal and never a minimized pill", () => {
+    const onSelectPlanet = vi.fn();
+    const onSelectOption = vi.fn();
+    render(
+      <ChoiceRendererDispatcher
+        choice={miningChoice}
+        viewerSeat="p1"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        isMinimized={true}
+        onMinimizedChange={vi.fn()}
+        selectedOptionId="lodor"
+        onSelectOption={onSelectOption}
+        onSelectPlanet={onSelectPlanet}
+      />,
+    );
+    expect(screen.getByTestId("planet-selection-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("planet-selection-action")).toHaveTextContent(
+      "Mining Initiative — mine Lodor",
+    );
+    expect(screen.queryByTestId("pending-choice-dialog")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("choice-minimized-pill")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("planet-chip-quann"));
+    expect(onSelectPlanet).toHaveBeenCalledWith("quann");
+    expect(onSelectOption).toHaveBeenCalledWith("quann");
+  });
+
+  it("shows other seats a waiting bar naming the source", () => {
+    render(
+      <ChoiceRendererDispatcher
+        choice={miningChoice}
+        viewerSeat="p2"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        isMinimized={false}
+        onMinimizedChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("planet-selection-bar")).toHaveTextContent(
+      "Waiting for p1 to choose a planet",
+    );
+    expect(screen.getByTestId("planet-selection-bar")).toHaveTextContent("(Mining Initiative)");
+  });
+
+  it("passes the lifted planet selection through GameShell", () => {
+    render(
+      <GameShell
+        header={<div>Header</div>}
+        board={<div>Board</div>}
+        playerSheet={<div>Players</div>}
+        events={[]}
+        choice={{
+          ...miningChoice,
+          context: { subtype: "place_structure" },
+          prompt: "place a structure",
+          options: [
+            {
+              id: "pds|26|lodor",
+              kind: "build",
+              label: "place pds on lodor",
+              payload: { planet: "lodor", system: "26", unit: "pds" },
+            },
+            {
+              id: "spacedock|26|lodor",
+              kind: "build",
+              label: "place spacedock on lodor",
+              payload: { planet: "lodor", system: "26", unit: "spacedock" },
+            },
+          ],
+        }}
+        viewerSeat="p1"
+        selectedPlanetId="lodor"
+        onSelectPlanet={vi.fn()}
+        onSubmitChoice={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByTestId("planet-option-pds|26|lodor")).toBeInTheDocument();
+    expect(screen.getByTestId("planet-option-spacedock|26|lodor")).toBeInTheDocument();
+  });
+
+  it("replaces the payment list with the payment bar once it is minimised for map picking", () => {
+    render(
+      <GameShell
+        header={<div>Header</div>}
+        board={<div>Board</div>}
+        playerSheet={<div>Player sheet</div>}
+        events={[]}
+        choice={{
+          actor: "p1",
+          nonce: "pay-1",
+          prompt: "pay 3 resources",
+          context: { subtype: "pay_resources", outstanding: [{ kind: "resources", amount: 3, paid: 0 }] },
+          options: [
+            { id: "exhaust|jord", label: "Jord", kind: "pay", payload: { worth: 4, planet_name: "Jord" } },
+          ],
+        }}
+        viewerSeat="p1"
+        onSubmitChoice={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.queryByTestId("payment-bar")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("pick-on-map-btn"));
+    expect(screen.getByTestId("payment-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("choice-minimized-pill")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("resume-decision-btn"));
+    expect(screen.queryByTestId("payment-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("payment-drawer")).toBeInTheDocument();
+  });
+
+  it("hands the public log, whose turn it is and the map link to the reaction dialog", () => {
+    const onShowSystem = vi.fn();
+    const offer: PendingChoiceDto = {
+      actor: "p2",
+      nonce: "reaction-wiring",
+      prompt: "after SYSTEM_ACTIVATED",
+      context: {
+        subtype: "reaction_after_SYSTEM_ACTIVATED",
+        optional: true,
+        source: { Reaction: "SYSTEM_ACTIVATED" },
+      },
+      options: [
+        {
+          id: "reaction:x:SYSTEM_ACTIVATED:after",
+          kind: "ability",
+          label: "Play Decoy Operation",
+          payload: { card: "decoy", card_name: "Decoy Operation" },
+        },
+        { id: "decline", kind: "decline", label: "Pass" },
+      ],
+    };
+    render(
+      <ChoiceRendererDispatcher
+        viewerSeat="p2"
+        choice={offer}
+        onSubmit={vi.fn()}
+        isMinimized={false}
+        onMinimizedChange={vi.fn()}
+        turn={{ phase: "action", activePlayer: "p1" }}
+        activeSystemId="27"
+        onShowSystem={onShowSystem}
+        events={[]}
+      />,
+    );
+    // No trigger on the wire: the dialog still names the active player and system from public state.
+    expect(screen.getByTestId("reaction-bar-prompt")).toHaveTextContent("activated System 27.");
+    fireEvent.click(screen.getByTestId("reaction-inspect-show-on-map"));
+    expect(onShowSystem).toHaveBeenCalledWith("27");
   });
 });

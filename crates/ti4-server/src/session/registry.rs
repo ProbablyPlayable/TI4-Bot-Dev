@@ -199,15 +199,219 @@ mod committed_worker_tests {
         drop(registry);
         std::fs::remove_dir_all(path).unwrap();
     }
+
+    /// A two-seat game advanced to its first tactical movement boundary.
+    fn game_at_movement(
+        registry: &GameRegistry,
+        game_id: &str,
+    ) -> (Arc<GameSession>, String, BatchRequest) {
+        let host = PlayerId::new("p1");
+        let guest = PlayerId::new("p2");
+        let players = vec![host.clone(), guest.clone()];
+        let (state, galaxy) =
+            crate::map::create_game_with_map(ContentStore::embedded(), &players, 42).unwrap();
+        let tiles = crate::map::build_board_tiles(ContentStore::embedded(), &galaxy);
+        let config = SessionConfig::new(game_id, state)
+            .with_seed(42)
+            .with_player_ids(players)
+            .with_galaxy(galaxy, tiles)
+            .with_seat(host.clone(), SeatController::Human)
+            .with_seat(guest, SeatController::Human);
+        let session = registry.create_game(config).unwrap();
+        let token = session.seat_tokens()[&host].clone();
+        for _ in 0..4 {
+            let (seat, nonce, version, _) = pending(&session);
+            let choice = session
+                .get_snapshot(&ViewerRole::Player(seat.clone()))
+                .pending_choice
+                .unwrap()
+                .choice;
+            let option = choice
+                .options
+                .iter()
+                .find(|o| o.id == "tactical" || o.id == "22")
+                .unwrap_or(&choice.options[0]);
+            session
+                .submit_choice(&seat, &nonce, version, &option.id)
+                .unwrap();
+        }
+        let (_, nonce, version, _) = pending(&session);
+        let request = BatchRequest {
+            request_id: format!("{game_id}_batch"),
+            expected_version: version,
+            nonce,
+            plan: MovementPlan {
+                kind: BatchKind::TacticalMovement,
+                destination: session.current_state().active_system.unwrap().to_string(),
+                steps: vec![MovementStep::DoneMoving],
+            },
+        };
+        (session, token, request)
+    }
+
+    fn is_hh_mm_ss(value: &str) -> bool {
+        let b = value.as_bytes();
+        b.len() == 8
+            && b[2] == b':'
+            && b[5] == b':'
+            && [0, 1, 3, 4, 6, 7].iter().all(|&i| b[i].is_ascii_digit())
+    }
+
+    /// A batch's replacement replay must not hold the registry lock (P1).
+    ///
+    /// Runs 06 and 23 of the 2026-10-06 sweep timed out on `/snapshot` while a batch replayed a
+    /// thousand decisions with the global lock held: every read of every game waited for it.
+    #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "the closure returns the registry's own batch result"
+    )]
+    fn a_slow_batch_replay_does_not_block_registry_reads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const SLOW_REPLAY: Duration = Duration::from_millis(1500);
+
+        let registry = GameRegistry::new();
+        let (before, token, request) = game_at_movement(&registry, "slow_replay");
+        let other = game_at_movement(&registry, "bystander").0;
+        let seat = before.current_pending_decision().unwrap().0;
+        let replaying = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let batch = scope.spawn(|| {
+                registry.submit_batch_with_worker("slow_replay", &token, request, |config| {
+                    replaying.store(true, Ordering::SeqCst);
+                    std::thread::sleep(SLOW_REPLAY);
+                    GameSession::start(config)
+                })
+            });
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !replaying.load(Ordering::SeqCst) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the batch never reached its replay"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let started = Instant::now();
+            // The game being replaced still answers, from the stopped pre-batch session.
+            let stale = registry.get_game("slow_replay").unwrap();
+            assert!(Arc::ptr_eq(&stale, &before));
+            let snapshot = registry
+                .player_snapshot("slow_replay", Some(&token), &stale)
+                .unwrap();
+            assert_eq!(snapshot.game_id, "slow_replay");
+            // So does every other game, and a spectator view.
+            let bystander = registry.get_game("bystander").unwrap();
+            registry
+                .player_snapshot("bystander", None, &bystander)
+                .unwrap();
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_millis(500),
+                "registry reads waited {elapsed:?} for a batch replay"
+            );
+            assert!(!batch.is_finished(), "the reads overlapped the replay");
+
+            let result = batch.join().unwrap().unwrap();
+            let live = registry.get_game("slow_replay").unwrap();
+            assert!(!Arc::ptr_eq(&live, &before), "the replacement is published");
+            assert_eq!(live.history_status().cursor, result.end_cursor);
+            let _ = pending(&live);
+            assert!(before.current_pending_decision().is_none());
+            assert!(
+                before
+                    .submit_choice(&seat, "any", result.snapshot.game_version, "any")
+                    .is_err(),
+                "the stopped session refuses choices"
+            );
+            live.stop();
+        });
+        other.stop();
+    }
+
+    /// `remove_game` is not serialised by the game gate; a batch must not resurrect a game
+    /// removed while its replacement replayed.
+    #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "the closure returns the registry's own batch result"
+    )]
+    fn a_game_removed_during_the_batch_replay_stays_removed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let registry = GameRegistry::new();
+        let (_, token, request) = game_at_movement(&registry, "removed_mid_batch");
+        let replaying = AtomicBool::new(false);
+        let release = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let batch = scope.spawn(|| {
+                registry.submit_batch_with_worker("removed_mid_batch", &token, request, |config| {
+                    replaying.store(true, Ordering::SeqCst);
+                    while !release.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    GameSession::start(config)
+                })
+            });
+            while !replaying.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(registry.remove_game("removed_mid_batch").is_some());
+            release.store(true, Ordering::SeqCst);
+            let error = batch.join().unwrap().unwrap_err();
+            assert_eq!(error.reason, "game not found");
+        });
+        assert!(registry.get_game("removed_mid_batch").is_none());
+    }
+
+    #[test]
+    fn batch_events_carry_wall_clock_timestamps() {
+        let path = std::env::temp_dir().join(format!("ti4_ts_{:032x}", rand::random::<u128>()));
+        let store = Arc::new(FileGameStore::new(&path).unwrap());
+        let registry = GameRegistry::new().with_store(store.clone());
+        let (_, token, request) = game_at_movement(&registry, "batch_ts");
+        let result = registry.submit_batch("batch_ts", &token, request).unwrap();
+        let history = store.load_history("batch_ts").unwrap().unwrap();
+        let batch_events: Vec<_> = history
+            .events
+            .iter()
+            .filter(|e| e.batch_id.as_deref() == Some(result.batch_id.as_str()))
+            .collect();
+        assert!(!batch_events.is_empty());
+        for event in &history.events {
+            assert!(
+                is_hh_mm_ss(&event.timestamp),
+                "event {} has timestamp {:?}",
+                event.id,
+                event.timestamp
+            );
+        }
+        registry.get_game("batch_ts").unwrap().stop();
+        drop(registry);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryError {
     NotFound,
-    Forbidden,
+    Forbidden(String),
     Conflict(String),
-    InvalidTarget,
+    InvalidTarget(String),
     Storage(String),
+}
+
+impl HistoryError {
+    /// Human-readable explanation for the requesting client.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::NotFound => "Game not found".to_owned(),
+            Self::Forbidden(why) => format!("History change forbidden: {why}"),
+            Self::Conflict(why) => format!("History change conflicts with the game: {why}"),
+            Self::InvalidTarget(why) => format!("Invalid history target: {why}"),
+            Self::Storage(why) => format!("History could not be saved: {why}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,15 +421,38 @@ pub struct BatchResult {
     pub start_cursor: usize,
     pub end_cursor: usize,
     pub active: bool,
+    /// Present when the batch stopped early at a reaction window; the rest of the plan was not
+    /// applied and the window is pending for its seat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<crate::session::batch::BatchInterruption>,
     pub snapshot: InitialSnapshotMsg,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchError {
     pub failed_step: usize,
+    /// Stable machine-readable reason; HTTP status mapping keys on it.
     pub reason: String,
     pub expected: String,
     pub offered_summary: Vec<String>,
+    /// Human-readable explanation, safe to show to the submitting seat.
+    pub message: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub planned_steps: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offered: Option<Box<crate::session::batch::OfferedDecision>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<u64>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl From<BatchFailure> for BatchError {
@@ -235,18 +462,39 @@ impl From<BatchFailure> for BatchError {
             reason: value.reason,
             expected: value.expected,
             offered_summary: value.offered_summary,
+            message: value.message,
+            planned_steps: value.planned_steps,
+            offered: value.offered,
+            expected_version: None,
+            current_version: None,
         }
     }
 }
 
 impl BatchError {
-    fn simple(reason: &str) -> Self {
+    pub fn simple(reason: &str) -> Self {
+        Self::explained(reason, reason)
+    }
+
+    /// An error whose stable `reason` is accompanied by a specific explanation.
+    pub fn explained(reason: &str, message: impl Into<String>) -> Self {
         Self {
             failed_step: 0,
             reason: reason.into(),
             expected: String::new(),
             offered_summary: Vec::new(),
+            message: message.into(),
+            planned_steps: 0,
+            offered: None,
+            expected_version: None,
+            current_version: None,
         }
+    }
+
+    fn with_versions(mut self, expected: u64, current: u64) -> Self {
+        self.expected_version = Some(expected);
+        self.current_version = Some(current);
+        self
     }
 }
 
@@ -264,6 +512,10 @@ pub struct PlayerLobbyView {
     pub slots: Vec<PlayerSlotView>,
     pub lobby_version: u64,
     pub bot_service_enabled: bool,
+    /// What the table will play on; never the seed.
+    pub map: crate::maps::MapChoiceView,
+    /// Changes whenever the previewed board changes; refetch the preview when it does.
+    pub map_revision: u64,
 }
 
 /// Configuration for running bot agents on this server.
@@ -330,6 +582,9 @@ impl PlayerLobbyRecord {
             slots,
             players,
             seed,
+            map_template: None,
+            start_preset: None,
+            map_revision: 0,
             lobby_version: 1,
         };
         lobby.validate()?;
@@ -368,6 +623,11 @@ impl PlayerLobbyRecord {
                 .collect(),
             lobby_version: self.lobby_version,
             bot_service_enabled: false,
+            map: crate::maps::catalog::describe(
+                &crate::maps::MapChoice::from_stored(self.map_template.as_deref()),
+                self.slots.len(),
+            ),
+            map_revision: self.map_revision,
         }
     }
 }
@@ -471,6 +731,8 @@ pub enum LobbyError {
     InvalidPlayerId,
     InvalidSlotOrder,
     InvalidNickname,
+    /// A map choice the lobby cannot use (unknown, wrong size, or does not build).
+    InvalidMap(String),
     Map(String),
     Storage(String),
 }
@@ -491,6 +753,7 @@ impl LobbyError {
             Self::InvalidPlayerId => "Invalid player ID".to_owned(),
             Self::InvalidSlotOrder => "Slot order must be a complete permutation".to_owned(),
             Self::InvalidNickname => "Nickname must be trimmed, nonempty Unicode text of at most 64 UTF-8 bytes without control or formatting characters".to_owned(),
+            Self::InvalidMap(error) => format!("Invalid map choice: {error}"),
             Self::Map(error) => format!("Failed to start game with map: {error}"),
             Self::Storage(error) => format!("Failed to persist lobby lifecycle: {error}"),
         }
@@ -600,6 +863,10 @@ impl GameRegistry {
     }
 
     /// Replay a staged movement privately, then durably replace the entire timeline.
+    #[allow(
+        clippy::result_large_err,
+        reason = "a batch error is built once per rejected request and serialized to the client"
+    )]
     pub fn submit_batch(
         &self,
         game_id: &str,
@@ -609,6 +876,10 @@ impl GameRegistry {
         self.submit_batch_with_worker(game_id, credential, request, GameSession::start)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "a batch error is built once per rejected request and serialized to the client"
+    )]
     fn submit_batch_with_worker(
         &self,
         game_id: &str,
@@ -644,7 +915,10 @@ impl GameRegistry {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
-            return Err(BatchError::simple("invalid request_id"));
+            return Err(BatchError::explained(
+                "invalid request_id",
+                "request_id must be 1 to 128 characters of letters, digits, '-' or '_'",
+            ));
         }
         if let Some(batch) = session
             .batches()
@@ -652,11 +926,18 @@ impl GameRegistry {
             .find(|b| b.request_id == request.request_id)
         {
             if batch.actor != actor {
-                return Err(BatchError::simple("request_id already used"));
+                return Err(BatchError::explained(
+                    "request_id already used",
+                    format!(
+                        "request_id {} was already used by another seat",
+                        request.request_id
+                    ),
+                ));
             }
             if !session.history_ready() {
-                return Err(BatchError::simple(
+                return Err(BatchError::explained(
                     "batch committed, replacement session unavailable",
+                    "this batch was already committed, but the game is still reloading its history; retry shortly",
                 ));
             }
             return Ok(BatchResult {
@@ -665,18 +946,42 @@ impl GameRegistry {
                 start_cursor: batch.start_cursor,
                 end_cursor: batch.end_cursor,
                 active: batch.end_cursor <= session.decision_log().len(),
+                interrupted: batch.interrupted.clone(),
                 snapshot: session.get_snapshot(&ViewerRole::Player(actor)),
             });
         }
-        if !session.history_ready()
-            || session.game_version() != request.expected_version
-            || !session
-                .current_pending_decision()
-                .is_some_and(|(seat, nonce, version)| {
-                    seat == actor && nonce == request.nonce && version == request.expected_version
-                })
-        {
-            return Err(BatchError::simple("stale decision boundary"));
+        let current_version = session.game_version();
+        let pending = session.current_pending_decision();
+        let stale = if !session.history_ready() {
+            Some("the game is reloading its history".to_owned())
+        } else if current_version != request.expected_version {
+            Some(format!(
+                "the plan was built for version {} but the game is at version {current_version}",
+                request.expected_version
+            ))
+        } else {
+            match &pending {
+                None => Some("no decision is pending".to_owned()),
+                Some((seat, _, _)) if *seat != actor => {
+                    Some("the pending decision belongs to another seat".to_owned())
+                }
+                Some((_, nonce, _)) if *nonce != request.nonce => Some(
+                    "the pending decision was re-offered since the plan was built (nonce changed)"
+                        .to_owned(),
+                ),
+                Some((_, _, version)) if *version != request.expected_version => Some(format!(
+                    "the pending decision was offered at version {version}, not {}",
+                    request.expected_version
+                )),
+                Some(_) => None,
+            }
+        };
+        if let Some(why) = stale {
+            return Err(BatchError::explained(
+                "stale decision boundary",
+                format!("stale decision boundary: {why}; refresh and plan again"),
+            )
+            .with_versions(request.expected_version, current_version));
         }
         if request.plan.kind == crate::session::batch::BatchKind::TacticalMovement
             && session
@@ -686,9 +991,20 @@ impl GameRegistry {
                 .map(|id| id.as_str())
                 != Some(request.plan.destination.as_str())
         {
-            return Err(BatchError::simple("movement destination changed"));
+            let active = session
+                .current_state()
+                .active_system
+                .as_ref()
+                .map_or_else(|| "no system".to_owned(), |id| format!("system {id}"));
+            return Err(BatchError::explained(
+                "movement destination changed",
+                format!(
+                    "the plan moves into system {} but {active} is active",
+                    request.plan.destination
+                ),
+            ));
         }
-        let config = session.restart_config();
+        let mut config = session.restart_config();
         let prior = session.decision_log();
         drop(state);
         let simulation = simulate(&config, &prior, &actor, &request.plan)?;
@@ -701,6 +1017,8 @@ impl GameRegistry {
         let mut events = session.event_log();
         let (_, mut counter) = session.history_events();
         counter = counter.max(events.len() as u64);
+        // One wall-clock reading for the whole batch, in the worker's HH:MM:SS format.
+        let timestamp = crate::session::worker::current_utc_time_string();
         for (i, decision) in decisions.iter().enumerate() {
             let offered = &simulation.selected[i];
             let action_id = if decision
@@ -733,7 +1051,7 @@ impl GameRegistry {
             counter += 1;
             events.push(crate::protocol::server::GameEvent {
                 id: format!("{game_id}-{counter}"),
-                timestamp: String::new(),
+                timestamp: timestamp.clone(),
                 version: Some(request.expected_version),
                 visibility: crate::protocol::server::EventVisibility::Public,
                 event: crate::protocol::server::GameEventKind::DecisionResolved,
@@ -762,7 +1080,7 @@ impl GameRegistry {
                 counter += 1;
                 events.push(crate::protocol::server::GameEvent {
                     id: format!("{game_id}-{counter}"),
-                    timestamp: String::new(),
+                    timestamp: timestamp.clone(),
                     version: Some(request.expected_version),
                     visibility: crate::protocol::server::EventVisibility::Public,
                     event: crate::protocol::server::GameEventKind::PhaseTransition {
@@ -792,7 +1110,7 @@ impl GameRegistry {
             counter += 1;
             events.push(crate::protocol::server::GameEvent {
                 id: format!("{game_id}-{counter}"),
-                timestamp: String::new(),
+                timestamp: timestamp.clone(),
                 version: Some(request.expected_version),
                 visibility: crate::protocol::server::EventVisibility::Public,
                 event: crate::protocol::server::GameEventKind::GameFinished { winner },
@@ -822,11 +1140,11 @@ impl GameRegistry {
             actor: actor.clone(),
             start_cursor,
             end_cursor,
+            interrupted: simulation.interruption.clone(),
         });
-        let revision = request
-            .expected_version
-            .checked_add(1)
-            .ok_or_else(|| BatchError::simple("version exhausted"))?;
+        let revision = request.expected_version.checked_add(1).ok_or_else(|| {
+            BatchError::explained("version exhausted", "the game version counter is exhausted")
+        })?;
         let history = GameHistory {
             decisions: prior.into_iter().chain(decisions).collect(),
             redo: Vec::new(),
@@ -845,9 +1163,14 @@ impl GameRegistry {
             || session.game_version() != request.expected_version
             || !session.history_ready()
         {
-            return Err(BatchError::simple("game advanced during batch"));
+            return Err(BatchError::explained(
+                "game advanced during batch",
+                "the game changed while the batch was being checked; refresh and plan again",
+            )
+            .with_versions(request.expected_version, session.game_version()));
         }
         session.stop();
+        config.plans = session.plans();
         if session.decision_log().len() != start_cursor {
             let replacement = Arc::new(GameSession::start_recovered(
                 config.clone(),
@@ -855,7 +1178,13 @@ impl GameRegistry {
                 session.event_log(),
             ));
             state.sessions.insert(game_id.to_owned(), replacement);
-            return Err(BatchError::simple("game advanced during batch"));
+            return Err(BatchError::explained(
+                "game advanced during batch",
+                format!(
+                    "another decision was recorded while the batch was being checked (log length {} instead of {start_cursor}); refresh and plan again",
+                    session.decision_log().len()
+                ),
+            ));
         }
         if let Some(store) = &config.store
             && let Err(error) = store.save_history(game_id, &history)
@@ -868,6 +1197,14 @@ impl GameRegistry {
             state.sessions.insert(game_id.to_owned(), replacement);
             return Err(BatchError::simple(&format!("storage error: {error}")));
         }
+        // The batch is durable and the old worker is stopped. Replaying the whole game into the
+        // replacement can take seconds, so it runs without the registry lock: every snapshot,
+        // websocket tick and lobby call for every game waits on that lock. This game stays
+        // consistent without it because the game gate, held since the top of this function,
+        // keeps out every other timeline mutation (choices, batches, history changes, takeover)
+        // until the replacement is published. Meanwhile the stopped session keeps answering
+        // reads with the pre-batch position, and a choice sent to it is refused.
+        drop(state);
         let mut next = config;
         next.prior_decisions = history.decisions;
         next.prior_events = history.events;
@@ -880,9 +1217,28 @@ impl GameRegistry {
         next.batches = history.batches;
         next.replay_boundary_state = Some(boundary_state);
         let (replacement, replay) = start_committed_worker(next, &mut start_worker);
-        state
-            .sessions
-            .insert(game_id.to_owned(), replacement.clone());
+        {
+            let mut state = self.state.lock().expect("registry lock");
+            // Only an ungated call can have touched this slot while the lock was released:
+            // `remove_game` (or a new game created under the same id after it). The stopped
+            // session cannot advance, so identity is the whole check. Never publish over a
+            // session this batch did not stop.
+            if !state
+                .sessions
+                .get(game_id)
+                .is_some_and(|live| Arc::ptr_eq(live, &session))
+            {
+                drop(state);
+                replacement.stop();
+                return Err(BatchError::explained(
+                    "game not found",
+                    "the game was removed while the batch was being committed",
+                ));
+            }
+            state
+                .sessions
+                .insert(game_id.to_owned(), replacement.clone());
+        }
         replay.map_err(|error| {
             BatchError::simple(&format!(
                 "batch committed, replacement session failed to replay: {error}"
@@ -894,6 +1250,7 @@ impl GameRegistry {
             start_cursor,
             end_cursor,
             active: true,
+            interrupted: simulation.interruption,
             snapshot: replacement.get_snapshot(&ViewerRole::Player(actor)),
         })
     }
@@ -913,17 +1270,27 @@ impl GameRegistry {
         let _reservation = gate.lock().expect("game gate lock");
         let state = self.state.lock().expect("registry lock");
         let host = if let Some(lobby) = state.player_lobbies.get(game_id) {
-            let actor =
-                authenticate_player(lobby, credential).map_err(|_| HistoryError::Forbidden)?;
+            let actor = authenticate_player(lobby, credential).map_err(|_| {
+                HistoryError::Forbidden(
+                    "the session credential is not valid for this game".to_owned(),
+                )
+            })?;
             if actor != lobby.host_player_id {
-                return Err(HistoryError::Forbidden);
+                return Err(HistoryError::Forbidden(
+                    "only the host may change history".to_owned(),
+                ));
             }
             actor
         } else if let Some(lobby) = state.lobbies.get(game_id) {
-            let actor =
-                authenticated_seat(lobby, credential).map_err(|_| HistoryError::Forbidden)?;
+            let actor = authenticated_seat(lobby, credential).map_err(|_| {
+                HistoryError::Forbidden(
+                    "the session credential is not valid for this game".to_owned(),
+                )
+            })?;
             if actor != lobby.host_seat {
-                return Err(HistoryError::Forbidden);
+                return Err(HistoryError::Forbidden(
+                    "only the host may change history".to_owned(),
+                ));
             }
             actor
         } else {
@@ -935,9 +1302,15 @@ impl GameRegistry {
             .ok_or(HistoryError::NotFound)?
             .clone();
         if session.game_version() != expected_version || !session.history_ready() {
-            return Err(HistoryError::Conflict(
-                "Game advanced or a decision is in flight".to_owned(),
-            ));
+            // Clients retry on this leading phrase, so keep it stable and append details.
+            return Err(HistoryError::Conflict(if session.history_ready() {
+                format!(
+                    "Game advanced or a decision is in flight: the request expected version {expected_version} but the game is at version {}",
+                    session.game_version()
+                )
+            } else {
+                "Game advanced or a decision is in flight: history is still reloading".to_owned()
+            }));
         }
         let current = session.decision_log();
         let redo = session.redo_decisions();
@@ -946,22 +1319,22 @@ impl GameRegistry {
         let original_count = current.len();
         let total = original_count + redo.len();
         let target = match action {
-            HistoryAction::Undo => current
-                .len()
-                .checked_sub(1)
-                .ok_or(HistoryError::InvalidTarget)?,
+            HistoryAction::Undo => current.len().checked_sub(1).ok_or_else(|| {
+                HistoryError::InvalidTarget("there is nothing to undo".to_owned())
+            })?,
             HistoryAction::UndoBatch => session
                 .batches()
                 .iter()
                 .rev()
                 .find(|b| b.end_cursor <= current.len())
                 .map(|b| b.start_cursor)
-                .ok_or(HistoryError::InvalidTarget)?,
+                .ok_or_else(|| {
+                    HistoryError::InvalidTarget("there is no committed batch to undo".to_owned())
+                })?,
             HistoryAction::UndoPipeline => {
-                let last = current
-                    .len()
-                    .checked_sub(1)
-                    .ok_or(HistoryError::InvalidTarget)?;
+                let last = current.len().checked_sub(1).ok_or_else(|| {
+                    HistoryError::InvalidTarget("there is nothing to undo".to_owned())
+                })?;
                 if let Some(id) = events
                     .iter()
                     .rev()
@@ -978,7 +1351,11 @@ impl GameRegistry {
                         .find(|event| event.action_id.as_ref() == Some(id))
                         .and_then(|event| event.decision_count)
                         .and_then(|cursor| cursor.checked_sub(1))
-                        .ok_or(HistoryError::InvalidTarget)?
+                        .ok_or_else(|| {
+                            HistoryError::InvalidTarget(format!(
+                                "the start of action {id} is not in the event log"
+                            ))
+                        })?
                 } else {
                     let phase = current[..=last]
                         .iter()
@@ -1001,7 +1378,9 @@ impl GameRegistry {
             }
             HistoryAction::Redo => {
                 if redo.is_empty() {
-                    return Err(HistoryError::InvalidTarget);
+                    return Err(HistoryError::InvalidTarget(
+                        "there is nothing to redo".to_owned(),
+                    ));
                 }
                 current.len() + 1
             }
@@ -1010,10 +1389,17 @@ impl GameRegistry {
                 .iter()
                 .find(|b| b.start_cursor == current.len())
                 .map(|b| b.end_cursor)
-                .ok_or(HistoryError::InvalidTarget)?,
+                .ok_or_else(|| {
+                    HistoryError::InvalidTarget(format!(
+                        "no undone batch starts at decision {}",
+                        current.len()
+                    ))
+                })?,
             HistoryAction::RedoPipeline => {
                 if redo.is_empty() {
-                    return Err(HistoryError::InvalidTarget);
+                    return Err(HistoryError::InvalidTarget(
+                        "there is nothing to redo".to_owned(),
+                    ));
                 }
                 if let Some(id) = redo_events
                     .iter()
@@ -1030,7 +1416,11 @@ impl GameRegistry {
                         .filter(|event| event.action_id.as_ref() == Some(id))
                         .filter_map(|event| event.decision_count)
                         .max()
-                        .ok_or(HistoryError::InvalidTarget)?
+                        .ok_or_else(|| {
+                            HistoryError::InvalidTarget(format!(
+                                "action {id} has no undone decisions"
+                            ))
+                        })?
                 } else {
                     // Older histories lack an action boundary. Continue until the next
                     // action-phase offer after the first redone decision, or the end.
@@ -1045,7 +1435,9 @@ impl GameRegistry {
             }
             HistoryAction::Restore { event_id } => {
                 if event_id.len() > 128 {
-                    return Err(HistoryError::InvalidTarget);
+                    return Err(HistoryError::InvalidTarget(
+                        "event_id is longer than 128 characters".to_owned(),
+                    ));
                 }
                 let mut count = 0;
                 let event = events
@@ -1060,25 +1452,37 @@ impl GameRegistry {
                         event.id == event_id
                             && event.visibility.permits(&ViewerRole::Player(host.clone()))
                     })
-                    .ok_or(HistoryError::InvalidTarget)?;
+                    .ok_or_else(|| {
+                        HistoryError::InvalidTarget(format!(
+                            "event {event_id} is not in the host's event log"
+                        ))
+                    })?;
                 let target = event.decision_count.unwrap_or(count);
                 if target >= current.len() {
-                    return Err(HistoryError::InvalidTarget);
+                    return Err(HistoryError::InvalidTarget(format!(
+                        "event {event_id} is at decision {target}, not before the current decision {}",
+                        current.len()
+                    )));
                 }
                 target
             }
             HistoryAction::RestoreCursor { cursor } => {
                 if cursor >= current.len() {
-                    return Err(HistoryError::InvalidTarget);
+                    return Err(HistoryError::InvalidTarget(format!(
+                        "cursor {cursor} is not before the current decision {}",
+                        current.len()
+                    )));
                 }
                 cursor
             }
         };
         if target > total {
-            return Err(HistoryError::InvalidTarget);
+            return Err(HistoryError::InvalidTarget(format!(
+                "decision {target} is beyond the recorded history of {total} decisions"
+            )));
         }
         let all: Vec<_> = current.into_iter().chain(redo).collect();
-        let config = session.restart_config();
+        let mut config = session.restart_config();
         drop(state);
         let report = crate::session::replay::replay_session(
             &config.state,
@@ -1106,9 +1510,9 @@ impl GameRegistry {
             }
             split += 1;
         }
-        let revision = expected_version
-            .checked_add(1)
-            .ok_or(HistoryError::InvalidTarget)?;
+        let revision = expected_version.checked_add(1).ok_or_else(|| {
+            HistoryError::Conflict("the game version counter is exhausted".to_owned())
+        })?;
         let history = GameHistory {
             decisions: all[..target].to_vec(),
             redo: all[target..].to_vec(),
@@ -1133,6 +1537,7 @@ impl GameRegistry {
             ));
         }
         session.stop();
+        config.plans = session.plans();
         if session.decision_log().len() != original_count {
             // This branch is only reachable for an autonomous bot decision; keep the
             // original timeline alive instead of committing an outdated cursor.
@@ -1582,6 +1987,32 @@ impl GameRegistry {
         seed: u64,
         nickname: &str,
     ) -> Result<(PlayerLobbyView, PlayerId, PlayerSession), LobbyError> {
+        self.create_player_lobby_with_template(game_id, count, seed, nickname, None)
+    }
+
+    /// As [`Self::create_player_lobby`], laying the board out from the named map template.
+    pub fn create_player_lobby_with_template(
+        &self,
+        game_id: String,
+        count: usize,
+        seed: u64,
+        nickname: &str,
+        map_template: Option<String>,
+    ) -> Result<(PlayerLobbyView, PlayerId, PlayerSession), LobbyError> {
+        self.create_player_lobby_with_options(game_id, count, seed, nickname, map_template, None)
+    }
+
+    /// As [`Self::create_player_lobby_with_template`], also naming a start preset that prepares
+    /// the opening state (see [`crate::preset`]).
+    pub fn create_player_lobby_with_options(
+        &self,
+        game_id: String,
+        count: usize,
+        seed: u64,
+        nickname: &str,
+        map_template: Option<String>,
+        start_preset: Option<String>,
+    ) -> Result<(PlayerLobbyView, PlayerId, PlayerSession), LobbyError> {
         check_nickname(nickname)?;
         let mut state = self.state.lock().expect("registry lock");
         if state.lobbies.contains_key(&game_id)
@@ -1594,9 +2025,11 @@ impl GameRegistry {
         {
             return Err(LobbyError::SeatUnavailable);
         }
-        let (record, player, credential) =
+        let (mut record, player, credential) =
             PlayerLobbyRecord::create(game_id.clone(), count, seed, nickname)
                 .map_err(|error| LobbyError::Storage(error.to_string()))?;
+        record.map_template = map_template;
+        record.start_preset = start_preset;
         self.save_player_lobby(&record)?;
         let view = record.public_view();
         state
@@ -1833,6 +2266,176 @@ impl GameRegistry {
             .unwrap_or(Err(RejectionReason::NoPendingChoice))
     }
 
+    /// Planning authorization shares the takeover/history gate with live answers.
+    pub fn submit_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str)>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.submit_player_planning_with_request_id(
+            game_id, credential, player, session, answer, None,
+        )
+    }
+
+    pub fn submit_player_planning_with_request_id(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str)>,
+        request_id: Option<&str>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            answer.map(|(identity, option)| (identity, option, request_id)),
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn reset_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            Some(identity),
+            None,
+            None,
+        )
+    }
+
+    pub fn edit_player_planning_movement(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            None,
+            None,
+            Some(identity),
+        )
+    }
+
+    pub fn apply_player_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        identity: crate::planning::runner::AttemptIdentity,
+        nonce: &str,
+        expected_version: u64,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        self.player_planning_request(
+            game_id,
+            credential,
+            player,
+            session,
+            None,
+            None,
+            Some((identity, nonce, expected_version)),
+            None,
+        )
+    }
+
+    /// A follower's secondary draft shares the takeover/history gate too.
+    pub fn player_secondary_planning(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        request: &crate::protocol::client::SecondaryPlanningRequest,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        use crate::protocol::server::PlanningRejection as Rejection;
+        let gate = self.game_gate(game_id);
+        let _reservation = gate.lock().expect("game gate lock");
+        if self
+            .authenticate_player_session(game_id, credential)
+            .ok()
+            .as_ref()
+            != Some(player)
+        {
+            return Err(Rejection::Unauthorized);
+        }
+        if self
+            .get_game(game_id)
+            .is_none_or(|current| !std::ptr::eq(Arc::as_ptr(&current), session))
+        {
+            return Err(Rejection::Unavailable);
+        }
+        session
+            .secondary_planning(player, request)
+            .map_err(planning_rejection)
+    }
+
+    fn player_planning_request(
+        &self,
+        game_id: &str,
+        credential: &str,
+        player: &PlayerId,
+        session: &GameSession,
+        answer: Option<(crate::planning::runner::AttemptIdentity, &str, Option<&str>)>,
+        reset: Option<crate::planning::runner::AttemptIdentity>,
+        apply: Option<(crate::planning::runner::AttemptIdentity, &str, u64)>,
+        edit: Option<crate::planning::runner::AttemptIdentity>,
+    ) -> Result<(), crate::protocol::server::PlanningRejection> {
+        use crate::protocol::server::PlanningRejection as Rejection;
+        let gate = self.game_gate(game_id);
+        let _reservation = gate.lock().expect("game gate lock");
+        if self
+            .authenticate_player_session(game_id, credential)
+            .ok()
+            .as_ref()
+            != Some(player)
+        {
+            return Err(Rejection::Unauthorized);
+        }
+        if self
+            .get_game(game_id)
+            .is_none_or(|current| !std::ptr::eq(Arc::as_ptr(&current), session))
+        {
+            return Err(Rejection::Unavailable);
+        }
+        let result = match (answer, reset, apply, edit) {
+            (_, _, _, Some(identity)) => session.edit_planning_movement(player, identity),
+            (_, _, Some((identity, nonce, version)), _) => {
+                session.apply_planning(player, identity, nonce, version)
+            }
+            (_, Some(identity), _, _) => session.reset_planning(player, identity),
+            (Some((identity, option, request_id)), _, _, _) => {
+                session.submit_planning_choice_with_request_id(player, identity, option, request_id)
+            }
+            _ => session.start_planning(player),
+        };
+        result.map_err(planning_rejection)
+    }
+
     /// Bind a private HTTP snapshot to the current credential under the same
     /// lock used to commit a takeover.
     pub fn player_snapshot(
@@ -1936,10 +2539,87 @@ impl GameRegistry {
             .ne(lobby.slots.iter().map(|s| &s.slot_id))
         {
             updated.lobby_version += 1;
+            updated.map_revision += 1;
             self.save_player_lobby(&updated)?;
             *lobby = updated;
         }
         Ok(self.player_view(&state, &state.player_lobbies[game_id]))
+    }
+
+    /// Host-only, lobby phase only: choose the map the table will play. Every call draws a new
+    /// private seed, so choosing again re-rolls the open slots (or the whole random board).
+    /// The seed is never part of any response.
+    ///
+    /// # Errors
+    /// [`LobbyError::InvalidMap`] for an unknown, wrongly sized or unbuildable template;
+    /// [`LobbyError::HostRequired`]; [`LobbyError::AlreadyRunning`]. `start_preset` is the dev
+    /// opening-state preset (see [`crate::preset`]); it is validated here and is not public.
+    pub fn choose_player_lobby_map(
+        &self,
+        game_id: &str,
+        credential: &str,
+        choice: &crate::maps::MapChoice,
+        start_preset: Option<&str>,
+    ) -> Result<PlayerLobbyView, LobbyError> {
+        if let Some(name) = start_preset
+            && !name.is_empty()
+            && !crate::preset::is_known(name)
+        {
+            return Err(LobbyError::InvalidMap(format!(
+                "unknown start_preset {name:?}"
+            )));
+        }
+        let mut state = self.state.lock().expect("registry lock");
+        let lobby = state
+            .player_lobbies
+            .get_mut(game_id)
+            .ok_or(LobbyError::NotFound)?;
+        if !matches!(lobby.phase, PersistedLobbyPhase::Lobby) {
+            return Err(LobbyError::AlreadyRunning);
+        }
+        if authenticate_player(lobby, credential)? != lobby.host_player_id {
+            return Err(LobbyError::HostRequired);
+        }
+        let seed = rand::random::<u64>();
+        crate::maps::catalog::preview(choice, lobby.slots.len(), seed)
+            .map_err(LobbyError::InvalidMap)?;
+        let mut updated = lobby.clone();
+        updated.map_template = choice.stored();
+        updated.seed = seed;
+        // Dev/smoke only: `Some("")` clears the preset, `None` leaves it as it is.
+        match start_preset {
+            Some("") => updated.start_preset = None,
+            Some(name) => updated.start_preset = Some(name.to_owned()),
+            None => {}
+        }
+        updated.map_revision += 1;
+        updated.lobby_version += 1;
+        self.save_player_lobby(&updated)?;
+        *lobby = updated;
+        Ok(self.player_view(&state, &state.player_lobbies[game_id]))
+    }
+
+    /// The board the lobby's current choice and seed give, laid out for its slot order.
+    ///
+    /// # Errors
+    /// [`LobbyError::NotFound`], or [`LobbyError::Map`] if the stored choice no longer builds.
+    pub fn player_lobby_map_preview(
+        &self,
+        game_id: &str,
+    ) -> Result<crate::maps::MapPreview, LobbyError> {
+        let (choice, count, seed) = {
+            let state = self.state.lock().expect("registry lock");
+            let lobby = state
+                .player_lobbies
+                .get(game_id)
+                .ok_or(LobbyError::NotFound)?;
+            (
+                crate::maps::MapChoice::from_stored(lobby.map_template.as_deref()),
+                lobby.slots.len(),
+                lobby.seed,
+            )
+        };
+        crate::maps::catalog::preview(&choice, count, seed).map_err(LobbyError::Map)
     }
 
     pub fn set_player_ready(
@@ -2001,9 +2681,14 @@ impl GameRegistry {
             .map(|slot| slot.occupant.clone().expect("full lobby"))
             .collect();
         let content = ContentStore::embedded();
-        let (initial_state, galaxy) =
-            crate::map::create_game_with_map(content, &players, lobby.seed)
-                .map_err(|e| LobbyError::Map(e.to_string()))?;
+        let (initial_state, galaxy) = crate::map::create_game_with_preset(
+            content,
+            &players,
+            lobby.seed,
+            lobby.map_template.as_deref(),
+            lobby.start_preset.as_deref(),
+        )
+        .map_err(LobbyError::Map)?;
         let map_tiles = crate::map::build_board_tiles(content, &galaxy);
         let mut config = SessionConfig::new(game_id, initial_state.clone())
             .with_seed(lobby.seed)
@@ -2048,6 +2733,7 @@ impl GameRegistry {
                 initial_state,
                 map_tiles,
                 seats: Some(config.seats.clone()),
+                map_template: lobby.map_template.clone(),
             }) {
                 // No valid init: recovery treats the lobby as unstarted.
                 let _ = self.save_player_lobby(lobby);
@@ -2458,6 +3144,7 @@ impl GameRegistry {
                 seats: config.seats.clone(),
                 seat_tokens: config.seat_tokens.clone(),
                 map_tiles: config.map_tiles.clone(),
+                map_template: None,
             };
             if let Err(error) = store.save_init(&init) {
                 lobby.phase = LobbyPhase::Lobby;
@@ -2536,6 +3223,7 @@ impl GameRegistry {
                     seats: config.seats.clone(),
                     seat_tokens: config.seat_tokens.clone(),
                     map_tiles: config.map_tiles.clone(),
+                    map_template: None,
                 })
                 .map_err(|error| format!("Failed to save initial game configuration: {error}"))?;
         }
@@ -2615,6 +3303,7 @@ impl GameRegistry {
                 initial_state: config.state.clone(),
                 map_tiles: config.map_tiles.clone(),
                 seats: Some(config.seats.clone()),
+                map_template: None,
             };
 
             let mut running_lobby = lobby_record.clone();
@@ -2815,6 +3504,7 @@ fn running_lobby_from_session_config(config: &SessionConfig) -> LobbyState {
 fn running_lobby_from_session(session: &GameSession) -> LobbyState {
     let (player_ids, seats, seat_tokens, seed) = session.lobby_details();
     running_lobby_from_session_config(&SessionConfig {
+        plans: BTreeMap::new(),
         game_id: session.id().to_owned(),
         state: session.current_state(),
         seats,
@@ -2840,6 +3530,7 @@ fn running_lobby_from_session(session: &GameSession) -> LobbyState {
         history_generation: 0,
         batches: Vec::new(),
         replay_boundary_state: None,
+        reaction_modes: BTreeMap::new(),
     })
 }
 
@@ -2927,6 +3618,7 @@ fn now_ms() -> u64 {
 
 fn legacy_running_lobby(init: &GameInitRecord) -> LobbyState {
     running_lobby_from_session_config(&SessionConfig {
+        plans: BTreeMap::new(),
         game_id: init.game_id.clone(),
         state: init.initial_state.clone(),
         seed: init.seed,
@@ -2952,5 +3644,23 @@ fn legacy_running_lobby(init: &GameInitRecord) -> LobbyState {
         history_generation: 0,
         batches: Vec::new(),
         replay_boundary_state: None,
+        reaction_modes: BTreeMap::new(),
     })
+}
+
+fn planning_rejection(error: super::PlanningError) -> crate::protocol::server::PlanningRejection {
+    use super::PlanningError;
+    use crate::planning::runner::SubmissionError;
+    use crate::protocol::server::PlanningRejection as Rejection;
+    match error {
+        PlanningError::Unavailable => Rejection::Unavailable,
+        PlanningError::UnknownSeat => Rejection::UnknownSeat,
+        PlanningError::ActivePlayer => Rejection::ActivePlayer,
+        PlanningError::NotStarted => Rejection::NotStarted,
+        PlanningError::NoActionOpportunity => Rejection::NoActionOpportunity,
+        PlanningError::ReplayMismatch => Rejection::ReplayMismatch,
+        PlanningError::Submission(SubmissionError::Retired) => Rejection::Retired,
+        PlanningError::Submission(SubmissionError::NotWaiting) => Rejection::NotWaiting,
+        PlanningError::Submission(SubmissionError::UnknownOption) => Rejection::UnknownOption,
+    }
 }

@@ -13,6 +13,8 @@ import {
 } from "./decode.ts";
 import { InitialSnapshotMsg, PROTOCOL_VERSION } from "./types.ts";
 import { validNickname } from "./nickname.ts";
+import { initialPlanningState, planningChoice, PlanningRefreshError } from "./planning.ts";
+import type { PlanningEnvelope } from "./types.ts";
 
 const snapshot: InitialSnapshotMsg = {
   type: "initial_snapshot",
@@ -38,11 +40,19 @@ const snapshot: InitialSnapshotMsg = {
       laws: {},
     },
   },
-  turn_status: { kind: "active_turn", player: "seat_a", phase: "strategy", round: 1 },
+  turn_status: {
+    kind: "active_turn",
+    player: "seat_a",
+    phase: "strategy",
+    round: 1,
+  },
   events: [],
 };
 
 const state: GameSessionState = {
+  planning: initialPlanningState,
+  secondaryStatus: null,
+  secondaryPlanning: initialPlanningState,
   status: "connected",
   gameVersion: 0,
   snapshot: null,
@@ -62,7 +72,12 @@ describe("GameSessionClient reducer", () => {
         actor: "seat_a",
         nonce: "old",
         prompt: "Play Shields Holding",
-        options: [{ id: "reaction:seat_a:HITS_TO_ASSIGN:when", label: "Play Shields Holding" }],
+        options: [
+          {
+            id: "reaction:seat_a:HITS_TO_ASSIGN:when",
+            label: "Play Shields Holding",
+          },
+        ],
       },
     };
     const next = reduceServerMessage(previous, {
@@ -82,6 +97,39 @@ describe("GameSessionClient reducer", () => {
     expect(next.turnStatus).toMatchObject({ seat: "seat_b" });
   });
 
+  it("carries the server's display details into the pending choice", () => {
+    const next = reduceServerMessage(state, {
+      type: "pending_choice",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      game_version: 7,
+      nonce: "n-1",
+      choice: {
+        player: "seat_a",
+        prompt: "spend a strategy token to draw two action cards",
+        options: [{ id: "no", label: "decline" }, { id: "yes", label: "draw" }],
+        details: { kind: "strategy_secondary", card: "pok3politics", tokens_left: 3 },
+      },
+    } as never);
+    expect(next.pendingChoice?.details).toEqual({
+      kind: "strategy_secondary",
+      card: "pok3politics",
+      tokens_left: 3,
+    });
+  });
+
+  it("leaves details out when the server sent none", () => {
+    const next = reduceServerMessage(state, {
+      type: "pending_choice",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      game_version: 7,
+      nonce: "n-2",
+      choice: { player: "seat_a", prompt: "p", options: [{ id: "a", label: "a" }] },
+    } as never);
+    expect(next.pendingChoice).not.toHaveProperty("details");
+  });
+
   it("keeps the entire history including early batches", () => {
     const events = Array.from({ length: 510 }, (_, index) => ({
       id: String(index),
@@ -97,7 +145,10 @@ describe("GameSessionClient reducer", () => {
   });
   it("refuses malformed history cursors before they reach the UI", () => {
     expect(() =>
-      decodeServerMessage({ ...snapshot, history: { cursor: -1, redo_count: 0 } }, "game_12345"),
+      decodeServerMessage(
+        { ...snapshot, history: { cursor: -1, redo_count: 0 } },
+        "game_12345",
+      ),
     ).toThrow(/history status/);
     expect(() =>
       decodeServerMessage(
@@ -164,11 +215,18 @@ describe("GameSessionClient reducer", () => {
       ),
     );
     expect(after.events.map((event) => event.id)).toEqual(["one"]);
-    expect(after.history).toMatchObject({ cursor: 1, redo_count: 1, generation: 1 });
+    expect(after.history).toMatchObject({
+      cursor: 1,
+      redo_count: 1,
+      generation: 1,
+    });
     expect(late).toBe(after);
   });
   it("uses one snapshot reducer and refuses older state-bearing messages", () => {
-    const current = reduceServerMessage(state, decodeServerMessage(snapshot, "game_12345"));
+    const current = reduceServerMessage(
+      state,
+      decodeServerMessage(snapshot, "game_12345"),
+    );
     const stale = reduceServerMessage(
       current,
       decodeServerMessage(
@@ -187,7 +245,10 @@ describe("GameSessionClient reducer", () => {
   });
 
   it("replaces the projection with an accepted state update instead of merging stale snapshot fields", () => {
-    const current = reduceServerMessage(state, decodeServerMessage(snapshot, "game_12345"));
+    const current = reduceServerMessage(
+      state,
+      decodeServerMessage(snapshot, "game_12345"),
+    );
     const update = reduceServerMessage(
       current,
       decodeServerMessage(
@@ -196,7 +257,12 @@ describe("GameSessionClient reducer", () => {
           type: "state_update",
           game_version: 5,
           view: { ...snapshot.view, active_player: "seat_a" },
-          pending_choice: { prompt: "Choose", actor: "seat_a", nonce: "nonce-5", options: [] },
+          pending_choice: {
+            prompt: "Choose",
+            actor: "seat_a",
+            nonce: "nonce-5",
+            options: [],
+          },
         },
         "game_12345",
       ),
@@ -210,7 +276,13 @@ describe("GameSessionClient reducer", () => {
 
 describe("lobby decoding", () => {
   it("mirrors the server byte bound and rejects whitespace, controls, and format characters", () => {
-    for (const name of ["Z", "A".repeat(64), "🪐".repeat(16), "Ana María", "Same"])
+    for (const name of [
+      "Z",
+      "A".repeat(64),
+      "🪐".repeat(16),
+      "Ana María",
+      "Same",
+    ])
       expect(validNickname(name)).toBe(true);
     for (const name of [
       "",
@@ -268,9 +340,9 @@ describe("lobby decoding", () => {
         "game_12345",
       ).player_session,
     ).toBe(playerSession);
-    expect(() => decodeCreateGameResponse({ ...created, player_session: "x".repeat(129) })).toThrow(
-      /invalid game creation response/,
-    );
+    expect(() =>
+      decodeCreateGameResponse({ ...created, player_session: "x".repeat(129) }),
+    ).toThrow(/invalid game creation response/);
   });
 
   it("decodes public slots without a credential or viewer identity", () => {
@@ -308,7 +380,10 @@ describe("lobby decoding", () => {
     expect(JSON.stringify(lobby)).not.toContain("player_session");
     expect(() =>
       decodeLobby(
-        { ...lobby, slots: [{ ...lobby.slots[0], nickname: "x\u202e" }, lobby.slots[1]] },
+        {
+          ...lobby,
+          slots: [{ ...lobby.slots[0], nickname: "x\u202e" }, lobby.slots[1]],
+        },
         "game_12345",
       ),
     ).toThrow(/invalid lobby slot/);
@@ -341,6 +416,481 @@ class FakeWebSocket {
 }
 
 describe("GameSessionClient ingress lifecycle", () => {
+  function draftOffer(checkpoint = 10, revision = 2, recorded = 1): PlanningEnvelope {
+    return {
+      publication_id: revision,
+      identity: { checkpoint_id: checkpoint, generation_id: 1, plan_revision: revision },
+      awaiting_answer: true,
+      recorded_request_ids: [],
+      assumptions: [],
+      progress: {
+        recorded_answers: recorded,
+        replayed: recorded,
+        remaining: 0,
+        completed_steps: 1,
+        nested_answers_since_checkpoint: 0,
+      },
+      update: {
+        SafeOffer: {
+          position: snapshot.view,
+          choice: { player: "player_a", prompt: "Move", options: [{ id: "move", label: "Move" }] },
+          events: [],
+        },
+      },
+    };
+  }
+  it("drafts a secondary in its own slot without disturbing the tactical draft", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const tactical = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: tactical });
+    const round = {
+      card: "pok7technology",
+      played_by: "player_b",
+      window_open: false,
+      seats_before: null,
+      can_start: true,
+      has_draft: false,
+      identity: null,
+      ready: false,
+      application: null,
+    };
+    const status = (secondary: object | null) =>
+      send({
+        type: "planning_status",
+        checkpoint_id: 10,
+        available: true,
+        can_start: true,
+        has_draft: true,
+        identity: tactical.identity,
+        secondary,
+      });
+    status(round);
+    expect(client.getState().secondaryStatus?.card).toBe("pok7technology");
+
+    const started = client.startSecondaryPlanning();
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      type: "secondary_planning",
+      request: { action: "start" },
+    });
+    await expect(client.startSecondaryPlanning()).rejects.toThrow(/still pending/);
+    // A tactical result is not this request's answer.
+    send({ type: "planning_result", identity: null, rejection: "unavailable" });
+    expect(client.getState().secondaryPlanning.busy).toBe(true);
+    send({ type: "planning_result", draft: "secondary", identity: null, rejection: null });
+    await started;
+
+    const offer = draftOffer(10, 1, 0);
+    status({ ...round, has_draft: true, identity: offer.identity });
+    send({ type: "planning_update", draft: "secondary", envelope: offer });
+    expect(client.getState().secondaryPlanning.envelope).toEqual(offer);
+    expect(client.getState().planning.envelope).toEqual(tactical);
+
+    const answered = client.submitSecondaryPlanningChoice(offer.identity, "move");
+    expect(JSON.parse(socket.sent.at(-1)!).request).toEqual({
+      action: "answer",
+      identity: offer.identity,
+      option_id: "move",
+    });
+    // The answered offer is spent until the next publication replaces it.
+    expect(client.getState().secondaryPlanning.current).toBe(false);
+    send({ type: "planning_result", draft: "secondary", identity: offer.identity, rejection: null });
+    await answered;
+
+    const ready = client.setSecondaryReady(offer.identity, true);
+    expect(JSON.parse(socket.sent.at(-1)!).request).toEqual({
+      action: "set_ready",
+      identity: offer.identity,
+      ready: true,
+    });
+    send({
+      type: "planning_result",
+      draft: "secondary",
+      identity: offer.identity,
+      rejection: "replay_mismatch",
+    });
+    await expect(ready).rejects.toThrow(/no longer fits/);
+    expect(client.getState().secondaryPlanning.error).toMatch(/no longer fits/);
+
+    // The window closes: the round and its draft are gone, the tactical draft is not.
+    status(null);
+    expect(client.getState().secondaryStatus).toBeNull();
+    expect(client.getState().secondaryPlanning.envelope).toBeNull();
+    expect(client.getState().planning.envelope).toEqual(tactical);
+  });
+
+  it("reopens movement with an identity and accepts a replacement script shorter than the original", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const original = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: original });
+    const operation = client.editPlanningMovement(original.identity);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "edit_planning_movement",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: original.identity,
+    });
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    const editing = {
+      ...draftOffer(10, 6, 6),
+      identity: { ...original.identity, generation_id: 2, plan_revision: 6 },
+      editing_movement: true,
+      movement_edit_revision: 1,
+    };
+    send({ type: "planning_update", envelope: editing });
+    send({ type: "planning_result", identity: original.identity, rejection: null });
+    await operation;
+    expect(client.getState().planning.resetEpoch).toBe(0);
+    const answer = client.submitPlanningChoice(editing.identity, "move");
+    const requestId = JSON.parse(socket.sent.at(-1)!).request_id;
+    send({
+      type: "planning_update",
+      envelope: {
+        ...editing,
+        publication_id: editing.publication_id + 1,
+        identity: { ...editing.identity, plan_revision: 7 },
+        editing_movement: false,
+        progress: { ...editing.progress, recorded_answers: 3 },
+        recorded_request_ids: [requestId],
+      },
+    });
+    await answer;
+    expect(client.getState().planning.busy).toBe(false);
+    expect(client.getState().planning.error).toBeNull();
+    client.stop();
+  });
+  it("pauses a losing editor pipeline when another tab records a shorter replacement", async () => {
+    const { client, send } = await connectedPlayer();
+    const editing = { ...draftOffer(10, 6, 6), editing_movement: true, movement_edit_revision: 1 };
+    send({ type: "planning_update", envelope: editing });
+    const failure = client
+      .submitPlanningChoice(editing.identity, "move")
+      .catch((error: unknown) => error);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...editing,
+        publication_id: editing.publication_id + 1,
+        identity: { ...editing.identity, plan_revision: 7 },
+        editing_movement: false,
+        progress: { ...editing.progress, recorded_answers: 3 },
+        recorded_request_ids: ["other-tab"],
+      },
+    });
+    expect(((await failure) as Error).message).toContain("Another connection answered");
+    expect(client.getState().planning.busy).toBe(false);
+    client.stop();
+  });
+  it("cancels a pending pipeline when another tab reopens movement, including after reconnect", async () => {
+    const { client, send } = await connectedPlayer();
+    const original = draftOffer(10, 5, 6);
+    send({ type: "planning_update", envelope: original });
+    const failure = client
+      .submitPlanningChoice(original.identity, "move")
+      .catch((error: unknown) => error);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...draftOffer(11, 6, 6),
+        editing_movement: true,
+        movement_edit_revision: 1,
+      },
+    });
+    const error = await failure;
+    expect(error).not.toBeInstanceOf(PlanningRefreshError);
+    expect((error as Error).message).toContain("reopened");
+    client.stop();
+  });
+  it("binds Apply draft to the confirmed live nonce and revision, and keeps execution server-owned", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    const offer = draftOffer();
+    const availability = {
+      type: "planning_status",
+      checkpoint_id: 10,
+      available: true,
+      can_start: false,
+      has_draft: true,
+      identity: offer.identity,
+      can_apply: true,
+      application: null,
+    };
+    send({ type: "planning_update", envelope: offer });
+    send(availability);
+    const applying = client.applyPlanning(offer.identity, "nonce-4", 4);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "apply_planning",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: offer.identity,
+      nonce: "nonce-4",
+      expected_version: 4,
+    });
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    await expect(client.applyPlanning(offer.identity, "nonce-4", 4)).rejects.toThrow(/pending/);
+    send({ type: "planning_result", identity: offer.identity, rejection: null });
+    await applying;
+    send({
+      ...availability,
+      can_apply: false,
+      application: {
+        applied: 2,
+        total: 5,
+        state: "waiting_for_player",
+        message: "Waiting for another player.",
+      },
+    });
+    expect(client.getState().planning.availability?.application?.applied).toBe(2);
+    await expect(client.applyPlanning(offer.identity, "nonce-4", 4)).rejects.toThrow(/not ready/);
+    expect(socket.sent.filter((raw) => JSON.parse(raw).type === "apply_planning")).toHaveLength(1);
+    expect(socket.sent.filter((raw) => JSON.parse(raw).type === "submit_choice")).toHaveLength(0);
+    client.stop();
+  });
+  it("keeps planning independent from the live projection and confirms recorded answers rather than reservation acknowledgments", async () => {
+    const { client, send } = await connectedPlayer();
+    const live = client.getState();
+    const offer = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    let resolved = false;
+    void answer.then(() => {
+      resolved = true;
+    });
+    send({
+      type: "planning_result",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: offer.identity,
+      rejection: null,
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: {
+        ...draftOffer(10, 3, 2),
+        recorded_request_ids: [JSON.parse(FakeWebSocket.latest!.sent.at(-1)!).request_id],
+      },
+    });
+    await answer;
+    expect(client.getState().snapshot).toBe(live.snapshot);
+    expect(client.getState().pendingChoice).toBe(live.pendingChoice);
+    expect(client.getState().events).toBe(live.events);
+    expect(client.getState().history).toBe(live.history);
+    expect(client.getState().lastError).toBe(live.lastError);
+    expect(JSON.parse(FakeWebSocket.latest!.sent.at(-1)!)).toMatchObject({
+      type: "submit_planning_choice",
+      identity: offer.identity,
+    });
+    client.stop();
+  });
+  it("reconciles an in-flight recorded answer after refresh and ignores its stale rejection", async () => {
+    const { client, send } = await connectedPlayer();
+    const old = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+    const answer = client.submitPlanningChoice(old.identity, "move");
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: { ...draftOffer(11, 4, 2), update: "Preparing", awaiting_answer: false },
+    });
+    send({
+      type: "planning_result",
+      protocol_version: 3,
+      game_id: "game_12345",
+      identity: old.identity,
+      rejection: "unknown_option",
+    });
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: {
+        ...draftOffer(11, 4, 2),
+        publication_id: 5,
+        recorded_request_ids: [JSON.parse(FakeWebSocket.latest!.sent.at(-1)!).request_id],
+      },
+    });
+    await expect(answer).resolves.toBeUndefined();
+    expect(client.getState().planning.error).toBeNull();
+    await expect(client.submitPlanningChoice(old.identity, "move")).rejects.toBeInstanceOf(
+      PlanningRefreshError,
+    );
+    client.stop();
+  });
+  it("lets pipelines retry only the unrecorded suffix after a refresh", async () => {
+    const { client, send } = await connectedPlayer();
+    const old = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+    const answer = client.submitPlanningChoice(old.identity, "move");
+    const rejected = expect(answer).rejects.toBeInstanceOf(PlanningRefreshError);
+    send({
+      type: "planning_update",
+      protocol_version: 3,
+      game_id: "game_12345",
+      envelope: draftOffer(11, 3, 1),
+    });
+    await rejected;
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it.each(["before", "after"])(
+    "does not confirm another connection's recorded answer when rejection arrives %s the publication",
+    async (order) => {
+      const { client, send } = await connectedPlayer();
+      const old = draftOffer();
+      send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: old });
+      const answer = client.submitPlanningChoice(old.identity, "move");
+      const rejected = expect(answer).rejects.toThrow("Another connection answered");
+      const rejection = {
+        type: "planning_result" as const,
+        protocol_version: 3,
+        game_id: "game_12345",
+        identity: old.identity,
+        rejection: "retired" as const,
+      };
+      if (order === "before") send(rejection);
+      send({
+        type: "planning_update",
+        protocol_version: 3,
+        game_id: "game_12345",
+        envelope: { ...draftOffer(10, 3, 2), recorded_request_ids: ["another-tab"] },
+      });
+      await rejected;
+      if (order === "after") send(rejection);
+      expect(client.getState().planning.busy).toBe(false);
+      expect(client.getState().planning.error).toContain("Remaining instructions were paused");
+      client.stop();
+    },
+  );
+  it("disables cached controls during a socket replacement while retaining the preview", async () => {
+    vi.useFakeTimers();
+    const { client, send } = await connectedPlayer();
+    const offer = draftOffer();
+    send({ type: "planning_update", protocol_version: 3, game_id: "game_12345", envelope: offer });
+    const before = client.getState().planning.publication;
+    FakeWebSocket.latest!.onclose?.();
+    expect(client.getState().planning.publication).toBe(before);
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    vi.advanceTimersByTime(2000);
+    const socket = FakeWebSocket.latest!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.onopen?.();
+    expect(planningChoice(client.getState().planning)).toBeNull();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "planning_update",
+        protocol_version: 3,
+        game_id: "game_12345",
+        envelope: offer,
+      }),
+    } as MessageEvent);
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it("keeps a reserved answer pending across duplicate deliveries and reconnect until its receipt arrives", async () => {
+    vi.useFakeTimers();
+    const { client, socket, send } = await connectedPlayer();
+    const offer = draftOffer();
+    send({ type: "planning_update", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    const requestId = JSON.parse(socket.sent.at(-1)!).request_id;
+    let settled = false;
+    void answer.then(() => {
+      settled = true;
+    });
+    send({ type: "planning_update", envelope: offer });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(client.getState().planning.busy).toBe(true);
+    socket.close();
+    vi.advanceTimersByTime(2000);
+    const replacement = FakeWebSocket.latest!;
+    replacement.readyState = FakeWebSocket.OPEN;
+    replacement.onopen?.();
+    const deliver = (envelope: PlanningEnvelope) =>
+      replacement.onmessage?.({
+        data: JSON.stringify({
+          type: "planning_update",
+          protocol_version: 3,
+          game_id: "game_12345",
+          envelope,
+        }),
+      } as MessageEvent);
+    // Subscription recalculates awaiting_answer under the reservation lock.
+    deliver({ ...offer, awaiting_answer: false });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(client.getState().planning.busy).toBe(true);
+    deliver({ ...draftOffer(10, 3, 2), recorded_request_ids: [requestId] });
+    await answer;
+    expect(client.getState().planning.busy).toBe(false);
+    expect(client.getState().planning.error).toBeNull();
+    client.stop();
+  });
+  it("cancels an answer on an authoritative reset even if reconnect skipped the reset publications", async () => {
+    const { client, send } = await connectedPlayer();
+    const offer = { ...draftOffer(), reset_revision: 0 };
+    send({ type: "planning_update", envelope: offer });
+    const answer = client.submitPlanningChoice(offer.identity, "move");
+    const failure = answer.catch((error: unknown) => error);
+    // The new draft is already as long as the old one, so answer counts cannot identify a reset.
+    send({
+      type: "planning_update",
+      envelope: {
+        ...draftOffer(11, 5, offer.progress.recorded_answers),
+        reset_revision: 1,
+      },
+    });
+    const error = await failure;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PlanningRefreshError);
+    expect((error as Error).message).toContain("Draft reset");
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    expect(client.getState().planning.busy).toBe(false);
+    expect(planningChoice(client.getState().planning)).not.toBeNull();
+    client.stop();
+  });
+  it("invalidates local staging when another tab resets an empty script, once per reset publication", async () => {
+    const { client, send } = await connectedPlayer();
+    const offer = { ...draftOffer(10, 0, 0), reset_revision: 0 };
+    send({ type: "planning_update", envelope: offer });
+    const reset = {
+      ...offer,
+      reset_revision: 1,
+      identity: { ...offer.identity, generation_id: 2, plan_revision: 1 },
+      update: "Preparing",
+      awaiting_answer: false,
+    };
+    send({ type: "planning_update", envelope: reset });
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    const replacement = {
+      ...offer,
+      reset_revision: 1,
+      publication_id: 2,
+      identity: reset.identity,
+    };
+    send({ type: "planning_update", envelope: replacement });
+    expect(client.getState().planning.resetEpoch).toBe(1);
+    // Its own successful acknowledgment must not invalidate the workspace twice.
+    const operation = client.resetPlanning(replacement.identity);
+    send({
+      type: "planning_update",
+      envelope: {
+        ...replacement,
+        reset_revision: 2,
+        identity: { ...replacement.identity, generation_id: 3 },
+        update: "Preparing",
+        awaiting_answer: false,
+      },
+    });
+    send({ type: "planning_result", identity: replacement.identity, rejection: null });
+    await operation;
+    expect(client.getState().planning.resetEpoch).toBe(2);
+    client.stop();
+  });
   it("retries an uncertain basket confirmation with the same request ID", async () => {
     const { client, send } = await connectedPlayer();
     send({
@@ -372,14 +922,226 @@ describe("GameSessionClient ingress lifecycle", () => {
         }),
       });
     vi.stubGlobal("fetch", request);
-    const plan = { kind: "payment" as const, steps: [{ kind: "trade_good" as const }] };
+    const plan = {
+      kind: "payment" as const,
+      steps: [{ kind: "trade_good" as const }],
+    };
     await expect(client.submitBatch(plan)).rejects.toThrow("Connection lost");
     await client.submitBatch(plan);
     const first = JSON.parse(request.mock.calls[0][1].body);
     const second = JSON.parse(request.mock.calls[1][1].body);
-    expect(first).toMatchObject({ plan, expected_version: 4, nonce: "nonce-4" });
+    expect(first).toMatchObject({
+      plan,
+      expected_version: 4,
+      nonce: "nonce-4",
+    });
     expect(second.request_id).toBe(first.request_id);
     expect(request).toHaveBeenCalledTimes(2);
+    client.stop();
+  });
+
+  it("sends a token plan while a command token gain is pending, and refuses it otherwise", async () => {
+    const { client, send } = await connectedPlayer();
+    const pending = (subtype: string) => ({
+      ...snapshot,
+      type: "initial_snapshot" as const,
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce: "nonce-5",
+        choice: {
+          player: "player_a",
+          prompt: "gain a command token into which pool",
+          context: { subtype },
+          options: [{ id: "tactic_tokens", kind: "pool", label: "tactic pool" }],
+        },
+      },
+    });
+    const plan = {
+      kind: "tokens" as const,
+      steps: [{ kind: "pool" as const, pool: "tactic_tokens" }],
+    };
+    send(pending("ready_planet"));
+    await expect(client.submitBatch(plan)).rejects.toThrow("Workflow is no longer pending");
+    send(pending("gain_command_token"));
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: true,
+        snapshot: { ...snapshot, game_version: 5, viewer: { role: "player", seat: "player_a" } },
+      }),
+    });
+    vi.stubGlobal("fetch", request);
+    await client.submitBatch(plan);
+    expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({ plan, nonce: "nonce-5" });
+    client.stop();
+  });
+
+  describe("a plan paused at a reaction window", () => {
+    let version = 6;
+    const pendingAt = (subtype: string, nonce: string) => ({
+      ...snapshot,
+      type: "initial_snapshot" as const,
+      game_version: version++,
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce,
+        choice: {
+          player: "player_a",
+          prompt: subtype,
+          context: { subtype },
+          options: [{ id: "decline", kind: "decline", label: "decline" }],
+        },
+      },
+    });
+    const plan = {
+      kind: "agenda_vote_planets" as const,
+      steps: [
+        { kind: "vote_planet" as const, planet: "jord" },
+        { kind: "vote_planet" as const, planet: "arc_prime" },
+        { kind: "done_voting" as const },
+      ],
+    };
+    // A confirmed batch reconnects the client, so later server messages arrive on the new socket.
+    const later = (message: object) => {
+      const socket = FakeWebSocket.latest!;
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onmessage?.({
+        data: JSON.stringify({
+          protocol_version: PROTOCOL_VERSION,
+          game_id: "game_12345",
+          ...message,
+        }),
+      } as MessageEvent);
+    };
+    const paused = (remaining: unknown[], shot: unknown) => ({
+      ok: true,
+      json: async () => ({
+        active: true,
+        interrupted: {
+          applied_steps: 1,
+          remaining_steps: remaining,
+          offered: { subtype: "reaction_after_VOTES_CAST", own_seat: true },
+        },
+        snapshot: shot,
+      }),
+    });
+
+    it("resolves without error, keeps the remainder, and sends it again on request", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      const remaining = plan.steps.slice(1);
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(
+          paused(remaining, pendingAt("reaction_after_VOTES_CAST", "nonce-r")),
+        )
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ active: true, snapshot: pendingAt("agenda_vote", "nonce-done") }),
+        });
+      vi.stubGlobal("fetch", request);
+      await expect(client.submitBatch(plan)).resolves.toBeUndefined();
+      expect(client.getState().batchResume).toMatchObject({
+        applied: 1,
+        plan: { kind: "agenda_vote_planets", steps: remaining },
+        waiting: { subtype: "reaction_after_VOTES_CAST", ownSeat: true },
+      });
+      expect(client.getState().lastError).toBeNull();
+      // The reaction is pending: the plan cannot be continued yet, the server would call it stale.
+      await expect(client.resumeBatch()).rejects.toThrow("Workflow is no longer pending");
+      later(pendingAt("vote_exhaust_planet", "nonce-v2"));
+      expect(client.getState().batchResume).not.toBeNull();
+      await client.resumeBatch();
+      const body = JSON.parse(request.mock.calls[1][1].body);
+      expect(body.plan).toEqual({ kind: "agenda_vote_planets", steps: remaining });
+      expect(body.nonce).toBe("nonce-v2");
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+
+    it("drops the remainder when the server refuses it, and when the game moves on", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      const remaining = plan.steps.slice(1);
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(paused(remaining, pendingAt("vote_exhaust_planet", "nonce-v2")))
+          .mockResolvedValueOnce({
+            ok: false,
+            status: 409,
+            text: async () => JSON.stringify({ message: "option unavailable" }),
+          }),
+      );
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).not.toBeNull();
+      await expect(client.resumeBatch()).rejects.toThrow("option unavailable");
+      expect(client.getState().batchResume).toBeNull();
+      expect(client.getState().lastError).toContain("option unavailable");
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(paused(remaining, pendingAt("reaction_after_VOTES_CAST", "r"))));
+      later(pendingAt("vote_exhaust_planet", "nonce-v3"));
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).not.toBeNull();
+      later(pendingAt("action_phase", "nonce-a"));
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+
+    it("treats a plan the server applied whole as finished", async () => {
+      const { client, send } = await connectedPlayer();
+      send(pendingAt("vote_exhaust_planet", "nonce-v1"));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ active: true, snapshot: pendingAt("agenda_vote", "n2") }),
+        }),
+      );
+      await client.submitBatch(plan);
+      expect(client.getState().batchResume).toBeNull();
+      client.stop();
+    });
+  });
+
+  it("sends a casualty plan while a sustain or casualty decision is pending", async () => {
+    const { client, send } = await connectedPlayer();
+    send({
+      ...snapshot,
+      type: "initial_snapshot",
+      viewer: { role: "player", seat: "player_a" },
+      pending_choice: {
+        nonce: "nonce-4",
+        choice: {
+          player: "player_a",
+          prompt: "cancel a hit at 18",
+          context: { subtype: "sustain_damage" },
+          options: [{ id: "decline", kind: "decline", label: "take the hit" }],
+        },
+      },
+    });
+    const request = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: true,
+        snapshot: {
+          ...snapshot,
+          game_version: 5,
+          viewer: { role: "player", seat: "player_a" },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", request);
+    const plan = {
+      kind: "casualties" as const,
+      steps: [{ kind: "destroy" as const, unit: "fighter", damaged: false }],
+    };
+    await client.submitBatch(plan);
+    expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({
+      plan,
+      nonce: "nonce-4",
+    });
     client.stop();
   });
 
@@ -422,6 +1184,35 @@ describe("GameSessionClient ingress lifecycle", () => {
       action: "undo_pipeline",
       expected_version: 6,
     });
+    client.stop();
+  });
+
+  it("fetches the replay with the player session and names the file after the game", async () => {
+    const { client } = await connectedPlayer();
+    const request = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ format: "ti4-replay", history: { decisions: [] } }),
+    });
+    vi.stubGlobal("fetch", request);
+    const replay = await client.fetchReplay();
+    expect(request.mock.calls[0][0]).toBe("/api/games/game_12345/replay");
+    expect(request.mock.calls[0][1].headers).toHaveProperty("x-ti4-player-session");
+    expect(replay.filename).toBe("ti4-replay-game_12345.json");
+    expect(JSON.parse(replay.text)).toEqual({ format: "ti4-replay", history: { decisions: [] } });
+    client.stop();
+  });
+
+  it("surfaces the server's reason when the replay is refused", async () => {
+    const { client } = await connectedPlayer();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        text: async () => "the session credential is not valid for this game",
+      }),
+    );
+    await expect(client.fetchReplay()).rejects.toThrow(/session credential is not valid/);
     client.stop();
   });
 
@@ -501,6 +1292,51 @@ describe("GameSessionClient ingress lifecycle", () => {
     });
     client.stop();
   });
+  it("sends set_reaction_mode and takes the modes from the seat's next state update", async () => {
+    const { client, socket, send } = await connectedPlayer();
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    client.setReactionMode("Sabotage", "never");
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "set_reaction_mode",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: "game_12345",
+      card: "Sabotage",
+      mode: "never",
+    });
+    // Nothing is assumed locally: the modes are what the server last said.
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    send({
+      ...snapshot,
+      type: "state_update",
+      game_version: 4,
+      viewer: { role: "player", seat: "player_a" },
+      reaction_modes: { Sabotage: "never", Junk: "sometimes" },
+    });
+    expect(client.getState().snapshot?.reaction_modes).toEqual({ Sabotage: "never" });
+    // A later update without the field is the seat having none.
+    send({
+      ...snapshot,
+      type: "state_update",
+      game_version: 5,
+      viewer: { role: "player", seat: "player_a" },
+    });
+    expect(client.getState().snapshot?.reaction_modes).toBeUndefined();
+    client.stop();
+  });
+
+  it("does not send a mode change for a spectator or without a connection", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const spectator = new GameSessionClient({ gameId: "game_12345", viewer: { role: "spectator" } });
+    spectator.setReactionMode("Sabotage", "never");
+    expect(spectator.getState().lastError).toMatch(/seated player/);
+    const offline = new GameSessionClient({
+      gameId: "game_12345",
+      viewer: { role: "player", seat: "player_a", playerSession: "private" },
+    });
+    offline.setReactionMode("Sabotage", "never");
+    expect(offline.getState().lastError).toMatch(/not connected/);
+  });
+
   async function connectedPlayer() {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal(
@@ -529,7 +1365,9 @@ describe("GameSessionClient ingress lifecycle", () => {
     const socket = FakeWebSocket.latest!;
     socket.readyState = FakeWebSocket.OPEN;
     socket.onopen?.();
-    await vi.waitFor(() => expect(client.getState().pendingChoice?.nonce).toBe("nonce-4"));
+    await vi.waitFor(() =>
+      expect(client.getState().pendingChoice?.nonce).toBe("nonce-4"),
+    );
     const send = (message: object) =>
       socket.onmessage?.({
         data: JSON.stringify({
@@ -541,7 +1379,10 @@ describe("GameSessionClient ingress lifecycle", () => {
     return { client, socket, send };
   }
 
-  it.each([{ reason: "stale_nonce" }, { reason: "stale_version", expected: 4, current: 5 }])(
+  it.each([
+    { reason: "stale_nonce" },
+    { reason: "stale_version", expected: 4, current: 5 },
+  ])(
     "rejects a refused submission ($reason) and allows retry",
     async (reason) => {
       const { client, socket, send } = await connectedPlayer();
@@ -558,13 +1399,37 @@ describe("GameSessionClient ingress lifecycle", () => {
       expect(client.getState().lastError).toMatch(/Rejected:/);
       const retried = client.submitChoice("opt-4");
       expect(
-        socket.sent.filter((message) => JSON.parse(message).type === "submit_choice"),
+        socket.sent.filter(
+          (message) => JSON.parse(message).type === "submit_choice",
+        ),
       ).toHaveLength(2);
       const stopped = expect(retried).rejects.toThrow(/disconnected|stopped/i);
       client.stop();
       await stopped;
     },
   );
+
+  it("abandons a submission that gets no reply so the next click sends a new frame", async () => {
+    const { client, socket } = await connectedPlayer();
+    vi.useFakeTimers();
+    try {
+      const first = client.submitChoice("opt-4");
+      const timedOut = expect(first).rejects.toThrow(/no response/i);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await timedOut;
+      const second = client.submitChoice("opt-4");
+      expect(
+        socket.sent.filter(
+          (message) => JSON.parse(message).type === "submit_choice",
+        ),
+      ).toHaveLength(2);
+      const stopped = expect(second).rejects.toThrow(/disconnected|stopped/i);
+      client.stop();
+      await stopped;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each(["ack-first", "update-first"])(
     "waits for acceptance and a newer authoritative state (%s)",
@@ -575,7 +1440,8 @@ describe("GameSessionClient ingress lifecycle", () => {
       void submitted.then(() => {
         settled = true;
       });
-      const accepted = () => send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
+      const accepted = () =>
+        send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
       const update = () =>
         send({
           ...snapshot,
@@ -608,7 +1474,8 @@ describe("GameSessionClient ingress lifecycle", () => {
     async (order) => {
       const { client, socket, send } = await connectedPlayer();
       const submitted = client.submitChoice("opt-4");
-      const accepted = () => send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
+      const accepted = () =>
+        send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
       const nextChoice = () =>
         send({
           type: "pending_choice",
@@ -650,7 +1517,9 @@ describe("GameSessionClient ingress lifecycle", () => {
     const failed = expect(submitted).rejects.toThrow(/disconnected/i);
     socket.onclose?.();
     await failed;
-    await expect(client.submitChoice("opt-4")).rejects.toThrow(/not connected/i);
+    await expect(client.submitChoice("opt-4")).rejects.toThrow(
+      /not connected/i,
+    );
     await vi.advanceTimersByTimeAsync(2_000);
     const reconnected = FakeWebSocket.latest!;
     expect(reconnected).not.toBe(socket);
@@ -729,8 +1598,14 @@ describe("GameSessionClient ingress lifecycle", () => {
     send({ type: "action_accepted", game_version: 4, option_id: "opt-4" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(settled).toBe(false);
-    const failed = expect(submitted).rejects.toThrow(/Rejected: Stale decision nonce/);
-    send({ type: "action_rejected", game_version: 4, reason: { reason: "stale_nonce" } });
+    const failed = expect(submitted).rejects.toThrow(
+      /Rejected: Stale decision nonce/,
+    );
+    send({
+      type: "action_rejected",
+      game_version: 4,
+      reason: { reason: "stale_nonce" },
+    });
     await failed;
     expect(client.getState().lastError).toBe("Rejected: Stale decision nonce");
     client.stop();
@@ -738,8 +1613,14 @@ describe("GameSessionClient ingress lifecycle", () => {
 
   it("routes the HTTP snapshot through the same validated reducer and closes its socket on stop", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot }));
-    const client = new GameSessionClient({ gameId: "game_12345", viewer: { role: "spectator" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot }),
+    );
+    const client = new GameSessionClient({
+      gameId: "game_12345",
+      viewer: { role: "spectator" },
+    });
 
     client.start();
     await vi.waitFor(() => expect(client.getState().gameVersion).toBe(4));
@@ -757,7 +1638,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ ...snapshot, viewer: { role: "player", seat: "player_a" } }),
+        json: async () => ({
+          ...snapshot,
+          viewer: { role: "player", seat: "player_a" },
+        }),
       }),
     );
     const client = new GameSessionClient({
@@ -774,7 +1658,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       player_session: "private",
     });
     vi.advanceTimersByTime(10_000);
-    expect(JSON.parse(socket.sent[1])).toMatchObject({ type: "ping", sequence: 1 });
+    expect(JSON.parse(socket.sent[1])).toMatchObject({
+      type: "ping",
+      sequence: 1,
+    });
     socket.onclose?.();
     vi.advanceTimersByTime(2_000);
     expect(FakeWebSocket.latest).not.toBe(socket);
@@ -788,7 +1675,10 @@ describe("GameSessionClient ingress lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ ...snapshot, viewer: { role: "player", seat: "player_b" } }),
+        json: async () => ({
+          ...snapshot,
+          viewer: { role: "player", seat: "player_b" },
+        }),
       }),
     );
     const client = new GameSessionClient({
@@ -796,7 +1686,9 @@ describe("GameSessionClient ingress lifecycle", () => {
       viewer: { role: "player", seat: "player_a", playerSession: "private" },
     });
     client.start();
-    await vi.waitFor(() => expect(client.getState().lastError).toMatch(/viewer identity/));
+    await vi.waitFor(() =>
+      expect(client.getState().lastError).toMatch(/viewer identity/),
+    );
     expect(client.getState().snapshot).toBeNull();
     client.stop();
   });

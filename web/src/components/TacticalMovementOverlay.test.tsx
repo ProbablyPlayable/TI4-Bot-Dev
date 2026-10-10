@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { TacticalMovementOverlay, emptyMovementPlan } from "./TacticalMovementOverlay.tsx";
-import { PendingChoiceDto, PlayerView } from "../protocol/types.ts";
+import { PendingChoiceDto, PlayerView, RecordedDecisionDto } from "../protocol/types.ts";
 import { deriveChoiceRendererModel } from "../presentation/choiceModel.ts";
+import { WorkspaceContext } from "./WorkspaceContext.tsx";
 
 const mockMoveChoice: PendingChoiceDto = {
   prompt: "movement",
@@ -61,6 +62,373 @@ const mockPlayer: PlayerView = {
 };
 
 describe("TacticalMovementOverlay Component", () => {
+  const recordedFleet: RecordedDecisionDto[] = [
+    {
+      player: "p1",
+      prompt: "movement",
+      context: { subtype: "movement_step" },
+      option_id: "move|24|0",
+      kind: "move",
+      payload: { origin: "24", unit: "cruiser" },
+    },
+    {
+      player: "p1",
+      prompt: "movement",
+      context: { subtype: "movement_step" },
+      option_id: "move|24|0",
+      kind: "move",
+      payload: { origin: "24", unit: "carrier", capacity: 4 },
+    },
+    {
+      player: "p1",
+      prompt: "load",
+      context: { subtype: "load_cargo" },
+      option_id: "load|1",
+      kind: "load",
+      payload: { system: "24", unit: "infantry", source: "home" },
+    },
+  ];
+  const editorBoard = {
+    systems: {
+      "24": {
+        system_id: "24",
+        command_tokens: [],
+        planets: {},
+        units: [
+          { owner: "p1", unit_type: "cruiser", damaged: false },
+          { owner: "p1", unit_type: "carrier", damaged: false },
+          { owner: "p1", unit_type: "infantry", planet: "home", damaged: false },
+        ],
+      },
+    },
+  };
+  it("restores independent ships and cargo, edits the first ship, and regenerates fresh movement/load answers", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const plan = { current: emptyMovementPlan() };
+    const view = (choice: PendingChoiceDto, editing = true) => (
+      <WorkspaceContext.Provider
+        value={{
+          active: true,
+          actionable: true,
+          draft: true,
+          refreshKey: "10:2",
+          chrome: null,
+          movementEdit: editing ? { revision: 1, decisions: recordedFleet } : undefined,
+        }}
+      >
+        <TacticalMovementOverlay
+          choice={choice}
+          board={editorBoard}
+          player={mockPlayer}
+          executionPlan={plan}
+          onSubmit={onSubmit}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(view(mockMoveChoice));
+    expect(screen.getByTestId("rally-count-24-cruiser")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("rally-dec-24-cruiser"));
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+    // Reconnect must not overwrite the player's uncommitted edit with the original script.
+    rerender(view({ ...mockMoveChoice }));
+    expect(screen.getByTestId("rally-count-24-cruiser")).toHaveTextContent("0");
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledExactlyOnceWith("move|24|1"));
+    rerender(
+      view(
+        {
+          ...mockMoveChoice,
+          nonce: "load-fresh",
+          context: { subtype: "load_cargo" },
+          options: [
+            {
+              id: "load|0",
+              kind: "load",
+              label: "Load infantry",
+              payload: { unit: "infantry", source: "home" },
+            },
+            { id: "done_loading", kind: "decline", label: "Done loading" },
+          ],
+        },
+        false,
+      ),
+    );
+    await waitFor(() => expect(onSubmit).toHaveBeenNthCalledWith(2, "load|0"));
+    rerender(view({ ...mockMoveChoice, nonce: "movement-fresh" }, false));
+    await waitFor(() => expect(onSubmit).toHaveBeenNthCalledWith(3, "done_moving"));
+    expect(onSubmit).toHaveBeenCalledTimes(3);
+  });
+  it("removes an unavailable recorded ship without clearing independent cargo or ships", () => {
+    render(
+      <WorkspaceContext.Provider
+        value={{
+          active: true,
+          actionable: true,
+          draft: true,
+          refreshKey: "10:2",
+          chrome: null,
+          movementEdit: { revision: 1, decisions: recordedFleet },
+        }}
+      >
+        <TacticalMovementOverlay
+          choice={{
+            ...mockMoveChoice,
+            options: mockMoveChoice.options.filter((option) => option.id !== "move|24|0"),
+          }}
+          board={editorBoard}
+          onSubmit={vi.fn()}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+    expect(screen.getByTestId("commit-moves-btn")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove unavailable selection" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+  });
+  it("retains cargo for reassignment when removing its carrier instead of silently discarding it", () => {
+    render(
+      <WorkspaceContext.Provider
+        value={{
+          active: true,
+          actionable: true,
+          draft: true,
+          refreshKey: "10:2",
+          chrome: null,
+          movementEdit: { revision: 1, decisions: recordedFleet },
+        }}
+      >
+        <TacticalMovementOverlay
+          choice={mockMoveChoice}
+          board={editorBoard}
+          onSubmit={vi.fn()}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>,
+    );
+    fireEvent.click(screen.getByTestId("rally-dec-24-carrier"));
+    expect(screen.getByTestId("rally-count-24-cruiser")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+    expect(screen.getByTestId("commit-moves-btn")).toBeDisabled();
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "1 loaded / 0 capacity",
+    );
+  });
+  it("keeps a recorded independent fighter move distinct from loading a fighter as cargo", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <WorkspaceContext.Provider
+        value={{
+          active: true,
+          actionable: true,
+          draft: true,
+          refreshKey: "10:2",
+          chrome: null,
+          movementEdit: {
+            revision: 1,
+            decisions: [{ ...recordedFleet[0], payload: { origin: "24", unit: "fighter" } }],
+          },
+        }}
+      >
+        <TacticalMovementOverlay
+          choice={mockMoveChoice}
+          board={{
+            systems: {
+              "24": {
+                ...editorBoard.systems["24"],
+                units: [
+                  ...editorBoard.systems["24"].units,
+                  { owner: "p1", unit_type: "fighter", damaged: false },
+                ],
+              },
+            },
+          }}
+          onSubmit={onSubmit}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>,
+    );
+    expect(screen.getByTestId("rally-count-24-fighter")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-fighter-space")).toHaveTextContent("0");
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledExactlyOnceWith("move|24|2"));
+  });
+  it("a delayed pre-edit answer cannot mutate the reopened editor's execution state", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    const plan = { current: emptyMovementPlan() };
+    const view = (editing: boolean) => (
+      <WorkspaceContext.Provider
+        value={{
+          active: true,
+          actionable: true,
+          draft: true,
+          refreshKey: editing ? "10:2" : "10:1",
+          chrome: null,
+          movementEdit: editing ? { revision: 1, decisions: recordedFleet } : undefined,
+        }}
+      >
+        <TacticalMovementOverlay
+          key={editing ? "edited" : "original"}
+          choice={mockMoveChoice}
+          board={editorBoard}
+          executionPlan={plan}
+          onSubmit={onSubmit}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(view(false));
+    fireEvent.click(screen.getByTestId("rally-inc-24-cruiser"));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("move|24|0");
+    plan.current = emptyMovementPlan();
+    rerender(view(true));
+    await act(async () => resolve());
+    expect(plan.current.currentShipOrigin).toBeNull();
+    expect(plan.current.active).toBe(false);
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+  it("retains ship and cargo staging when the same draft offer is re-enabled, but clears it on a new offer", () => {
+    const onSubmit = vi.fn();
+    const renderDraft = (actionable: boolean, nonce = mockMoveChoice.nonce) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey: "10:1", chrome: null }}
+      >
+        <TacticalMovementOverlay
+          choice={{ ...mockMoveChoice, nonce }}
+          board={{
+            systems: {
+              "24": {
+                system_id: "24",
+                command_tokens: [],
+                planets: {},
+                units: [
+                  { owner: "p1", unit_type: "carrier", damaged: false },
+                  { owner: "p1", unit_type: "infantry", planet: "home", damaged: false },
+                ],
+              },
+            },
+          }}
+          onSubmit={onSubmit}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(true));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    fireEvent.click(screen.getByTestId("rally-inc-cargo-24-infantry-home"));
+    rerender(renderDraft(false));
+    expect(screen.getByTestId("commit-moves-btn")).toHaveTextContent("Commit Moves (2)");
+    rerender(renderDraft(true));
+    expect(screen.getByTestId("rally-count-24-carrier")).toHaveTextContent("1");
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-home")).toHaveTextContent("1");
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(renderDraft(true, "next"));
+    expect(screen.getByTestId("commit-moves-btn")).toHaveTextContent("Done Moving");
+  });
+  it("preserves unsubmitted draft staging across refresh and reports unavailable units without substituting", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const renderDraft = (choice: PendingChoiceDto, actionable: boolean, refreshKey: string) => (
+      <WorkspaceContext.Provider
+        value={{ active: true, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <TacticalMovementOverlay choice={choice} onSubmit={onSubmit} isOpen onClose={vi.fn()} />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(mockMoveChoice, true, "10:1"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    rerender(renderDraft(mockMoveChoice, false, "11:2"));
+    rerender(
+      renderDraft(
+        {
+          ...mockMoveChoice,
+          nonce: "fresh",
+          options: mockMoveChoice.options.filter((o) => o.id !== "move|24|1"),
+        },
+        true,
+        "11:2",
+      ),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Clear staging" }));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledExactlyOnceWith("done_moving"));
+  });
+  it("finishes only the remaining ship after an in-flight answer is reconciled against a refreshed draft", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((done) => {
+            resolve = done;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const plan = { current: emptyMovementPlan() };
+    const renderDraft = (
+      choice: PendingChoiceDto,
+      actionable: boolean,
+      refreshKey: string,
+      active = true,
+    ) => (
+      <WorkspaceContext.Provider
+        value={{ active, actionable, draft: true, refreshKey, chrome: null }}
+      >
+        <TacticalMovementOverlay
+          choice={choice}
+          onSubmit={onSubmit}
+          executionPlan={plan}
+          isOpen={active}
+          onClose={vi.fn()}
+        />
+      </WorkspaceContext.Provider>
+    );
+    const { rerender } = render(renderDraft(mockMoveChoice, true, "10:1"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-cruiser"));
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("move|24|0");
+    rerender(renderDraft(mockMoveChoice, false, "11:2", false));
+    await act(async () => resolve());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    rerender(
+      renderDraft(
+        {
+          ...mockMoveChoice,
+          nonce: "fresh",
+          options: mockMoveChoice.options.filter((o) => o.id !== "move|24|0"),
+        },
+        true,
+        "11:2",
+        false,
+      ),
+    );
+    await waitFor(() => expect(onSubmit).toHaveBeenNthCalledWith(2, "move|24|1"));
+    expect(plan.current.remainingShips).toHaveLength(0);
+  });
   it("submits one atomic movement and cargo plan without done_loading when all candidates are loaded", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const onSubmitBatch = vi.fn().mockResolvedValue(undefined);
@@ -146,6 +514,73 @@ describe("TacticalMovementOverlay Component", () => {
     );
     expect(onSubmit).not.toHaveBeenCalled();
   });
+  it("plans done_loading when only the active system holds cargo the carrier could pick up", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onSubmitBatch = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TacticalMovementOverlay
+        choice={mockMoveChoice}
+        board={
+          {
+            systems: {
+              "24": {
+                system_id: "24",
+                command_tokens: [],
+                planets: {},
+                units: [{ owner: "p1", unit_type: "carrier", damaged: false }],
+              },
+              "18": {
+                system_id: "18",
+                command_tokens: [],
+                planets: {},
+                units: [{ owner: "p1", unit_type: "infantry", planet: "mecatol_rex", damaged: false }],
+              },
+            },
+          } as any
+        }
+        activeSystemId="18"
+        player={mockPlayer}
+        onSubmit={onSubmit}
+        onSubmitBatch={onSubmitBatch}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    await waitFor(() =>
+      expect(onSubmitBatch).toHaveBeenCalledExactlyOnceWith("18", [
+        { kind: "move", origin: "24", unit: "carrier", damaged: false },
+        { kind: "done_loading" },
+        { kind: "done_moving" },
+      ]),
+    );
+  });
+  it("clears the staged plan after the server reports the workflow was interrupted", async () => {
+    const onSubmitBatch = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("Batch rejected: workflow interrupted: the engine moved on to your load_cargo decision"),
+      );
+    render(
+      <TacticalMovementOverlay
+        choice={mockMoveChoice}
+        activeSystemId="18"
+        player={mockPlayer}
+        onSubmit={vi.fn()}
+        onSubmitBatch={onSubmitBatch}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("rally-inc-24-cruiser"));
+    expect(screen.getByTestId("rally-count-24-cruiser")).toHaveTextContent("1");
+    fireEvent.click(screen.getByTestId("commit-moves-btn"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("staged moves were cleared");
+    expect(screen.getByTestId("rally-count-24-cruiser")).toHaveTextContent("0");
+    expect(onSubmitBatch).toHaveBeenCalledTimes(1);
+  });
+
   it("continues a staged ship and planet cargo across a missing choice and fresh engine decisions", async () => {
     const plan = { current: emptyMovementPlan() };
     const cargoChoice: PendingChoiceDto = {
@@ -342,7 +777,9 @@ describe("TacticalMovementOverlay Component", () => {
     expect(screen.getByTestId("rally-row-24-fighter")).toBeInTheDocument();
 
     expect(screen.getByTestId("fleet-supply-gauge")).toHaveTextContent("0 / 3 Ships");
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 0 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
   });
 
   it("updates fleet supply and cargo capacity when staging ships", () => {
@@ -362,13 +799,17 @@ describe("TacticalMovementOverlay Component", () => {
     fireEvent.click(carrierInc);
 
     expect(screen.getByTestId("fleet-supply-gauge")).toHaveTextContent("1 / 3 Ships");
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 4 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 4 capacity",
+    );
 
     // Stage 1 Fighter (+1 cargo)
     const fighterInc = screen.getByTestId("rally-inc-24-fighter");
     fireEvent.click(fighterInc);
 
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("1 / 4 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "1 loaded / 4 capacity",
+    );
     expect(screen.getByTestId("commit-moves-btn")).toHaveTextContent("Commit Moves (2)");
   });
 
@@ -390,6 +831,27 @@ describe("TacticalMovementOverlay Component", () => {
       fireEvent.click(finishBtn);
     });
     expect(onSubmit).toHaveBeenCalledWith("done_moving");
+  });
+
+  it("disables finish movement while moves are staged so they are not discarded", () => {
+    render(
+      <TacticalMovementOverlay
+        choice={mockMoveChoice}
+        activeSystemId="18"
+        player={mockPlayer}
+        onSubmit={vi.fn()}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const finishBtn = screen.getByTestId("finish-movement-btn");
+    expect(finishBtn).toBeEnabled();
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    expect(finishBtn).toBeDisabled();
+    expect(finishBtn).toHaveAttribute("title", "Commit or reset the staged moves before finishing");
+    fireEvent.click(screen.getByText("Reset selection"));
+    expect(finishBtn).toBeEnabled();
   });
 
   it("submits staged moves sequentially using semantic intent matching", async () => {
@@ -613,7 +1075,9 @@ describe("TacticalMovementOverlay Component", () => {
 
     // Carrier is staged
     fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 4 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 4 capacity",
+    );
 
     // Carryable cargo section is visible
     expect(screen.getByText("Carryable Cargo")).toBeInTheDocument();
@@ -623,7 +1087,9 @@ describe("TacticalMovementOverlay Component", () => {
     fireEvent.click(infInc);
     fireEvent.click(infInc);
 
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("2 / 4 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "2 loaded / 4 capacity",
+    );
 
     // Commit moves
     const commitBtn = screen.getByTestId("commit-moves-btn");
@@ -702,47 +1168,54 @@ describe("TacticalMovementOverlay Component", () => {
     expect(screen.getByTestId("fleet-supply-gauge")).toHaveTextContent("0 / 3 Ships");
 
     // Origin 24 and 12 cargo gauges start at 0 / 0
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 0 Loaded");
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent("0 / 0 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
+    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
 
     // Stage 1 Carrier in 24 (+1 fleet, +4 capacity in 24)
     fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
     expect(screen.getByTestId("fleet-supply-gauge")).toHaveTextContent("1 / 3 Ships");
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 4 Loaded");
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent("0 / 0 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 4 capacity",
+    );
+    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
 
     // Stage 1 Cruiser in 12 (+1 fleet, 0 capacity in 12)
     fireEvent.click(screen.getByTestId("rally-inc-12-cruiser"));
     expect(screen.getByTestId("fleet-supply-gauge")).toHaveTextContent("2 / 3 Ships");
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent("0 / 0 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
 
-    // Stage 1 Infantry in 12: 12 has 0 capacity, so it exceeds origin capacity!
-    fireEvent.click(screen.getByTestId("rally-inc-cargo-12-infantry-mecatol"));
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent("1 / 0 Loaded");
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveAttribute("data-alert", "true");
-
-    // Commit Moves must be DISABLED even though global capacity is 4 and total cargo is 1!
+    // Infantry in 12 cannot be staged: 12 has no transport even though 24 has 4 free capacity.
+    const mecatolInfantry = screen.getByTestId("rally-inc-cargo-12-infantry-mecatol");
+    expect(mecatolInfantry).toBeDisabled();
+    expect(mecatolInfantry).toHaveAttribute(
+      "title",
+      "No free transport capacity from this system: stage a carrier first",
+    );
+    fireEvent.click(mecatolInfantry);
+    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent(
+      "0 loaded / 0 capacity",
+    );
     const commitBtn = screen.getByTestId("commit-moves-btn");
-    expect(commitBtn).toBeDisabled();
-    expect(
-      screen.getByText(
-        /Cannot commit moves: cargo exceeds transport capacity in one or more origin systems/i,
-      ),
-    ).toBeInTheDocument();
-
-    // Unstage the infantry from 12
-    fireEvent.click(screen.getByTestId("rally-dec-cargo-12-infantry-mecatol"));
-    expect(screen.getByTestId("cargo-capacity-gauge-12")).toHaveTextContent("0 / 0 Loaded");
     expect(commitBtn).toBeEnabled();
 
     // Stage 2 Infantry in 24: fits in 24's capacity (2/4)
     fireEvent.click(screen.getByTestId("rally-inc-cargo-24-infantry-jord"));
     fireEvent.click(screen.getByTestId("rally-inc-cargo-24-infantry-jord"));
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("2 / 4 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "2 loaded / 4 capacity",
+    );
     expect(commitBtn).toBeEnabled();
   });
 
-  it("permits soft staging past origin capacity with alert and blocks commit until resolved", () => {
+  it("caps cargo at origin capacity and blocks commit if transport is removed after loading", () => {
     const choiceWithCarrier: PendingChoiceDto = {
       prompt: "movement",
       actor: "p1",
@@ -791,30 +1264,88 @@ describe("TacticalMovementOverlay Component", () => {
 
     // Stage carrier (capacity = 2)
     fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("0 / 2 Loaded");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "0 loaded / 2 capacity",
+    );
 
-    // Soft limit allows staging 3 infantry even though capacity is 2
+    // Cargo stops at the carrier's capacity of 2
     const infInc = screen.getByTestId("rally-inc-cargo-24-infantry-jord");
     fireEvent.click(infInc);
     fireEvent.click(infInc);
+    expect(infInc).toBeDisabled();
     fireEvent.click(infInc);
-
-    expect(screen.getByTestId("rally-count-cargo-24-infantry-jord")).toHaveTextContent("3");
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("3 / 2 Loaded");
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveAttribute("data-alert", "true");
-
-    // Advisory message shown
-    expect(
-      screen.getByText(/Exceeds origin cargo capacity \(3\/2\) — remove excess cargo/i),
-    ).toBeInTheDocument();
-
-    // Commit button is disabled
+    expect(screen.getByTestId("rally-count-cargo-24-infantry-jord")).toHaveTextContent("2");
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "2 loaded / 2 capacity",
+    );
     const commitBtn = screen.getByTestId("commit-moves-btn");
+    expect(commitBtn).toBeEnabled();
+
+    // Unstaging the carrier strands the loaded cargo: alert and block commit
+    fireEvent.click(screen.getByTestId("rally-dec-24-carrier"));
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent(
+      "2 loaded / 0 capacity",
+    );
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveAttribute("data-alert", "true");
+    expect(
+      screen.getByText(/Exceeds origin cargo capacity \(2\/0\) — remove excess cargo/i),
+    ).toBeInTheDocument();
     expect(commitBtn).toBeDisabled();
 
-    // Decrement 1 infantry -> 2 / 2 Loaded
-    fireEvent.click(screen.getByTestId("rally-dec-cargo-24-infantry-jord"));
-    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveTextContent("2 / 2 Loaded");
+    // Restaging the carrier resolves it
+    fireEvent.click(screen.getByTestId("rally-inc-24-carrier"));
+    expect(screen.getByTestId("cargo-capacity-gauge-24")).toHaveAttribute("data-alert", "false");
     expect(commitBtn).toBeEnabled();
+  });
+
+  it("lets at most one Gravity Drive ship be staged across all groups", () => {
+    const gdChoice: PendingChoiceDto = {
+      prompt: "movement",
+      actor: "p1",
+      nonce: "nonce_gd",
+      context: { subtype: "movement_step", target: { System: "18" } },
+      options: [
+        {
+          id: "move_gd|16|0",
+          label: "Destroyer",
+          kind: "move",
+          payload: { origin: "16", unit: "destroyer", gravity_drive: true },
+        },
+        {
+          id: "move_gd|16|1",
+          label: "Destroyer",
+          kind: "move",
+          payload: { origin: "16", unit: "destroyer", gravity_drive: true },
+        },
+        {
+          id: "move_gd|17|0",
+          label: "Cruiser",
+          kind: "move",
+          payload: { origin: "17", unit: "cruiser", gravity_drive: true },
+        },
+        { id: "done_moving", label: "Finish Movement", kind: "decline" },
+      ],
+    };
+    render(
+      <TacticalMovementOverlay
+        choice={gdChoice}
+        activeSystemId="18"
+        player={mockPlayer}
+        onSubmit={vi.fn()}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+    const destroyer = screen.getByTestId("rally-inc-16-destroyer");
+    const cruiser = screen.getByTestId("rally-inc-17-cruiser");
+    expect(destroyer).toBeEnabled();
+    expect(cruiser).toBeEnabled();
+    fireEvent.click(destroyer);
+    expect(screen.getByTestId("rally-count-16-destroyer")).toHaveTextContent("1");
+    // A second destroyer and a ship from another group are both refused.
+    expect(destroyer).toBeDisabled();
+    expect(cruiser).toBeDisabled();
+    fireEvent.click(cruiser);
+    expect(screen.getByTestId("rally-count-17-cruiser")).toHaveTextContent("0");
   });
 });

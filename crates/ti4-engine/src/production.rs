@@ -11,7 +11,7 @@ use ti4_content::ContentStore;
 use ti4_content::galaxy::Galaxy;
 use ti4_content::units::{UnitType, catalogue};
 use ti4_model::content_types::{ContentType, SourceSet};
-use ti4_model::id::{PlanetId, PlayerId, SystemId, TechnologyId, UnitTypeId};
+use ti4_model::id::{PlanetId, PlayerId, SystemId, UnitTypeId};
 use ti4_model::state::GameState;
 use ti4_model::units::Unit;
 
@@ -79,6 +79,20 @@ pub const PRODUCE_KIND: &str = "produce";
 pub const PLACE_KIND: &str = "place";
 /// The id standing for a system's space area.
 pub const SPACE: &str = "space";
+
+/// Separates the system from the spot in a placement outside the producing system
+/// (`"<system>@<planet or space>"`), offered by `EconomyHooks::production_destinations`.
+pub const REMOTE_SEPARATOR: char = '@';
+
+/// A placement spot split into the system it is in and the spot there: `(system, spot)` for a
+/// remote spot, `(producing, spot)` otherwise.
+#[must_use]
+pub fn placement_target<'s>(producing: &SystemId, spot: &'s str) -> (SystemId, &'s str) {
+    match spot.split_once(REMOTE_SEPARATOR) {
+        Some((system, at)) => (SystemId::new(system), at),
+        None => (producing.clone(), spot),
+    }
+}
 
 /// What a placement leaves of the two limits it can spend (LRR 37, 16).
 ///
@@ -182,6 +196,63 @@ pub fn planet_value_now(
         + attachment_bonus(state, content, planet, kind)
 }
 
+/// The faction mark holding the [`GameState::production_seq`] a value swap was declared in.
+const SWAP_SEQ_MARK: &str = "production:value_swap_seq";
+
+/// Record that, for the current use of PRODUCTION, `planet`'s resource and influence values are
+/// swapped (Winnu Hegemonic Trade Policy). Replaces any earlier swap. The swap is scoped to the
+/// use it was declared in: it is read only while [`GameState::production_seq`] is unchanged, and
+/// it is cleared when the production window ends ([`end_value_swap`]).
+///
+/// Hegemonic Trade Policy: "Exhaust this card when 1 or more of your units use PRODUCTION; swap
+/// the resource and influence values of 1 planet you control during that use of Production."
+/// Call it from the module's `PRODUCTION_USED` window (after `production_seq` was advanced for
+/// the use, before the window's `refresh`), having exhausted the card and chosen the planet. The
+/// module's `planet_spend_value` hook then returns [`swapped_value`] for that planet.
+pub fn begin_value_swap(state: &mut GameState, planet: &PlanetId) {
+    state.production_value_swapped_planet = Some(planet.clone());
+    state
+        .faction_marks
+        .insert(SWAP_SEQ_MARK.to_owned(), state.production_seq.to_string());
+}
+
+/// End the current value swap, if any (the use of PRODUCTION is over).
+pub fn end_value_swap(state: &mut GameState) {
+    state.production_value_swapped_planet = None;
+    state.faction_marks.remove(SWAP_SEQ_MARK);
+}
+
+/// The planet whose values are swapped in the use of PRODUCTION now in progress, if any.
+#[must_use]
+pub fn swapped_planet(state: &GameState) -> Option<&PlanetId> {
+    let planet = state.production_value_swapped_planet.as_ref()?;
+    let declared = state.faction_marks.get(SWAP_SEQ_MARK)?;
+    (*declared == state.production_seq.to_string()).then_some(planet)
+}
+
+/// What `planet` reads as `kind` for this player right now if it is the planet whose values are
+/// swapped: the *other* kind's value (attachments and laws included, as [`planet_value_now`]). `None`
+/// when `planet` is not the swapped planet, so a module's `planet_spend_value` hook can write
+/// `swapped_value(..).unwrap_or(value)`. It does not check who controls the planet or holds the
+/// card: the module that began the swap does.
+#[must_use]
+pub fn swapped_value(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    planet: &PlanetId,
+    kind: Spend,
+) -> Option<i64> {
+    if swapped_planet(state) != Some(planet) {
+        return None;
+    }
+    let other = match kind {
+        Spend::Resources => Spend::Influence,
+        Spend::Influence => Spend::Resources,
+    };
+    Some(planet_value_now(state, content, sources, planet, other))
+}
+
 /// What the attachments on a planet add to it (LRR 35.8): each attachment record's
 /// `resourcesModifier` / `influenceModifier`, summed.
 ///
@@ -226,14 +297,9 @@ pub fn spendable_planets(state: &GameState, player: &PlayerId) -> Vec<PlanetId> 
 /// every step of the payment loop.
 #[must_use]
 pub fn trade_good_worth(state: &GameState, player: &PlayerId) -> i64 {
-    if state
-        .player(player)
-        .is_some_and(|seat| seat.technologies.contains(&TechnologyId::new("mc")))
-    {
-        2
-    } else {
-        1
-    }
+    // Mentak `mc` lives in `factions/mentak.rs` on the hook below; nothing is hard-coded here.
+    let base = 1;
+    crate::factions::hooks_economy::trade_good_worth(state, player, base)
 }
 
 /// War Machine: the faces of budget this step gains, per copy played in this activation.
@@ -278,7 +344,8 @@ pub fn available(
     let from_triad = crate::relics::triad_value(state, player).unwrap_or(0);
     let goods = state.player(player).map_or(0, |seat| {
         i64::from(seat.trade_goods) * trade_good_worth(state, player)
-    });
+    }) + crate::factions::keleres::spendable_commodities(state, player)
+        * trade_good_worth(state, player);
     // War Machine's "reduce the combined cost of the produced units by 1" is spent from the
     // same budget as its "+4 to the total PRODUCTION value", so it joins the faces here as
     // well. Only resources: the card touches production, not influence bills such as the
@@ -311,11 +378,24 @@ fn payment_faces(
     // Xxekir Grom pays a planet's resources and influence together, as both. Folded into the
     // ordinary face rather than added as an alternate: the combined value *is* what the planet is
     // worth to this player, for either kind of bill.
+    //
+    // `planet_spend_value` is the faction hook for a value that changes what the planet pays for
+    // this player (Winnu Hegemonic Trade Policy swaps resources and influence). Applied per face,
+    // to the value that face reads, so the swap reaches the alternate face below as well.
+    let face = |kind: Spend| {
+        crate::factions::hooks_economy::planet_spend_value(
+            state,
+            content,
+            player,
+            planet,
+            kind,
+            planet_value_now(state, content, sources, planet, kind),
+        )
+    };
     let ordinary = if crate::leaders::combines_planet_values(state, player) {
-        planet_value_now(state, content, sources, planet, Spend::Resources)
-            + planet_value_now(state, content, sources, planet, Spend::Influence)
+        face(Spend::Resources) + face(Spend::Influence)
     } else {
-        planet_value_now(state, content, sources, planet, kind)
+        face(kind)
     };
     let mut faces = if ordinary > 0 {
         vec![(kind, ordinary)]
@@ -340,7 +420,7 @@ fn payment_faces(
         Spend::Resources => Spend::Influence,
         Spend::Influence => Spend::Resources,
     };
-    let alternate = planet_value_now(state, content, sources, planet, alternate_kind);
+    let alternate = face(alternate_kind);
     if alternate > 0 && alternate != ordinary {
         faces.push((alternate_kind, alternate));
     }
@@ -388,9 +468,11 @@ fn payment_options(
         .player(player)
         .map_or(0, |seat| i64::from(seat.trade_goods));
     // Goods capacity under the guard uses the `mc`-multiplied worth (engine/production.py pay()).
+    // Xander Alexin Victori III (Keleres agent): commodities the player may spend as trade goods.
+    let commodities = crate::factions::keleres::spendable_commodities(state, player);
     let goods_capacity = state.player(player).map_or(0, |seat| {
         i64::from(seat.trade_goods) * trade_good_worth(state, player)
-    });
+    }) + commodities * trade_good_worth(state, player);
     let mut options: Vec<ChoiceOption> = Vec::new();
     for planet in &spendable {
         // What would remain after this face pays: the goods and every other planet's best face.
@@ -453,7 +535,42 @@ fn payment_options(
                 ])),
         );
     }
+    if commodities > 0 {
+        let worth = trade_good_worth(state, player);
+        options.push(
+            ChoiceOption::labelled("commodity", PAY_KIND, "spend a commodity as a trade good")
+                .with("worth", worth)
+                .with("owed", cost - paid)
+                .with("kind", spend_name(kind))
+                .previewed(Preview::certain(vec![Delta::new(
+                    spend_quantity(kind),
+                    pool_before,
+                    pool_before - worth,
+                )])),
+        );
+    }
     options
+}
+
+/// The ready planets that pay `kind` in their own currency, each with the worth of that face,
+/// exactly as the payment loop would list them for an unbounded bill. Cross-source faces
+/// (Archon's Gift) are left out.
+pub(crate) fn native_payment_planets(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    kind: Spend,
+) -> Vec<(PlanetId, i64)> {
+    spendable_planets(state, player)
+        .into_iter()
+        .filter_map(|planet| {
+            payment_faces(state, content, sources, player, &planet, kind)
+                .into_iter()
+                .find(|(source, _)| *source == kind)
+                .map(|(_, worth)| (planet, worth))
+        })
+        .collect()
 }
 
 /// Apply the chosen payment option; returns its value against the bill.
@@ -479,6 +596,16 @@ fn apply_payment_option(
         let worth = trade_good_worth(state, player);
         let seat = state.player_mut(player)?;
         seat.trade_goods -= 1;
+        return Some(worth);
+    }
+    if answer.id == "commodity" {
+        // Keleres agent: a commodity spent as if it were a trade good.
+        if crate::factions::keleres::spendable_commodities(state, player) <= 0 {
+            return None;
+        }
+        let worth = trade_good_worth(state, player);
+        let seat = state.player_mut(player)?;
+        seat.commodities -= 1;
         return Some(worth);
     }
     let rest = answer.id.strip_prefix("exhaust|")?;
@@ -577,7 +704,7 @@ pub(crate) fn pay_seeing_with_credit(
     kind: Spend,
     credit: &mut i64,
 ) -> Result<bool, IllegalChoice> {
-    pay_with_observation_credit(
+    pay_offering_agent(
         state, content, sources, table, player, cost, kind, credit, galaxy,
     )
 }
@@ -597,7 +724,7 @@ fn pay_with_observation(
     galaxy: Option<&Galaxy>,
 ) -> Result<bool, IllegalChoice> {
     let mut credit = 0;
-    pay_with_observation_credit(
+    pay_offering_agent(
         state,
         content,
         sources,
@@ -608,6 +735,43 @@ fn pay_with_observation(
         &mut credit,
         galaxy,
     )
+}
+
+/// The shared payment window every `pay*` variant goes through.
+///
+/// Xander Alexin Victori III (Keleres agent) is offered once here, to the holder, when the payer's
+/// commodities would make the bill payable; its permission ends with the payment. A payment made
+/// inside a larger window the agent was already used for (Leadership's purchase loop) does not offer
+/// it again.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "payment needs the rules position, observation, and transaction-local credit"
+)]
+fn pay_offering_agent(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    table: &mut Table,
+    player: &PlayerId,
+    cost: i64,
+    kind: Spend,
+    credit: &mut i64,
+    galaxy: Option<&Galaxy>,
+) -> Result<bool, IllegalChoice> {
+    let owed = cost - (*credit).min(cost.max(0));
+    let opened = owed > 0
+        && crate::factions::keleres::with_agent_granted(state, player, |granted| {
+            available(granted, content, sources, player, kind) >= owed
+        })
+        .unwrap_or(false)
+        && crate::factions::keleres::offer_agent(state, content, sources, galaxy, table, player)?;
+    let paid = pay_with_observation_credit(
+        state, content, sources, table, player, cost, kind, credit, galaxy,
+    );
+    if opened {
+        crate::factions::keleres::close_agent_window(state, player);
+    }
+    paid
 }
 
 #[allow(
@@ -645,9 +809,7 @@ fn pay_with_observation_credit(
         }
 
         // The oracle takes a lone option without asking; only real choices reach a decider.
-        let answer = if options.len() == 1 {
-            options[0].clone()
-        } else {
+        let answer = {
             // Oracle wording: each iteration names the remaining debt and its kind
             // (`pay {cost - paid} more {kind}` in engine/production.py).
             let choice = Choice::new(
@@ -662,7 +824,11 @@ fn pay_with_observation_credit(
                 cost,
                 used_credit + paid,
             ));
-            table.ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))?
+            if let Some(only) = table.auto_resolve(&choice, "it was the only way left to pay") {
+                only
+            } else {
+                table.ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))?
+            }
         };
 
         match apply_payment_option(state, content, sources, player, kind, &answer) {
@@ -697,7 +863,14 @@ fn sling_relay_candidates(
             })
             .map(|(planet, _)| planet)
             .collect();
-        let has_dock = !dock_planets.is_empty();
+        // A space dock in the space area (Saar's Floating Factory) is a space dock too.
+        let has_dock = !dock_planets.is_empty()
+            || board.units.iter().any(|unit| {
+                unit.owner == *player
+                    && types.get(unit.type_id.as_str()).is_some_and(|kind| {
+                        kind.base_type() == "spacedock" && kind.is_space_only_structure()
+                    })
+            });
         // Coexistence rule 4: "A coexisting structure is always blockaded, regardless of what
         // ships, if any, are in the system." A dock the player built while coexisting produces
         // nothing even in a system they otherwise hold uncontested.
@@ -986,6 +1159,9 @@ pub fn integrated_economy(
                     .push(unit);
             }
         }
+        if made > 0 {
+            crate::supply::stage_naaz_mech_placed(state, player, system, &UnitTypeId::new(id));
+        }
         built |= made > 0;
         budget -= cost;
     }
@@ -1118,7 +1294,7 @@ pub fn produce_one(
             .unwrap_or(SPACE)
             .clone_into(&mut where_to);
     }
-    let unit = Unit::new(UnitTypeId::new(id), player.clone());
+    let unit = Unit::new(UnitTypeId::new(&id), player.clone());
     if where_to == SPACE {
         state.system_mut(system).units.push(unit);
     } else {
@@ -1129,6 +1305,7 @@ pub fn produce_one(
             .or_default()
             .push(unit);
     }
+    crate::supply::stage_naaz_mech_placed(state, player, system, &UnitTypeId::new(id));
     crate::fleet::enforce_seeing(state, content, sources, galaxy, table, player, system)?;
     Ok(true)
 }
@@ -1236,6 +1413,112 @@ pub fn producers(
     found
 }
 
+/// The player's mobile production structures in `system`: space-only structures with PRODUCTION
+/// (`isSpaceOnly` in the content), sitting in the space area. Saar's Floating Factory.
+///
+/// Already included in [`producers`] (with no planet, so its printed flat value applies) and
+/// therefore in [`capacity`] and every production window; this names them for the callers that
+/// treat them specially (blockade, movement). Empty unless a faction content flags a unit so.
+///
+/// Floating Factory I: "This unit is placed in the space area instead of on a planet. This unit
+/// can move and retreat as if it were a ship. If this unit is blockaded, it is destroyed."
+#[must_use]
+pub fn mobile_docks(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    system: &SystemId,
+) -> Vec<Unit> {
+    let types = catalogue(content, sources);
+    state
+        .board
+        .get(system)
+        .map(|board| {
+            board
+                .units
+                .iter()
+                .filter(|unit| &unit.owner == player)
+                .filter(|unit| {
+                    types
+                        .get(unit.type_id.as_str())
+                        .is_some_and(|kind| kind.is_space_only_structure() && kind.has_production())
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Destroy every mobile dock in `system` that is blockaded: an enemy ship is present and the
+/// dock's owner has no ship there. Returns the docks destroyed. Their plastic goes back to the
+/// owner's reinforcements (the board no longer holds it), and nothing else changes; the caller
+/// announces any destruction event it wants.
+///
+/// Floating Factory I: "If this unit is blockaded, it is destroyed." Blockade here is the
+/// space-dock blockade of the LRR (enemy ships and none of your own); that is a different test
+/// from the 68.10 production ban above, which applies whatever ships the producer has. The
+/// caller decides *when* to look (a moved-into system, the end of a combat); the Floating Factory
+/// does not carry a printed timing, so this is a rules question recorded in the evidence file.
+/// Neutral units' ships count as enemy ships.
+pub fn destroy_blockaded_mobile_docks(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    system: &SystemId,
+) -> Vec<Unit> {
+    let types = catalogue(content, sources);
+    let Some(board) = state.board.get(system) else {
+        return Vec::new();
+    };
+    let is_ship = |unit: &Unit| {
+        types
+            .get(unit.type_id.as_str())
+            .is_some_and(UnitType::is_ship)
+    };
+    let owners: std::collections::BTreeSet<PlayerId> = board
+        .units
+        .iter()
+        .filter(|unit| {
+            types
+                .get(unit.type_id.as_str())
+                .is_some_and(|kind| kind.is_space_only_structure() && kind.has_production())
+        })
+        .map(|unit| unit.owner.clone())
+        .collect();
+    let doomed: Vec<Unit> = owners
+        .into_iter()
+        .filter(|owner| {
+            let enemy_ship = board
+                .units
+                .iter()
+                .any(|unit| &unit.owner != owner && is_ship(unit));
+            let own_ship = board
+                .units
+                .iter()
+                .any(|unit| &unit.owner == owner && is_ship(unit));
+            enemy_ship && !own_ship
+        })
+        .flat_map(|owner| {
+            board
+                .units
+                .iter()
+                .filter(|unit| {
+                    unit.owner == owner
+                        && types.get(unit.type_id.as_str()).is_some_and(|kind| {
+                            kind.is_space_only_structure() && kind.has_production()
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if !doomed.is_empty() {
+        state.destroy_units(system, &doomed);
+    }
+    doomed
+}
+
 /// 68.1a: the production values of all the player's producing units here, combined.
 ///
 /// A space dock's value depends on the resources of the planet it sits on, which is why the
@@ -1255,12 +1538,113 @@ pub fn capacity(
         .filter_map(|(unit, planet)| {
             let kind = types.get(unit.type_id.as_str())?;
             let resources = planet.map_or(0, |planet| {
-                planet_value_now(state, content, sources, &planet, Spend::Resources)
+                // The hook sees the planet as this player's units read it: Hegemonic Trade
+                // Policy's swap turns a PRODUCTION-by-resources dock into PRODUCTION-by-influence.
+                crate::factions::hooks_economy::planet_spend_value(
+                    state,
+                    content,
+                    player,
+                    &planet,
+                    Spend::Resources,
+                    planet_value_now(state, content, sources, &planet, Spend::Resources),
+                )
             });
             Some(kind.production(resources))
         })
         .sum::<i64>()
         + war_machine_bonus(state, player)
+        + module_production(state, content, sources, player, system)
+}
+
+/// PRODUCTION modules grant `system` as if from a unit (`EconomyHooks::extra_production` for the
+/// space area, `extra_production_planet` for each planet holding any of the player's units there).
+/// Zero with no such hook. Muaat Magmus Reactor, Creuss Particle Synthesis, Argent Hololattice.
+#[must_use]
+pub fn module_production(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    system: &SystemId,
+) -> i64 {
+    crate::factions::hooks_economy::extra_production(state, content, sources, player, system).max(0)
+        + module_planet_producers(state, content, sources, player, system)
+            .into_iter()
+            .map(|(_, value)| value)
+            .sum::<i64>()
+}
+
+/// The planets of `system` a module makes a producer for `player`, with each one's PRODUCTION.
+fn module_planet_producers(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    system: &SystemId,
+) -> Vec<(PlanetId, i64)> {
+    // Planets holding units, and planets the module may value without any (Keleres, Custodian's
+    // Favour: Mecatol Rex gains PRODUCTION 3 while its controller holds Custodia Vigilia, units or
+    // not). Each hook decides for itself and answers zero for a planet that is not its own.
+    let here = state.system_state(system);
+    let planets: std::collections::BTreeSet<PlanetId> = here
+        .planet_units
+        .keys()
+        .chain(here.planet_control.keys())
+        .cloned()
+        .collect();
+    planets
+        .into_iter()
+        .filter_map(|planet| {
+            let value = crate::factions::hooks_economy::extra_production_planet(
+                state, content, sources, player, system, &planet,
+            );
+            (value > 0).then_some((planet, value))
+        })
+        .collect()
+}
+
+/// The PRODUCTION value of the player's producers in `system` that a faction module bars from
+/// producing `kind` (`cannot_produce`); zero with no such hook. Read the same way as [`capacity`]
+/// (planet resources through `planet_spend_value`), without War Machine.
+#[must_use]
+pub fn barred_capacity(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    system: &SystemId,
+    kind: &UnitType<'_>,
+) -> i64 {
+    if !crate::factions::hooks_economy::has_cannot_produce() {
+        return 0;
+    }
+    let types = catalogue(content, sources);
+    producers(state, content, sources, player, system)
+        .into_iter()
+        .filter_map(|(unit, planet)| {
+            let producer = types.get(unit.type_id.as_str())?;
+            if !crate::factions::hooks_economy::cannot_produce(
+                state,
+                content,
+                player,
+                kind.base_type(),
+                producer.base_type(),
+            ) {
+                return None;
+            }
+            let resources = planet.map_or(0, |planet| {
+                crate::factions::hooks_economy::planet_spend_value(
+                    state,
+                    content,
+                    player,
+                    &planet,
+                    Spend::Resources,
+                    planet_value_now(state, content, sources, &planet, Spend::Resources),
+                )
+            });
+            Some(producer.production(resources))
+        })
+        .sum()
 }
 
 /// How many of this structure the player already has on that planet.
@@ -1346,10 +1730,34 @@ pub fn placements(
     if !crate::entropic_scars::abilities_usable(content, sources, system, None) {
         return Vec::new();
     }
-    let made = producers(state, content, sources, player, system);
+    // A module may bar a producer from making this unit (Arborec Mitosis: space docks cannot
+    // produce infantry). Filtered before anything reads the producers, so a planet whose only
+    // producer is barred is not a spot at all.
+    let types = catalogue(content, sources);
+    let made: Vec<(Unit, Option<PlanetId>)> = producers(state, content, sources, player, system)
+        .into_iter()
+        .filter(|(unit, _)| {
+            let producer = types
+                .get(unit.type_id.as_str())
+                .map_or(unit.type_id.as_str(), |found| found.base_type());
+            !crate::factions::hooks_economy::cannot_produce(
+                state,
+                content,
+                player,
+                kind.base_type(),
+                producer,
+            )
+        })
+        .collect();
+    let module_planets: Vec<PlanetId> =
+        module_planet_producers(state, content, sources, player, system)
+            .into_iter()
+            .map(|(planet, _)| planet)
+            .collect();
     let mut spots: Vec<String> = made
         .iter()
         .filter_map(|(_, planet)| planet.clone())
+        .chain(module_planets)
         // Holy Planet of Ixth: units on the elected planet cannot use PRODUCTION.
         // Demilitarized Zone: nothing may be produced on the elected planet.
         .filter(|planet| {
@@ -1365,10 +1773,14 @@ pub fn placements(
         })
         .map(|planet| planet.to_string())
         .collect(); // 68.3, 79.2
-    if made.iter().any(|(_, planet)| planet.is_none()) {
+    if made.iter().any(|(_, planet)| planet.is_none())
+        || crate::factions::hooks_economy::extra_production(state, content, sources, player, system)
+            > 0
+    {
         spots.push(SPACE.to_owned()); // 68.4
     }
-    spots.dedup();
+    let mut seen = std::collections::BTreeSet::new();
+    spots.retain(|spot| seen.insert(spot.clone()));
     spots
 }
 
@@ -1406,15 +1818,31 @@ pub fn buildable_for(
             .as_ref()
             .map(|techs| techs.iter().map(|tech| tech.as_str().to_owned()).collect())
             .unwrap_or_default();
-        if let Some(better) =
+        let chosen = if let Some(better) =
             ti4_content::units::unlocked_upgrade(content, sources, base, &faction, &held)
         {
-            out.push(better.id().to_owned());
+            Some(better.id().to_owned())
         } else if let Some(own) = ti4_content::units::faction_unit(content, &faction, base, sources)
         {
-            out.push(own.id().to_owned());
+            Some(own.id().to_owned())
         } else if !matches!(base, "mech" | "flagship") {
-            out.push(base.to_owned());
+            Some(base.to_owned())
+        } else {
+            None
+        };
+        // A module may name another form for this base type (Mentak Corsair's acquisition).
+        let overridden = crate::factions::hooks_strategy::unit_form_override(
+            state,
+            content,
+            sources,
+            player,
+            base,
+            chosen.as_deref().unwrap_or_default(),
+        );
+        if let Some(form) = overridden {
+            out.push(form.as_str().to_owned());
+        } else if let Some(id) = chosen {
+            out.push(id);
         }
     }
     out
@@ -1470,6 +1898,8 @@ pub struct ProductionWindow {
     /// Production limit that capacity ships have opened for small units this use (Sol's Bellum
     /// Gloriosum). Spent by fighters and ground forces, and never below zero.
     free_capacity: i64,
+    /// Cabal commander: at most two fighters or infantry avoid this use's production limit.
+    small_unit_exemptions: i64,
     /// Resource value paid but not yet consumed, held across the unit selections of *this* use.
     ///
     /// 68.1: one use of PRODUCTION has one combined cost. This window collects selections one at a
@@ -1499,6 +1929,19 @@ pub struct ProductionWindow {
     /// sequence number, so a marker left over from a leader used earlier for a since-finished
     /// production cannot make a later, unrelated one free.
     free_this_use: bool,
+    /// Produced by an ability rather than by a unit's PRODUCTION (see [`Self::for_ability`]).
+    ability: bool,
+    /// A fixed production limit that replaces the system's printed capacity (ability production
+    /// only). `None` reads [`capacity`].
+    fixed_limit: Option<i64>,
+    /// Highest printed cost of one unit this use may produce (Muaat Umbat: "4 or less"). `None`
+    /// is no cap. Applied in [`Self::build_options`].
+    max_unit_cost: Option<i64>,
+    /// The only unit type this use may produce (Nekro `nekroc4y`: "a ship of the same type").
+    /// `None` is any. Applied in [`Self::build_options`].
+    only_unit: Option<String>,
+    /// Whether the current placement batch has opened its pre-placement ground-force window.
+    placement_timing_done: bool,
 }
 
 impl ProductionWindow {
@@ -1511,7 +1954,53 @@ impl ProductionWindow {
         player: &PlayerId,
         system: &SystemId,
     ) -> Self {
-        let remaining = capacity(state, content, sources, player, system);
+        Self::open(state, content, sources, player, system, None, false)
+    }
+
+    /// Open production driven by an *ability* rather than by the PRODUCTION of units in the
+    /// system (Arborec flagship "produce up to 5 units in this system", commander "produce 1
+    /// unit in that system", hero "produce any number of units in any number of systems that
+    /// contain 1 or more of your ground forces").
+    ///
+    /// The same window, so it reuses the whole production flow unchanged: unit offers,
+    /// affordability, payment faces and credit, the plastic cap (31.4), fleet and structure
+    /// limits, the blockade rule (68.10) and the one-bill-per-use accounting. What differs:
+    ///
+    /// * `limit` is the number of units the ability allows (`Some(5)`), replacing the system's
+    ///   PRODUCTION total; `None` uses the printed capacity of units in the system.
+    /// * Ground forces may be placed on any planet in the system the player controls (not only
+    ///   on a planet holding a producer), since the ability, not a unit, produces them.
+    ///   Structures still obey 79.2 and Demilitarized Zone. This reading is recorded as a rules
+    ///   question in `plans/evidence/BF-00b-economy.md`.
+    /// * The `UNITS_PRODUCED` event reports `source: "ability"`.
+    ///
+    /// It does **not** fire `PRODUCTION_USED` or the tactical-action extras (Sarween Tools,
+    /// AI Development Algorithm, War Machine, Harrugh Gefhara): whether an ability's production is
+    /// "a use of PRODUCTION" is a rules question the caller decides by emitting those first.
+    #[must_use]
+    pub fn for_ability(
+        state: &GameState,
+        content: &ContentStore,
+        sources: SourceSet,
+        player: &PlayerId,
+        system: &SystemId,
+        limit: Option<i64>,
+    ) -> Self {
+        Self::open(state, content, sources, player, system, limit, true)
+    }
+
+    fn open(
+        state: &GameState,
+        content: &ContentStore,
+        sources: SourceSet,
+        player: &PlayerId,
+        system: &SystemId,
+        fixed_limit: Option<i64>,
+        ability: bool,
+    ) -> Self {
+        let remaining = fixed_limit
+            .unwrap_or_else(|| capacity(state, content, sources, player, system))
+            .max(0);
         Self {
             player: player.clone(),
             system: system.clone(),
@@ -1525,10 +2014,43 @@ impl ProductionWindow {
             report: ProductionReport::default(),
             settled: false,
             free_capacity: 0,
+            small_unit_exemptions: if crate::promissory::has_commander_ability(
+                state,
+                player,
+                "cabalcommander",
+            ) {
+                2
+            } else {
+                0
+            },
             credit: 0,
-            discount_remaining: 0,
+            // Faction cost reductions (Particle Synthesis, Hololattice) are part of the
+            // combined-bill discount pool.
+            discount_remaining: crate::factions::hooks_economy::production_cost_reduction(
+                state, player, system,
+            ),
             free_this_use: false,
+            ability,
+            fixed_limit,
+            max_unit_cost: None,
+            only_unit: None,
+            placement_timing_done: false,
         }
+    }
+
+    /// Only units whose printed cost is at most `max` may be offered (BF-F3; Muaat Umbat "each have a
+    /// cost of 4 or less"). Builder for [`Self::for_ability`].
+    #[must_use]
+    pub fn with_max_unit_cost(mut self, max: Option<i64>) -> Self {
+        self.max_unit_cost = max;
+        self
+    }
+
+    /// Only this unit type may be offered (Nekro `nekroc4y`). Builder for [`Self::for_ability`].
+    #[must_use]
+    pub fn with_only_unit(mut self, unit: Option<String>) -> Self {
+        self.only_unit = unit;
+        self
     }
 
     /// What was produced.
@@ -1550,9 +2072,23 @@ impl ProductionWindow {
         if matches!(self.stage, Stage::Paying { .. } | Stage::Placing { .. }) {
             return;
         }
-        self.limit = capacity(state, content, sources, &self.player, &self.system);
+        self.limit = self
+            .fixed_limit
+            .unwrap_or_else(|| capacity(state, content, sources, &self.player, &self.system))
+            .max(0);
         self.remaining = self.limit;
-        self.discount_remaining = i64::from(state.production_discount_remaining);
+        self.small_unit_exemptions =
+            if crate::promissory::has_commander_ability(state, &self.player, "cabalcommander") {
+                2
+            } else {
+                0
+            };
+        self.discount_remaining = i64::from(state.production_discount_remaining)
+            + crate::factions::hooks_economy::production_cost_reduction(
+                state,
+                &self.player,
+                &self.system,
+            );
         self.free_this_use = state
             .player(&self.player)
             .is_some_and(|seat| seat.free_production_use == Some(state.production_seq));
@@ -1561,6 +2097,77 @@ impl ProductionWindow {
         } else {
             Stage::Done
         };
+    }
+
+    /// Where this window may place `kind`: [`placements`], except that ability production puts
+    /// ground forces on any planet in the system the player controls.
+    fn spots(
+        &self,
+        state: &GameState,
+        content: &ContentStore,
+        sources: SourceSet,
+        kind: UnitType<'_>,
+    ) -> Vec<String> {
+        let mut spots = self.local_spots(state, content, sources, kind);
+        // A module may let the unit go elsewhere, but only a unit this system can produce at all
+        // (68.10: a blockaded dock makes no ships, wherever they would be placed).
+        if !spots.is_empty() {
+            spots.extend(
+                crate::factions::hooks_economy::production_destinations(
+                    state,
+                    content,
+                    sources,
+                    &self.player,
+                    &self.system,
+                    kind.base_type(),
+                )
+                .into_iter()
+                .map(|(system, planet)| {
+                    let at = planet.map_or_else(|| SPACE.to_owned(), |planet| planet.to_string());
+                    format!("{system}{REMOTE_SEPARATOR}{at}")
+                }),
+            );
+        }
+        spots
+    }
+
+    /// [`Self::spots`] in the producing system only.
+    fn local_spots(
+        &self,
+        state: &GameState,
+        content: &ContentStore,
+        sources: SourceSet,
+        kind: UnitType<'_>,
+    ) -> Vec<String> {
+        if !self.ability || kind.is_ship() {
+            return placements(state, content, sources, &self.player, &self.system, &kind);
+        }
+        if !crate::entropic_scars::abilities_usable(content, sources, &self.system, None) {
+            return Vec::new();
+        }
+        let mut spots: Vec<String> = state
+            .controlled_planets(&self.player)
+            .into_iter()
+            .filter(|(system, _)| **system == self.system)
+            .map(|(_, planet)| planet.clone())
+            .filter(|planet| !crate::laws::planet_is_demilitarized(state, planet))
+            .filter(|planet| {
+                !ti4_content::galaxy::is_space_station(content, planet.as_str(), sources)
+            })
+            .filter(|planet| {
+                structure_allowed(
+                    state,
+                    content,
+                    sources,
+                    &self.player,
+                    planet,
+                    kind.base_type(),
+                )
+            })
+            .map(|planet| planet.to_string())
+            .collect();
+        spots.dedup();
+        spots
     }
 
     /// Draw down the credit against a cost, returning what is still owed.
@@ -1613,9 +2220,18 @@ impl ProductionWindow {
         } else {
             0
         };
+        let exempt = if matches!(kind.as_str(), "fighter" | "infantry")
+            || catalogue(content, sources)
+                .get(id)
+                .is_some_and(|unit| matches!(unit.base_type(), "fighter" | "infantry"))
+        {
+            (count - free).min(self.small_unit_exemptions)
+        } else {
+            0
+        };
         (
-            self.remaining - (count - free),
-            self.free_capacity + granted - free,
+            self.remaining - (count - free - exempt),
+            self.free_capacity + granted - free + self.small_unit_exemptions - exempt,
         )
     }
 
@@ -1634,16 +2250,17 @@ impl ProductionWindow {
         where_to: &str,
         count: i64,
     ) -> Standing {
+        let (target, spot) = placement_target(&self.system, where_to);
         crate::fleet::standing_using(
             types,
             state,
             content,
             &self.player,
-            &self.system,
+            &target,
             Some(Arrival {
                 kind,
                 count,
-                in_space: where_to == SPACE,
+                in_space: spot == SPACE,
             }),
         )
     }
@@ -1662,7 +2279,7 @@ impl ProductionWindow {
     ) -> Option<Choice> {
         let types = catalogue(content, sources);
         let kind = types.get(id)?;
-        let spots = placements(state, content, sources, &self.player, &self.system, kind);
+        let spots = self.spots(state, content, sources, *kind);
         if spots.len() < 2 {
             return None; // settled without a question
         }
@@ -1678,6 +2295,19 @@ impl ProductionWindow {
                     .map(|spot| {
                         let after =
                             self.standing_after(&types, state, content, *kind, spot, placed);
+                        // A spot in another system is measured against that system's position.
+                        let (target, _) = placement_target(&self.system, spot);
+                        let remote_before = (target != self.system).then(|| {
+                            crate::fleet::standing_using(
+                                &types,
+                                state,
+                                content,
+                                &self.player,
+                                &target,
+                                None,
+                            )
+                        });
+                        let before = remote_before.as_ref().unwrap_or(&before);
                         placement_facts(
                             ChoiceOption::labelled(
                                 format!("place|{spot}"),
@@ -1689,10 +2319,10 @@ impl ProductionWindow {
                             .with("destination", spot.clone())
                             .with("count", i64::try_from(made).unwrap_or(1))
                             .with("placed", placed),
-                            &before,
+                            before,
                             &after,
                         )
-                        .previewed(Preview::certain(limit_deltas(&before, &after).to_vec()))
+                        .previewed(Preview::certain(limit_deltas(before, &after).to_vec()))
                     })
                     .collect(),
             )
@@ -1744,6 +2374,17 @@ impl ProductionWindow {
         (printed - used, used)
     }
 
+    /// A borrowed Nomad commander waives flagship resources independently of other discounts.
+    fn discounted_unit(&self, state: &GameState, kind: UnitType<'_>, printed: i64) -> (i64, i64) {
+        if kind.base_type() == "flagship"
+            && crate::promissory::has_commander_ability(state, &self.player, "nomadcommander")
+        {
+            (0, 0)
+        } else {
+            self.discounted(printed)
+        }
+    }
+
     /// Spend the discount actually used by the option that was chosen.
     fn spend_discount(&mut self, used: i64) {
         if !self.free_this_use {
@@ -1774,6 +2415,10 @@ impl ProductionWindow {
     }
 
     /// Options for what to build now: affordable, placeable, one per unit type.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear filter-and-price pass per buildable unit"
+    )]
     fn build_options(
         &self,
         state: &GameState,
@@ -1791,20 +2436,90 @@ impl ProductionWindow {
             let Some(kind) = types.get(id.as_str()) else {
                 continue;
             };
+            if self.only_unit.as_ref().is_some_and(|only| only != &id) {
+                continue;
+            }
+            if self
+                .max_unit_cost
+                .is_some_and(|max| kind.cost() > f64::from(i32::try_from(max).unwrap_or(i32::MAX)))
+            {
+                continue;
+            }
+            // Ability production has no unit producer, but blanket bans still apply. A hook
+            // specific to space docks (Mitosis) must not bar production granted by an ability.
+            if self.ability
+                && crate::factions::hooks_economy::cannot_produce(
+                    state,
+                    content,
+                    &self.player,
+                    kind.base_type(),
+                    "ability",
+                )
+            {
+                continue;
+            }
             let (printed, pair) = price_of_under(Some(state), kind);
-            let (cost, discount_used) = self.discounted(printed);
+            let (cost, discount_used) = self.discounted_unit(state, *kind, printed);
+            // Cabal Amalgamation: "When you produce a unit: You may return 1 captured unit of that
+            // type to produce that unit without spending resources." The exchange is settled here,
+            // before affordability is asked, because a unit bought by returning a captured model is
+            // not bought with resources: a Cabal with nothing left to spend still has the option the
+            // card gives it. The hook is pure -- it asks nothing and changes nothing.
+            let exchange = crate::factions::hooks_economy::production_unit_exchange(
+                state,
+                content,
+                sources,
+                &self.player,
+                &self.system,
+                &id,
+            );
             // Credit already paid counts towards affordability, or a build the player has in fact
             // paid for would be withheld as unaffordable. Affordability is judged on the
             // discounted bill: a unit Sarween Tools or Harrugh Gefhara brings within reach must
-            // not be withheld for a price nobody would actually charge.
-            if cost > spendable_resources + self.credit {
+            // not be withheld for a price nobody would actually charge. A unit bought with a
+            // captured model is not withheld at all, because no resource is being asked for it.
+            let affordable = cost
+                <= available(state, content, sources, &self.player, Spend::Resources) + self.credit;
+            if !affordable && !exchange {
                 continue;
             }
-            let spots = placements(state, content, sources, &self.player, &self.system, kind);
+            let spots = self.spots(state, content, sources, *kind);
             if spots.is_empty() {
                 continue;
             }
-            let made = pair.min(usize::try_from(self.remaining).unwrap_or(0));
+            // Producers barred from this unit (Mitosis: docks and infantry) do not lend it their
+            // PRODUCTION. The most this unit can use is what is left of the total, but never more
+            // than the total less the barred producers less what this use has already produced
+            // of the same unit (other purchases are assumed to have drawn on the barred share
+            // first, the most permissive reading).
+            let barred = if self.ability {
+                0
+            } else {
+                barred_capacity(state, content, sources, &self.player, &self.system, kind)
+            };
+            let usable = if barred == 0 {
+                self.remaining
+            } else {
+                let types = catalogue(content, sources);
+                let same_kind = self
+                    .report
+                    .produced
+                    .iter()
+                    .filter(|(produced, _)| {
+                        types
+                            .get(produced.as_str())
+                            .is_some_and(|made| made.base_type() == kind.base_type())
+                    })
+                    .count();
+                self.remaining
+                    .min(self.limit - barred - i64::try_from(same_kind).unwrap_or(i64::MAX))
+            };
+            let extra = if matches!(kind.base_type(), "fighter" | "infantry") {
+                self.small_unit_exemptions
+            } else {
+                0
+            };
+            let made = pair.min(usize::try_from(usable + extra).unwrap_or(0));
             if made == 0 {
                 continue;
             }
@@ -1819,57 +2534,63 @@ impl ProductionWindow {
             }
             let (remaining_after, free_capacity_after) =
                 self.post_build_constraints(state, content, sources, &id, placed);
-            let credit_used = self.credit.min(cost);
-            let production_spent = self.remaining - remaining_after;
-            let mut deltas = vec![
-                Delta::new(
-                    Quantity::ProductionRemaining,
-                    self.remaining,
-                    remaining_after,
-                ),
-                Delta::new(
-                    Quantity::ProductionFreeCapacity,
-                    self.free_capacity,
-                    free_capacity_after,
-                ),
-            ];
-            let mut option = ChoiceOption::labelled(
-                format!("build|{id}|{made}"),
-                PRODUCE_KIND,
-                format!("produce {made}x {id} for {cost}"),
-            )
-            .with("cost", cost)
-            .with("printed_cost", printed)
-            .with("discount", discount_used)
-            .with("count", i64::try_from(made).unwrap_or(1))
-            .with("placed", i64::try_from(placed).unwrap_or(1))
-            .with("yield", i64::try_from(pair).unwrap_or(1))
-            .with("credit", self.credit)
-            .with("available_resources", spendable_resources)
-            .with("free_this_use", self.free_this_use)
-            .with("credit_used", credit_used)
-            .with("owed", cost - credit_used)
-            .with("production_spent", production_spent)
-            .with("unit", id.clone())
-            .with("system", self.system.to_string());
-            // A ship has one destination and no placement question follows, so its fleet and
-            // transport aftermath is settled here. A unit with a choice of destinations does not
-            // have one yet, and says so rather than reporting a consequence it cannot know.
-            if let [only] = spots.as_slice() {
-                let after = self.standing_after(
-                    &types,
-                    state,
-                    content,
-                    *kind,
-                    only,
-                    i64::try_from(placed).unwrap_or(0),
-                );
-                deltas.extend(limit_deltas(&before, &after));
-                option = placement_facts(option.with("destination", only.clone()), &before, &after);
-            } else {
-                option = option.with("placement_pending", i64::try_from(spots.len()).unwrap_or(2));
+            // The paid build is offered only when it can actually be paid for. An unaffordable
+            // unit reaches this point only through the exchange below, which charges nothing.
+            if affordable {
+                let credit_used = self.credit.min(cost);
+                let production_spent = self.remaining - remaining_after;
+                let mut deltas = vec![
+                    Delta::new(
+                        Quantity::ProductionRemaining,
+                        self.remaining,
+                        remaining_after,
+                    ),
+                    Delta::new(
+                        Quantity::ProductionFreeCapacity,
+                        self.free_capacity + self.small_unit_exemptions,
+                        free_capacity_after,
+                    ),
+                ];
+                let mut option = ChoiceOption::labelled(
+                    format!("build|{id}|{made}"),
+                    PRODUCE_KIND,
+                    format!("produce {made}x {id} for {cost}"),
+                )
+                .with("cost", cost)
+                .with("printed_cost", printed)
+                .with("discount", discount_used)
+                .with("count", i64::try_from(made).unwrap_or(1))
+                .with("placed", i64::try_from(placed).unwrap_or(1))
+                .with("yield", i64::try_from(pair).unwrap_or(1))
+                .with("credit", self.credit)
+                .with("available_resources", spendable_resources)
+                .with("free_this_use", self.free_this_use)
+                .with("credit_used", credit_used)
+                .with("owed", cost - credit_used)
+                .with("production_spent", production_spent)
+                .with("unit", id.clone())
+                .with("system", self.system.to_string());
+                // A ship has one destination and no placement question follows, so its fleet and
+                // transport aftermath is settled here. A unit with a choice of destinations does
+                // not have one yet, and says so rather than reporting a consequence it cannot know.
+                if let [only] = spots.as_slice() {
+                    let after = self.standing_after(
+                        &types,
+                        state,
+                        content,
+                        *kind,
+                        only,
+                        i64::try_from(placed).unwrap_or(0),
+                    );
+                    deltas.extend(limit_deltas(&before, &after));
+                    option =
+                        placement_facts(option.with("destination", only.clone()), &before, &after);
+                } else {
+                    option =
+                        option.with("placement_pending", i64::try_from(spots.len()).unwrap_or(2));
+                }
+                options.push(option.previewed(Preview::certain(deltas)));
             }
-            options.push(option.previewed(Preview::certain(deltas)));
             // 68.3b -- "a player can choose to produce only one unit; however, they must still
             // pay the entire cost" -- is honoured where it matters and not offered where it does
             // not. When the production limit leaves room for one, `made` is already 1 above and
@@ -1877,6 +2598,55 @@ impl ProductionWindow {
             // alongside the pair adds a strictly dominated option to every fighter and infantry
             // purchase: same price, half the units. A decider gains nothing from being asked, and
             // a learner has to spend capacity discovering it is never right.
+            //
+            // Cabal Amalgamation: "When you produce a unit: You may return 1 captured unit of that
+            // type to produce that unit without spending resources." A "when you" trigger has to be
+            // a real option in the window, not a refusal after the fact, so the exchange is offered
+            // beside the paid build and the player picks. One captured unit buys one unit. The
+            // production limit is still spent, because the card waives the cost and not the limit:
+            // the exchange ends in the same placing stage `place` charges capacity for.
+            if exchange {
+                let (limit_after, free_after) =
+                    self.post_build_constraints(state, content, sources, &id, 1);
+                let mut exchange = ChoiceOption::labelled(
+                    format!("exchange|{id}"),
+                    PRODUCE_KIND,
+                    format!("produce 1x {id} by returning a captured {id}"),
+                )
+                .with("cost", 0i64)
+                .with("printed_cost", printed)
+                .with("discount", 0i64)
+                .with("count", 1i64)
+                .with("placed", 1i64)
+                .with("credit", self.credit)
+                .with("credit_used", 0i64)
+                .with("owed", 0i64)
+                .with("production_spent", self.remaining - limit_after)
+                .with("unit", id.clone())
+                .with("system", self.system.to_string())
+                .with("exchange", true);
+                let mut deltas = vec![
+                    Delta::new(Quantity::ProductionRemaining, self.remaining, limit_after),
+                    Delta::new(
+                        Quantity::ProductionFreeCapacity,
+                        self.free_capacity + self.small_unit_exemptions,
+                        free_after,
+                    ),
+                ];
+                if let [only] = spots.as_slice() {
+                    let after = self.standing_after(&types, state, content, *kind, only, 1);
+                    deltas.extend(limit_deltas(&before, &after));
+                    exchange = placement_facts(
+                        exchange.with("destination", only.clone()),
+                        &before,
+                        &after,
+                    );
+                } else {
+                    exchange =
+                        exchange.with("placement_pending", i64::try_from(spots.len()).unwrap_or(2));
+                }
+                options.push(exchange.previewed(Preview::certain(deltas)));
+            }
         }
         options
     }
@@ -1903,18 +2673,25 @@ impl ProductionWindow {
             &UnitTypeId::new(id),
             made,
         );
+        let (target, spot) = placement_target(&self.system, where_to);
         for _ in 0..made {
             let unit = Unit::new(UnitTypeId::new(id), self.player.clone());
-            if where_to == SPACE {
-                state.system_mut(&self.system).units.push(unit);
+            if spot == SPACE {
+                state.system_mut(&target).units.push(unit);
             } else {
                 state
-                    .system_mut(&self.system)
+                    .system_mut(&target)
                     .planet_units
-                    .entry(PlanetId::new(where_to))
+                    .entry(PlanetId::new(spot))
                     .or_default()
                     .push(unit);
             }
+            crate::supply::stage_naaz_mech_placed(
+                state,
+                &self.player,
+                &target,
+                &UnitTypeId::new(id),
+            );
             self.report
                 .produced
                 .push((UnitTypeId::new(id), where_to.to_owned()));
@@ -1939,8 +2716,17 @@ impl ProductionWindow {
         } else {
             0
         };
+        let exempt = if catalogue(content, sources)
+            .get(id)
+            .is_some_and(|unit| matches!(unit.base_type(), "fighter" | "infantry"))
+        {
+            (count - free).min(self.small_unit_exemptions)
+        } else {
+            0
+        };
+        self.small_unit_exemptions -= exempt;
         self.free_capacity -= free;
-        self.remaining -= count - free;
+        self.remaining -= count - free - exempt;
     }
 }
 
@@ -1954,7 +2740,7 @@ impl Window for ProductionWindow {
         match &self.stage {
             Stage::Done => None,
             Stage::Choosing => {
-                if self.remaining <= 0 {
+                if self.remaining <= 0 && self.small_unit_exemptions <= 0 {
                     return None;
                 }
                 let mut options = self.build_options(state, content, sources);
@@ -2038,7 +2824,7 @@ impl Window for ProductionWindow {
                         .unwrap_or(1);
                     let types = catalogue(content, sources);
                     let (cost, discount_used) = types.get(id).map_or((0, 0), |kind| {
-                        self.discounted(price_of_under(Some(state), kind).0)
+                        self.discounted_unit(state, *kind, price_of_under(Some(state), kind).0)
                     });
                     // Spent for real only for the option actually chosen: `build_options` offered
                     // this discount to every option shown, and only one could ever be taken.
@@ -2060,6 +2846,27 @@ impl Window for ProductionWindow {
                             id: id.to_owned(),
                             made,
                         }
+                    };
+                } else if let Some(id) = option.id.strip_prefix("exchange|") {
+                    // The unit is paid for with a captured model of that type, so no resources,
+                    // credit, or discount are spent. If the capture is gone -- something returned it
+                    // between the offer and this answer -- the exchange does not happen at all, the
+                    // same way a bill the player cannot pay ends the stage instead of becoming a
+                    // partial purchase.
+                    if !crate::factions::hooks_economy::perform_production_unit_exchange(
+                        state,
+                        content,
+                        sources,
+                        &self.player,
+                        &self.system,
+                        id,
+                    ) {
+                        self.stage = Stage::Done;
+                        return Ok(());
+                    }
+                    self.stage = Stage::Placing {
+                        id: id.to_owned(),
+                        made: 1,
                     };
                 }
             }
@@ -2106,10 +2913,16 @@ impl Window for ProductionWindow {
             Stage::Placing { id, made } => {
                 let where_to = option.id.strip_prefix("place|").unwrap_or(SPACE).to_owned();
                 self.place(state, content, sources, &id, &where_to, made);
+                crate::factions::argent::clear_agent_production_destinations(
+                    state,
+                    &self.player,
+                    &self.system,
+                );
+                self.placement_timing_done = false;
                 self.stage = Stage::Choosing;
             }
         }
-        self.settle(state, content, sources);
+        self.settle(state, content, sources, ctx)?;
         // After `settle`, not before: the loop inside it can be what reaches `Done`, and a check
         // ahead of it would miss exactly the uses that ended without another question.
         //
@@ -2118,6 +2931,8 @@ impl Window for ProductionWindow {
         // reach `Done`, so this is a flag rather than a call at each of them.
         if matches!(self.stage, Stage::Done) && !self.settled {
             self.settled = true;
+            // A planet-value swap lasts one use of PRODUCTION (Hegemonic Trade Policy).
+            end_value_swap(state);
             let (who, made) = (self.player.clone(), self.report.produced.clone());
             crate::breakthroughs::on_production_finished(state, content, sources, &who, &made);
             // Prophecy of Ixth: using PRODUCTION discards the law unless two or more fighters were
@@ -2132,14 +2947,63 @@ impl Window for ProductionWindow {
                 })
                 .count();
             crate::laws::prophecy_after_production(state, &who, fighters);
+            self.announce_produced(state, ctx, &made);
         }
         Ok(())
     }
 }
 
 impl ProductionWindow {
+    /// Yin Spinner: "After you produce units". Emitted last, once every end-of-use effect has
+    /// landed, and only for a use that produced something. Uses the window own timing handle (none
+    /// when the caller has no resolver, and then nothing can react). A cancelled or failed
+    /// announcement cannot un-produce the units. Emitted unconditionally.
+    fn announce_produced(
+        &self,
+        state: &mut GameState,
+        ctx: &mut Resolving<'_>,
+        made: &[(UnitTypeId, String)],
+    ) {
+        if made.is_empty() {
+            return;
+        }
+        let units: Vec<serde_json::Value> = made
+            .iter()
+            .map(|(kind, place)| serde_json::json!({ "unit_type": kind.as_str(), "place": place }))
+            .collect();
+        let mut payload = BTreeMap::new();
+        payload.insert("player".to_owned(), self.player.to_string().into());
+        payload.insert("system".to_owned(), self.system.to_string().into());
+        payload.insert(
+            "source".to_owned(),
+            if self.ability {
+                "ability"
+            } else {
+                "production"
+            }
+            .into(),
+        );
+        payload.insert("count".to_owned(), made.len().into());
+        payload.insert("units".to_owned(), serde_json::Value::Array(units));
+        if ctx.timing.is_none() {
+            // No timing handle: nothing can react now. Keep the announcement for
+            // `supply::flush_staged_events`, which a caller with a resolver calls later.
+            crate::supply::stage_event(state, "UNITS_PRODUCED", &payload);
+            return;
+        }
+        crate::factions::hooks_economy::emit(ctx, state, "UNITS_PRODUCED", payload);
+    }
+}
+
+impl ProductionWindow {
     /// Advance past any stage that has nothing left to ask.
-    fn settle(&mut self, state: &mut GameState, content: &ContentStore, sources: SourceSet) {
+    fn settle(
+        &mut self,
+        state: &mut GameState,
+        content: &ContentStore,
+        sources: SourceSet,
+        ctx: &mut Resolving<'_>,
+    ) -> Result<(), IllegalChoice> {
         loop {
             match self.stage.clone() {
                 Stage::Paying {
@@ -2166,7 +3030,7 @@ impl ProductionWindow {
                             // Unreachable under the affordability gate (available >= cost is
                             // checked before a build option is offered).
                             self.stage = Stage::Done;
-                            return;
+                            return Ok(());
                         }
                         [only] => {
                             let Some(worth) = apply_payment_option(
@@ -2178,7 +3042,7 @@ impl ProductionWindow {
                                 only,
                             ) else {
                                 self.stage = Stage::Done; // unreachable for offered options: abort
-                                return;
+                                return Ok(());
                             };
                             if owed > worth {
                                 self.stage = Stage::Paying {
@@ -2193,43 +3057,79 @@ impl ProductionWindow {
                             self.credit += worth - owed;
                             self.stage = Stage::Placing { id, made };
                         }
-                        _ => return,
+                        _ => return Ok(()),
                     }
                 }
                 Stage::Placing { id, made } => {
+                    if !self.placement_timing_done {
+                        let types = catalogue(content, sources);
+                        if types
+                            .get(id.as_str())
+                            .is_some_and(|kind| kind.is_ground_force() && !kind.is_structure())
+                        {
+                            let mut payload = BTreeMap::new();
+                            payload.insert("player".to_owned(), self.player.to_string().into());
+                            payload.insert("system".to_owned(), self.system.to_string().into());
+                            payload.insert("count".to_owned(), made.into());
+                            ctx.emit(state, "GROUND_FORCES_BEING_PRODUCED", payload)
+                                .map_err(|error| IllegalChoice::DeciderFailed {
+                                    player: self.player.clone(),
+                                    prompt: "ground-force production timing".to_owned(),
+                                    reason: error.to_string(),
+                                })?;
+                        }
+                        self.placement_timing_done = true;
+                    }
                     let types = catalogue(content, sources);
                     let Some(kind) = types.get(id.as_str()).copied() else {
                         self.stage = Stage::Done;
-                        return;
+                        crate::factions::argent::clear_agent_production_destinations(
+                            state,
+                            &self.player,
+                            &self.system,
+                        );
+                        return Ok(());
                     };
-                    let spots =
-                        placements(state, content, sources, &self.player, &self.system, &kind);
+                    let spots = self.spots(state, content, sources, kind);
                     // Exactly one legal placement is not a decision.
                     match spots.as_slice() {
                         [only] => {
                             let only = only.clone();
                             self.place(state, content, sources, &id, &only, made);
+                            crate::factions::argent::clear_agent_production_destinations(
+                                state,
+                                &self.player,
+                                &self.system,
+                            );
+                            self.placement_timing_done = false;
                             self.stage = Stage::Choosing;
                         }
                         [] => {
                             self.stage = Stage::Done;
-                            return;
+                            crate::factions::argent::clear_agent_production_destinations(
+                                state,
+                                &self.player,
+                                &self.system,
+                            );
+                            return Ok(());
                         }
-                        _ => return,
+                        _ => return Ok(()),
                     }
                 }
                 Stage::Choosing => {
-                    if self.remaining <= 0 || self.build_options(state, content, sources).is_empty()
+                    if (self.remaining <= 0 && self.small_unit_exemptions <= 0)
+                        || self.build_options(state, content, sources).is_empty()
                     {
                         self.stage = Stage::Done;
                     }
-                    return;
+                    return Ok(());
                 }
                 // A finished window has nothing left to settle: leaving the loop is mandatory,
                 // because `resolve` settles after every answer and a decline ends production.
                 Stage::Done => break,
             }
         }
+        Ok(())
     }
 }
 
@@ -2243,6 +3143,29 @@ pub fn resolve(
     sources: SourceSet,
     galaxy: Option<&ti4_content::galaxy::Galaxy>,
     table: &mut Table,
+    player: &PlayerId,
+    system: &SystemId,
+) -> Result<ProductionReport, IllegalChoice> {
+    resolve_timed(state, content, sources, galaxy, table, None, player, system)
+}
+
+/// [`resolve`] with a timing handle, so `UNITS_PRODUCED` opens its windows. Callers that have a
+/// resolver (Warfare secondary, Construction, hero) pass `Some(handle)`; with `None` this is
+/// exactly [`resolve`].
+///
+/// # Errors
+/// [`IllegalChoice`] when a decider answers with something not offered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "resolve plus the timing handle; mirrors the other production entry points"
+)]
+pub fn resolve_timed(
+    state: &mut GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    galaxy: Option<&ti4_content::galaxy::Galaxy>,
+    table: &mut Table,
+    timing: Option<crate::choice::TimingHandle<'_>>,
     player: &PlayerId,
     system: &SystemId,
 ) -> Result<ProductionReport, IllegalChoice> {
@@ -2261,6 +3184,10 @@ pub fn resolve(
             window.refresh(state, content, sources);
         }
     }
+    // Xander Alexin Victori III (Keleres): the producer's commodities as trade goods for this
+    // production, offered once as it starts.
+    let agent_window = capacity(state, content, sources, player, system) > 0
+        && crate::factions::keleres::offer_agent(state, content, sources, galaxy, table, player)?;
     // Production rolls nothing, so these are never drawn from. Kept explicit rather than
     // hidden behind an Option: if a future rule does roll here, it must be handed the game's
     // generator instead of finding a convenient throwaway already in scope.
@@ -2272,15 +3199,237 @@ pub fn resolve(
         dice: &mut dice,
         rng: &mut rng,
         table,
-        timing: None,
+        timing,
     };
+    // Agency Supply Network: another unit's PRODUCTION, resolved beside this one (Warfare reaches
+    // here; the tactical action's production step does the same in `game.rs`).
+    agency_supply_network(state, &mut ctx, galaxy, player, system)?;
     while let Some(choice) = window.pending_choice(state, content, sources) {
+        let answer = match ctx
+            .table
+            .ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))
+        {
+            Ok(answer) => answer,
+            Err(error) => {
+                crate::factions::argent::clear_agent_production_destinations(state, player, system);
+                if agent_window {
+                    crate::factions::keleres::close_agent_window(state, player);
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = window.resolve(state, &mut ctx, answer) {
+            crate::factions::argent::clear_agent_production_destinations(state, player, system);
+            if agent_window {
+                crate::factions::keleres::close_agent_window(state, player);
+            }
+            return Err(error);
+        }
+    }
+    crate::factions::argent::clear_agent_production_destinations(state, player, system);
+    if agent_window {
+        crate::factions::keleres::close_agent_window(state, player);
+    }
+    end_value_swap(state);
+    Ok(window.into_report())
+}
+
+/// Produce units outside a tactical action, by an ability: the window of
+/// [`ProductionWindow::for_ability`] run to the end against the table, with the caller's
+/// `Resolving` (give it a timing handle so `UNITS_PRODUCED` opens its windows).
+///
+/// Payment, supply, fleet limits and placement choices are the ordinary production flow. The
+/// player may stop at any point ("up to"). A decider answering something not offered aborts with
+/// the units already produced and paid for left in place, exactly as [`resolve`] does.
+///
+/// # Errors
+/// [`IllegalChoice`] when a decider answers with something not offered.
+pub fn produce_by_ability(
+    state: &mut GameState,
+    ctx: &mut Resolving<'_>,
+    galaxy: Option<&Galaxy>,
+    player: &PlayerId,
+    system: &SystemId,
+    limit: Option<i64>,
+) -> Result<ProductionReport, IllegalChoice> {
+    produce_by_ability_capped(state, ctx, galaxy, player, system, limit, None)
+}
+
+/// [`produce_by_ability`] where each unit's printed cost may be at most `max_unit_cost` (Muaat
+/// Umbat: "up to 2 units that each have a cost of 4 or less"). `None` is no cap.
+///
+/// # Errors
+/// [`IllegalChoice`] when a decider answers with something not offered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "produce_by_ability plus the per-unit cost cap"
+)]
+pub fn produce_by_ability_capped(
+    state: &mut GameState,
+    ctx: &mut Resolving<'_>,
+    galaxy: Option<&Galaxy>,
+    player: &PlayerId,
+    system: &SystemId,
+    limit: Option<i64>,
+    max_unit_cost: Option<i64>,
+) -> Result<ProductionReport, IllegalChoice> {
+    let (content, sources) = (ctx.content, ctx.sources);
+    let mut window = ProductionWindow::for_ability(state, content, sources, player, system, limit)
+        .with_max_unit_cost(max_unit_cost);
+    // Xander Alexin Victori III (Keleres): offered once as this production starts.
+    let agent_window =
+        crate::factions::keleres::offer_agent(state, content, sources, galaxy, ctx.table, player)?;
+    while let Some(choice) = window.pending_choice(state, content, sources) {
+        let step = ctx
+            .table
+            .ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))
+            .and_then(|answer| window.resolve(state, ctx, answer));
+        if let Err(error) = step {
+            if agent_window {
+                crate::factions::keleres::close_agent_window(state, player);
+            }
+            return Err(error);
+        }
+    }
+    if agent_window {
+        crate::factions::keleres::close_agent_window(state, player);
+    }
+    end_value_swap(state);
+    Ok(window.into_report())
+}
+
+/// Whether [`produce_unit_by_ability`] would offer `unit` in `system` now: it is buildable, the
+/// player can pay for it and a spot takes it. The same filter the window applies, asked up front so
+/// a card is only offered when its production can happen.
+#[must_use]
+pub fn can_produce_unit_by_ability(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    system: &SystemId,
+    unit: &str,
+) -> bool {
+    let window = ProductionWindow::for_ability(state, content, sources, player, system, Some(1))
+        .with_only_unit(Some(unit.to_owned()));
+    window.pending_choice(state, content, sources).is_some()
+}
+
+/// Produce 1 unit of exactly one type outside a tactical action, by an ability (Nekro
+/// `nekroc4y`): [`produce_by_ability`] with a limit of 1 and every other unit type withheld.
+///
+/// # Errors
+/// [`IllegalChoice`] when a decider answers with something not offered.
+pub fn produce_unit_by_ability(
+    state: &mut GameState,
+    ctx: &mut Resolving<'_>,
+    galaxy: Option<&Galaxy>,
+    player: &PlayerId,
+    system: &SystemId,
+    unit: &str,
+) -> Result<ProductionReport, IllegalChoice> {
+    let (content, sources) = (ctx.content, ctx.sources);
+    let mut window =
+        ProductionWindow::for_ability(state, content, sources, player, system, Some(1))
+            .with_only_unit(Some(unit.to_owned()));
+    while let Some(choice) = window.pending_choice(state, content, sources) {
+        ctx.table
+            .ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))
+            .and_then(|answer| window.resolve(state, ctx, answer))?;
+    }
+    end_value_swap(state);
+    Ok(window.into_report())
+}
+
+/// Agency Supply Network (Keleres `asn`): "Once per action, when you resolve a unit's PRODUCTION
+/// ability, you may resolve another of your unit's PRODUCTION abilities in any system."
+///
+/// Called by the two entry points that resolve a unit's PRODUCTION (the tactical action's
+/// production step, `game.rs` `enter_production`, and [`resolve_timed`] for Warfare), once the use
+/// in `primary` is open and before its first choice. The Keleres picks one other system holding
+/// producers of theirs where they could build something, and that system's PRODUCTION is resolved
+/// in full there (payment, placement, limits and blockade as for any use). `primary` is excluded:
+/// its units have all been resolved together by the use that opened this window.
+///
+/// "Once per action" is a mark in `faction_marks` that the Keleres' `ACTION_COMPLETED` window
+/// clears, since the resolver's frequency bookkeeping is not saved with the game. Returns whether a
+/// second system was resolved; nothing is asked of, or changed for, a player without the technology.
+///
+/// The second use gets no Sarween/AI Development Algorithm discount: it opens a plain window, and
+/// those cards discount "this use" (the question is recorded in `plans/evidence/BF-keleres.md`).
+///
+/// # Errors
+/// [`IllegalChoice`] when a decider answers with something not offered.
+pub fn agency_supply_network(
+    state: &mut GameState,
+    ctx: &mut Resolving<'_>,
+    galaxy: Option<&Galaxy>,
+    player: &PlayerId,
+    primary: &SystemId,
+) -> Result<bool, IllegalChoice> {
+    let (content, sources) = (ctx.content, ctx.sources);
+    if !crate::factions::keleres::asn_ready(state, player)
+        || capacity(state, content, sources, player, primary) <= 0
+    {
+        return Ok(false);
+    }
+    let systems: Vec<SystemId> = state
+        .board
+        .keys()
+        .filter(|system| *system != primary)
+        .filter(|system| {
+            capacity(state, content, sources, player, system) > 0
+                && ProductionWindow::new(state, content, sources, player, system)
+                    .pending_choice(state, content, sources)
+                    .is_some()
+        })
+        .cloned()
+        .collect();
+    if systems.is_empty() {
+        return Ok(false);
+    }
+    let mut options: Vec<ChoiceOption> = systems
+        .iter()
+        .map(|system| {
+            ChoiceOption::labelled(
+                system.as_str(),
+                "asn_system",
+                format!("also resolve PRODUCTION in system {system}"),
+            )
+        })
+        .collect();
+    options.push(ChoiceOption::decline());
+    let choice = Choice::new(
+        player.clone(),
+        "Agency Supply Network: resolve another unit's PRODUCTION in which system",
+        options,
+    )
+    .contextualized(DecisionContext::new(
+        player.clone(),
+        DecisionSource::FactionAbility("asn".to_owned()),
+        "asn_system",
+        state.phase,
+        state.round,
+    ));
+    let answer = ctx
+        .table
+        .ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))?;
+    if answer.is_decline() {
+        return Ok(false);
+    }
+    let Some(system) = systems.iter().find(|system| system.as_str() == answer.id) else {
+        return Ok(false);
+    };
+    crate::factions::keleres::asn_mark(state, player);
+    let mut window = ProductionWindow::new(state, content, sources, player, system);
+    while let Some(next) = window.pending_choice(state, content, sources) {
         let answer = ctx
             .table
-            .ask_seeing(&choice, &Observed::new(state, content, sources, galaxy))?;
-        window.resolve(state, &mut ctx, answer)?;
+            .ask_seeing(&next, &Observed::new(state, content, sources, galaxy))?;
+        window.resolve(state, ctx, answer)?;
     }
-    Ok(window.into_report())
+    end_value_swap(state);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -2331,7 +3480,7 @@ mod tests {
 
     /// Four infantry in one use of PRODUCTION cost two resources, from one two-resource planet.
     ///
-    /// The acceptance case from `plans/BUG_2026-08-29_PRODUCTION_COMBINED_PAYMENT.md`. Selected as
+    /// The acceptance case from `plans/archive/BUG_2026-08-29_PRODUCTION_COMBINED_PAYMENT.md`. Selected as
     /// two batches of two, which is the shape that used to throw the planet's second resource away
     /// and then demand a second payment source for a bill that was already covered.
     #[test]
@@ -2544,7 +3693,8 @@ mod tests {
         {
             let seat = state.player_mut(&player).unwrap();
             seat.trade_goods = 1;
-            seat.technologies.insert(TechnologyId::new("mc"));
+            seat.technologies
+                .insert(ti4_model::id::TechnologyId::new("mc"));
         }
         assert_eq!(
             available(
@@ -2572,6 +3722,36 @@ mod tests {
             .unwrap()
         );
         assert_eq!(state.player(&player).unwrap().trade_goods, 0);
+    }
+
+    #[test]
+    fn a_lone_payment_option_is_noted_but_never_journaled() {
+        let (mut state, _, _) = seated();
+        state.player_mut(&player()).unwrap().trade_goods = 2;
+        let mut table = Table::new();
+        assert!(
+            pay(
+                &mut state,
+                ContentStore::embedded(),
+                POK,
+                &mut table,
+                &player(),
+                2,
+                Spend::Resources
+            )
+            .unwrap()
+        );
+        assert!(
+            table.log.is_empty(),
+            "a skipped ask must not enter the journal"
+        );
+        let notes = table.take_auto_resolved();
+        assert!(!notes.is_empty());
+        assert!(
+            notes
+                .iter()
+                .all(|n| n.player == player() && n.prompt.starts_with("pay "))
+        );
     }
 
     #[test]
@@ -3162,7 +4342,18 @@ mod tests {
             paid: 0,
         };
         window.remaining = 0;
-        window.settle(&mut state, store, POK);
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(0);
+        let mut table = Table::new();
+        let mut ctx = Resolving {
+            content: store,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: None,
+        };
+        window.settle(&mut state, store, POK, &mut ctx).unwrap();
 
         assert!(matches!(window.stage, Stage::Done));
         assert_eq!(state.player(&player()).unwrap().trade_goods, 0);
@@ -3943,6 +5134,104 @@ mod tests {
     /// not be answered before the destination was known -- which is why it was split out of
     /// `OBS-008c2a` rather than guessed there.
     #[test]
+    fn a_module_destination_in_another_system_is_offered_and_placed_there() {
+        fn elsewhere(
+            _: &GameState,
+            _: &ContentStore,
+            _: SourceSet,
+            _: &PlayerId,
+            _: &SystemId,
+            unit: &str,
+        ) -> Vec<(SystemId, Option<PlanetId>)> {
+            if unit == "fighter" {
+                vec![(SystemId::new("elsewhere"), None)]
+            } else {
+                Vec::new()
+            }
+        }
+        let content = ContentStore::embedded();
+        let (mut state, system, planet) = seated();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), player());
+        put_on_planet(&mut state, &system, &planet, "spacedock", &player(), 1);
+        let hooks = crate::factions::hooks_economy::EconomyHooks {
+            production_destinations: Some(elsewhere),
+            ..crate::factions::hooks_economy::EconomyHooks::NONE
+        };
+        crate::factions::hooks_economy::with_test_hooks(hooks, || {
+            let mut window = ProductionWindow::new(&state, content, POK, &player(), &system);
+            window.credit = 10;
+            let fighter = window
+                .pending_choice(&state, content, POK)
+                .expect("production choice")
+                .options
+                .into_iter()
+                .find(|option| option.id.starts_with("build|fighter|"))
+                .expect("fighter");
+            let mut dice = crate::dice::Dice::new();
+            let mut rng = crate::rng::GameRng::new(0);
+            let mut table = Table::new();
+            let mut ctx = Resolving {
+                content,
+                sources: POK,
+                dice: &mut dice,
+                rng: &mut rng,
+                table: &mut table,
+                timing: None,
+            };
+            window.resolve(&mut state, &mut ctx, fighter).unwrap();
+            let choice = window
+                .pending_choice(&state, content, POK)
+                .expect("two destinations: here and elsewhere");
+            let ids: Vec<&str> = choice.options.iter().map(|o| o.id.as_str()).collect();
+            assert_eq!(ids, ["place|space", "place|elsewhere@space"]);
+            let remote = choice.options[1].clone();
+            let before = state.system_state(&system).units.len();
+            window.resolve(&mut state, &mut ctx, remote).unwrap();
+            let landed = state
+                .system_state(&SystemId::new("elsewhere"))
+                .units
+                .clone();
+            assert!(landed.iter().all(|unit| unit.owner == player()));
+            assert!(!landed.is_empty(), "the fighters went to the other system");
+            assert_eq!(state.system_state(&system).units.len(), before);
+        });
+    }
+
+    #[test]
+    fn a_module_destination_is_not_offered_for_a_unit_the_system_cannot_place() {
+        fn elsewhere(
+            _: &GameState,
+            _: &ContentStore,
+            _: SourceSet,
+            _: &PlayerId,
+            _: &SystemId,
+            _: &str,
+        ) -> Vec<(SystemId, Option<PlanetId>)> {
+            vec![(SystemId::new("elsewhere"), None)]
+        }
+        let content = ContentStore::embedded();
+        let (mut state, system, planet) = seated();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), player());
+        put_on_planet(&mut state, &system, &planet, "spacedock", &player(), 1);
+        // 68.10: another player's ship bars ships here, so no destination is opened for one.
+        put(&mut state, &system, "cruiser", &PlayerId::new("enemy"), 1);
+        let hooks = crate::factions::hooks_economy::EconomyHooks {
+            production_destinations: Some(elsewhere),
+            ..crate::factions::hooks_economy::EconomyHooks::NONE
+        };
+        crate::factions::hooks_economy::with_test_hooks(hooks, || {
+            let window = ProductionWindow::new(&state, content, POK, &player(), &system);
+            let types = catalogue(content, POK);
+            let fighter = *types.get("fighter").unwrap();
+            assert!(window.spots(&state, content, POK, fighter).is_empty());
+        });
+    }
+
+    #[test]
     fn obs008c2b_a_ground_force_placement_separates_space_from_a_planet() {
         let content = ContentStore::embedded();
         let (mut state, system, planet) = seated();
@@ -4271,5 +5560,1500 @@ mod tests {
         let spent = before_goods > state.player(&player()).unwrap().trade_goods
             || !state.exhausted_planets.is_empty();
         assert!(spent, "and it was paid for");
+    }
+    // -- BF-00b-economy: events, ability production and economy hooks ----------------------------
+
+    use crate::factions::hooks_economy::{EconomyHooks, with_test_hooks};
+
+    /// A seated game where `a` controls a planet holding a space dock and has trade goods to spend.
+    fn a_producing_game() -> (GameState, SystemId, PlanetId) {
+        let (mut state, system, planet) = seated();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), player());
+        put_on_planet(&mut state, &system, &planet, "spacedock", &player(), 1);
+        state.player_mut(&player()).unwrap().trade_goods = 20;
+        (state, system, planet)
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<BTreeMap<String, serde_json::Value>>>>;
+
+    /// A resolver with one listener on `event_type` that records every payload it sees.
+    fn listening_on(event_type: &str) -> (crate::timing::Resolver, Seen) {
+        let seen: Seen = Seen::default();
+        let sink = seen.clone();
+        let mut resolver = crate::timing::Resolver::new(
+            vec![player(), PlayerId::new("b")],
+            Some(player()),
+            Table::default(),
+        );
+        resolver.register([crate::timing::Ability::new(
+            "test:listener",
+            player(),
+            event_type,
+            crate::timing::Relation::After,
+            std::sync::Arc::new(move |event, _| {
+                sink.lock().unwrap().push(event.payload.clone());
+                Ok(())
+            }),
+        )]);
+        (resolver, seen)
+    }
+
+    const ARGENT_AGENT_ABILITY: &str =
+        "leader:argent:argentagent:GROUND_FORCES_BEING_PRODUCED:when";
+
+    fn argent_agent_production_board(
+        remote_owner: Option<PlayerId>,
+    ) -> (GameState, Galaxy, SystemId, PlanetId, SystemId, PlanetId) {
+        let content = ContentStore::embedded();
+        let mut state = crate::fixtures::seated_game(&[("a", "sol"), ("b", "argent")], POK);
+        let mut ids = vec!["18".to_owned()];
+        ids.extend(
+            crate::fixtures::plain_systems(14)
+                .into_iter()
+                .filter(|id| !state.board.contains_key(&SystemId::new(id.as_str())))
+                .take(6),
+        );
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let galaxy = Galaxy::build(content, &refs, POK, 1).expect("the test ring builds");
+        let producing = SystemId::new("18");
+        let producing_planet = ti4_content::galaxy::planets_in(content, "18", POK)
+            .into_iter()
+            .find(|planet| !planet.is_placed_during_play())
+            .map(|planet| PlanetId::new(planet.id()))
+            .expect("the central system has a planet");
+        let (remote_system, remote_planet) = galaxy
+            .adjacent("18")
+            .into_iter()
+            .filter_map(|system| {
+                let planet = ti4_content::galaxy::planets_in(content, system, POK)
+                    .into_iter()
+                    .find(|planet| !planet.is_placed_during_play())?;
+                Some((SystemId::new(system), PlanetId::new(planet.id())))
+            })
+            .next()
+            .expect("an adjacent system has a planet");
+
+        state
+            .system_mut(&producing)
+            .set_control(producing_planet.clone(), player());
+        crate::fixtures::put_on_planet(
+            &mut state,
+            &producing,
+            &producing_planet,
+            "spacedock",
+            &player(),
+            1,
+        );
+        if let Some(owner) = remote_owner {
+            state
+                .system_mut(&remote_system)
+                .set_control(remote_planet.clone(), owner);
+        }
+        state.player_mut(&player()).unwrap().trade_goods = 30;
+        state
+            .player_mut(&PlayerId::new("b"))
+            .unwrap()
+            .leaders
+            .insert(
+                ti4_model::id::LeaderId::new("argentagent"),
+                ti4_model::state::LeaderStatus::Readied,
+            );
+        (
+            state,
+            galaxy,
+            producing,
+            producing_planet,
+            remote_system,
+            remote_planet,
+        )
+    }
+
+    fn agent_window_services(
+        state: &GameState,
+        agent_answer: Option<&str>,
+    ) -> (
+        crate::timing::Resolver,
+        crate::event::EventSequence,
+        crate::dice::Dice,
+        crate::rng::GameRng,
+        Table,
+    ) {
+        let resolver = crate::fixtures::armed_resolver(state);
+        let mut table = Table::default();
+        if let Some(answer) = agent_answer {
+            table.seat(
+                PlayerId::new("b"),
+                Box::new(crate::choice::Scripted::new([answer])),
+            );
+        }
+        (
+            resolver,
+            crate::event::EventSequence::new(),
+            crate::dice::Dice::new(),
+            crate::rng::GameRng::new(1),
+            table,
+        )
+    }
+
+    fn agent_mark_exists(state: &GameState) -> bool {
+        state
+            .faction_marks
+            .keys()
+            .any(|key| key.starts_with("argent:argentagent:production:a:"))
+    }
+
+    fn infantry_build_offer(choice: &Choice, content: &ContentStore) -> ChoiceOption {
+        let types = catalogue(content, POK);
+        choice
+            .options
+            .iter()
+            .find(|option| {
+                option
+                    .id
+                    .strip_prefix("build|")
+                    .and_then(|rest| rest.split('|').next())
+                    .and_then(|id| types.get(id))
+                    .is_some_and(|kind| kind.base_type() == "infantry")
+            })
+            .cloned()
+            .expect("one infantry offer")
+    }
+
+    fn built_count(option: &ChoiceOption) -> usize {
+        usize::try_from(
+            option
+                .payload
+                .get("count")
+                .and_then(serde_json::Value::as_i64)
+                .expect("build offer carries its unit count"),
+        )
+        .expect("build count is nonnegative")
+    }
+
+    fn infantry_count(state: &GameState, system: &SystemId, planet: &PlanetId) -> usize {
+        let types = catalogue(ContentStore::embedded(), POK);
+        state
+            .system_state(system)
+            .on_planet(planet)
+            .iter()
+            .filter(|unit| {
+                unit.owner == player()
+                    && types
+                        .get(unit.type_id.as_str())
+                        .is_some_and(|kind| kind.base_type() == "infantry")
+            })
+            .count()
+    }
+
+    #[test]
+    fn argent_agent_redirects_another_players_infantry_to_their_adjacent_planet() {
+        let (mut state, galaxy, producing, source_planet, remote, planet) =
+            argent_agent_production_board(Some(player()));
+        let content = ContentStore::embedded();
+        let mut window = ProductionWindow::new(&state, content, POK, &player(), &producing);
+        window.credit = 30;
+        let build = infantry_build_offer(
+            &window
+                .pending_choice(&state, content, POK)
+                .expect("ground forces are producible"),
+            content,
+        );
+        let produced = built_count(&build);
+        let (mut resolver, mut sequence, mut dice, mut rng, mut table) =
+            agent_window_services(&state, Some(ARGENT_AGENT_ABILITY));
+        let mut ctx = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: Some(crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: Some(&galaxy),
+            }),
+        };
+        window
+            .resolve(&mut state, &mut ctx, build)
+            .expect("agent window resolves");
+        assert_eq!(
+            state.player(&PlayerId::new("b")).unwrap().leaders
+                [&ti4_model::id::LeaderId::new("argentagent")],
+            ti4_model::state::LeaderStatus::Exhausted
+        );
+        assert!(
+            agent_mark_exists(&state),
+            "the grant lasts through placement"
+        );
+        let place = window
+            .pending_choice(&state, content, POK)
+            .expect("local and adjacent destinations are offered");
+        let remote_id = format!("place|{remote}@{planet}");
+        let answer = place
+            .option(&remote_id)
+            .cloned()
+            .expect("the producing player's adjacent planet is offered");
+        window
+            .resolve(&mut state, &mut ctx, answer)
+            .expect("remote placement resolves");
+        assert_eq!(infantry_count(&state, &remote, &planet), produced);
+        assert_eq!(infantry_count(&state, &producing, &source_planet), 0);
+        assert!(!agent_mark_exists(&state), "placement expires the grant");
+    }
+
+    #[test]
+    fn argent_agent_decline_exhaustion_and_unlocked_leave_only_local_ground_forces() {
+        for status_and_answer in [
+            (ti4_model::state::LeaderStatus::Readied, Some("decline")),
+            (ti4_model::state::LeaderStatus::Exhausted, None),
+            (ti4_model::state::LeaderStatus::Unlocked, None),
+        ] {
+            let (mut state, galaxy, producing, source_planet, remote, planet) =
+                argent_agent_production_board(Some(player()));
+            state
+                .player_mut(&PlayerId::new("b"))
+                .unwrap()
+                .leaders
+                .insert(
+                    ti4_model::id::LeaderId::new("argentagent"),
+                    status_and_answer.0,
+                );
+            let content = ContentStore::embedded();
+            let mut window = ProductionWindow::new(&state, content, POK, &player(), &producing);
+            window.credit = 30;
+            let build = infantry_build_offer(
+                &window.pending_choice(&state, content, POK).unwrap(),
+                content,
+            );
+            let produced = built_count(&build);
+            let (mut resolver, mut sequence, mut dice, mut rng, mut table) =
+                agent_window_services(&state, status_and_answer.1);
+            let mut ctx = Resolving {
+                content,
+                sources: POK,
+                dice: &mut dice,
+                rng: &mut rng,
+                table: &mut table,
+                timing: Some(crate::choice::TimingHandle {
+                    resolver: &mut resolver,
+                    sequence: &mut sequence,
+                    galaxy: Some(&galaxy),
+                }),
+            };
+            window.resolve(&mut state, &mut ctx, build).unwrap();
+            assert!(!agent_mark_exists(&state));
+            assert_eq!(infantry_count(&state, &producing, &source_planet), produced);
+            assert_eq!(infantry_count(&state, &remote, &planet), 0);
+            assert_eq!(
+                state.player(&PlayerId::new("b")).unwrap().leaders
+                    [&ti4_model::id::LeaderId::new("argentagent")],
+                status_and_answer.0
+            );
+        }
+    }
+
+    #[test]
+    fn argent_agent_has_no_offer_for_another_players_adjacent_planet_or_for_a_ship() {
+        // The Argent player cannot redirect someone else's unit to a planet controlled by Argent.
+        let (mut state, galaxy, producing, _, remote, planet) =
+            argent_agent_production_board(Some(PlayerId::new("b")));
+        let content = ContentStore::embedded();
+        let mut window = ProductionWindow::new(&state, content, POK, &player(), &producing);
+        window.credit = 30;
+        let infantry = infantry_build_offer(
+            &window.pending_choice(&state, content, POK).unwrap(),
+            content,
+        );
+        let (mut resolver, mut sequence, mut dice, mut rng, mut table) =
+            agent_window_services(&state, None);
+        let mut ctx = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: Some(crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: Some(&galaxy),
+            }),
+        };
+        window.resolve(&mut state, &mut ctx, infantry).unwrap();
+        assert!(!agent_mark_exists(&state));
+        assert_eq!(
+            state.player(&PlayerId::new("b")).unwrap().leaders
+                [&ti4_model::id::LeaderId::new("argentagent")],
+            ti4_model::state::LeaderStatus::Readied
+        );
+
+        // Give the producer an eligible adjacent planet. A ship still does not emit the event.
+        state
+            .system_mut(&remote)
+            .set_control(planet.clone(), player());
+        let mut ships = ProductionWindow::new(&state, content, POK, &player(), &producing);
+        ships.credit = 30;
+        let cruiser = ships
+            .pending_choice(&state, content, POK)
+            .unwrap()
+            .options
+            .into_iter()
+            .find(|option| option.id == "build|cruiser|1")
+            .expect("the dock can produce a cruiser");
+        ships.resolve(&mut state, &mut ctx, cruiser).unwrap();
+        assert!(!agent_mark_exists(&state));
+        assert_eq!(infantry_count(&state, &remote, &planet), 0);
+        let probe = ctx
+            .timing
+            .as_mut()
+            .expect("the production has a timing handle")
+            .sequence
+            .next("PROBE", BTreeMap::new())
+            .expect("the sequence remains usable");
+        assert_eq!(probe.id, 2, "the ship opened no ground-force event");
+    }
+
+    #[test]
+    fn argent_agent_temporary_destination_is_cleared_when_production_errors() {
+        let (mut state, galaxy, producing, _, _, _) = argent_agent_production_board(Some(player()));
+        let content = ContentStore::embedded();
+        let mut offer_window = ProductionWindow::new(&state, content, POK, &player(), &producing);
+        offer_window.credit = 30;
+        let build_id = infantry_build_offer(
+            &offer_window
+                .pending_choice(&state, content, POK)
+                .expect("ground forces are producible"),
+            content,
+        )
+        .id;
+        let mut resolver = crate::fixtures::armed_resolver(&state);
+        let mut table = Table::default();
+        table.seat(
+            player(),
+            Box::new(crate::choice::Scripted::new([
+                build_id,
+                "invalid-place".to_owned(),
+            ])),
+        );
+        table.seat(
+            PlayerId::new("b"),
+            Box::new(crate::choice::Scripted::new([ARGENT_AGENT_ABILITY])),
+        );
+        let mut sequence = crate::event::EventSequence::new();
+        let result = {
+            let timing = crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: Some(&galaxy),
+            };
+            resolve_timed(
+                &mut state,
+                content,
+                POK,
+                Some(&galaxy),
+                &mut table,
+                Some(timing),
+                &player(),
+                &producing,
+            )
+        };
+        assert!(
+            result.is_err(),
+            "the scripted invalid placement aborts the window"
+        );
+        assert!(
+            !agent_mark_exists(&state),
+            "an aborted window cannot leak destinations"
+        );
+    }
+
+    /// Yin Spinner reads this: "After you produce units". The event names the player, the system,
+    /// the count and where each unit went, and fires once for the whole use.
+    #[test]
+    fn units_produced_event_reports_what_was_made_and_where() {
+        let (mut state, system, _planet) = a_producing_game();
+        let (mut resolver, seen) = listening_on("UNITS_PRODUCED");
+        let mut sequence = crate::event::EventSequence::new();
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(1);
+        let mut table = Table::default();
+        let mut ctx = Resolving {
+            content: ContentStore::embedded(),
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: Some(crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: None,
+            }),
+        };
+
+        let report = produce_by_ability(&mut state, &mut ctx, None, &player(), &system, Some(2))
+            .expect("resolves");
+
+        assert!(!report.produced.is_empty(), "the first offer was taken");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one event for the whole use");
+        let payload = &seen[0];
+        assert_eq!(payload["player"], "a");
+        assert_eq!(payload["system"], system.to_string());
+        assert_eq!(payload["source"], "ability");
+        assert_eq!(payload["count"], report.produced.len());
+        let units = payload["units"].as_array().expect("an array of units");
+        assert_eq!(units.len(), report.produced.len());
+        for (listed, (kind, place)) in units.iter().zip(&report.produced) {
+            assert_eq!(listed["unit_type"], kind.as_str());
+            assert_eq!(listed["place"], place.as_str());
+        }
+    }
+
+    /// Emission is unconditional (as combat and ground): with no listener the event still takes an
+    /// id and writes timing-log lines, a one-time shift recorded in the evidence.
+    #[test]
+    fn units_produced_is_emitted_even_when_nothing_listens() {
+        let (mut state, system, _planet) = a_producing_game();
+        let mut resolver =
+            crate::timing::Resolver::new(vec![player()], Some(player()), Table::default());
+        let mut sequence = crate::event::EventSequence::new();
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(1);
+        let mut table = Table::default();
+        {
+            let mut ctx = Resolving {
+                content: ContentStore::embedded(),
+                sources: POK,
+                dice: &mut dice,
+                rng: &mut rng,
+                table: &mut table,
+                timing: Some(crate::choice::TimingHandle {
+                    resolver: &mut resolver,
+                    sequence: &mut sequence,
+                    galaxy: None,
+                }),
+            };
+            let report =
+                produce_by_ability(&mut state, &mut ctx, None, &player(), &system, Some(2))
+                    .expect("resolves");
+            assert!(!report.produced.is_empty());
+        }
+        assert!(
+            resolver
+                .log()
+                .iter()
+                .any(|line| line.contains("UNITS_PRODUCED")),
+            "the emission was logged"
+        );
+        assert_eq!(sequence.next("PROBE", BTreeMap::new()).unwrap().id, 2);
+    }
+
+    /// Ability production: the limit is the ability's own, not the system's, and ground forces may
+    /// go on any controlled planet in the system even with no producer on it (Arborec flagship,
+    /// commander, hero).
+    #[test]
+    fn ability_production_has_its_own_limit_and_places_ground_forces_on_controlled_planets() {
+        let (mut state, system, planet) = seated();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), player());
+        state.player_mut(&player()).unwrap().trade_goods = 20;
+        let content = ContentStore::embedded();
+
+        // No unit here has PRODUCTION: ordinary production opens nothing.
+        let ordinary = ProductionWindow::new(&state, content, POK, &player(), &system);
+        assert!(ordinary.pending_choice(&state, content, POK).is_none());
+
+        let mut window =
+            ProductionWindow::for_ability(&state, content, POK, &player(), &system, Some(1));
+        let choice = window
+            .pending_choice(&state, content, POK)
+            .expect("an offer");
+        let infantry = choice
+            .options
+            .iter()
+            .find(|option| option.id.starts_with("build|") && option.id.contains("infantry"))
+            .cloned()
+            .expect("ground forces are offered with no producer");
+        let (mut dice, mut rng, mut inner) = (
+            crate::dice::Dice::new(),
+            crate::rng::GameRng::new(1),
+            Table::new(),
+        );
+        let mut ctx = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut inner,
+            timing: None,
+        };
+        window.resolve(&mut state, &mut ctx, infantry).unwrap();
+        while let Some(choice) = window.pending_choice(&state, content, POK) {
+            let answer = choice.options[0].clone();
+            window.resolve(&mut state, &mut ctx, answer).unwrap();
+        }
+        let report = window.into_report();
+        assert_eq!(report.produced.len(), 1, "the limit of one unit held");
+        assert_eq!(
+            report.produced[0].1,
+            planet.to_string(),
+            "placed on the controlled planet"
+        );
+        assert_eq!(report.unused_capacity, 0);
+    }
+
+    /// Mentak `mc`: one hook changes what a trade good is worth everywhere it is spent.
+    #[test]
+    fn a_trade_good_worth_hook_reaches_available_and_payment() {
+        let mut state = game(&["a", "b"]);
+        state.player_mut(&player()).unwrap().trade_goods = 3;
+        let content = ContentStore::embedded();
+        assert_eq!(
+            available(&state, content, POK, &player(), Spend::Influence),
+            3
+        );
+        let doubled = EconomyHooks {
+            trade_good_worth: Some(|_, _, worth| worth * 2),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(doubled, || {
+            assert_eq!(trade_good_worth(&state, &player()), 2);
+            assert_eq!(
+                available(&state, content, POK, &player(), Spend::Influence),
+                6
+            );
+            assert_eq!(
+                available(&state, content, POK, &player(), Spend::Resources),
+                6
+            );
+        });
+    }
+
+    /// Winnu `htp`: a planet's value as this player reads it, for a dock's capacity and for every
+    /// payment face.
+    #[test]
+    fn a_planet_spend_value_hook_reaches_capacity_and_payment_faces() {
+        let (mut state, system, planet) = a_producing_game();
+        state.player_mut(&player()).unwrap().trade_goods = 0;
+        let content = ContentStore::embedded();
+        let before_capacity = capacity(&state, content, POK, &player(), &system);
+        let before_pool = available(&state, content, POK, &player(), Spend::Resources);
+        let richer = EconomyHooks {
+            planet_spend_value: Some(|_, _, _, _, kind, value| {
+                if kind == Spend::Resources {
+                    value + 10
+                } else {
+                    value
+                }
+            }),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(richer, || {
+            assert_eq!(
+                capacity(&state, content, POK, &player(), &system),
+                before_capacity + 10
+            );
+            assert_eq!(
+                available(&state, content, POK, &player(), Spend::Resources),
+                before_pool + 10
+            );
+            let printed = planet_value_now(&state, content, POK, &planet, Spend::Resources);
+            let faces = payment_faces(&state, content, POK, &player(), &planet, Spend::Resources);
+            assert!(
+                faces
+                    .iter()
+                    .any(|(kind, worth)| *kind == Spend::Resources && *worth == printed + 10)
+            );
+        });
+        assert_eq!(
+            capacity(&state, content, POK, &player(), &system),
+            before_capacity
+        );
+    }
+
+    /// Arborec `mitosis`: a barred producer is not a spot for the unit.
+    #[test]
+    fn a_cannot_produce_hook_bars_a_producer_from_a_unit() {
+        let (state, system, _planet) = a_producing_game();
+        let content = ContentStore::embedded();
+        let types = catalogue(content, POK);
+        let infantry = types.get("infantry").copied().expect("an infantry");
+        assert!(!placements(&state, content, POK, &player(), &system, &infantry).is_empty());
+        let barred = EconomyHooks {
+            cannot_produce: Some(|_, _, _, unit, producer| {
+                unit == "infantry" && producer == "spacedock"
+            }),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(barred, || {
+            assert!(placements(&state, content, POK, &player(), &system, &infantry).is_empty());
+            let cruiser = types.get("cruiser").copied().expect("a cruiser");
+            assert!(
+                !placements(&state, content, POK, &player(), &system, &cruiser).is_empty(),
+                "only the barred unit is affected"
+            );
+        });
+    }
+    /// Mitosis: a barred producer lends the barred unit no PRODUCTION. A dock plus a Hel-Titan on
+    /// one planet; with docks barred from infantry, infantry may use only the Hel-Titan's share.
+    #[test]
+    fn a_barred_producers_production_does_not_count_for_the_barred_unit() {
+        let (mut state, system, planet) = a_producing_game();
+        put_on_planet(&mut state, &system, &planet, "titans_pds", &player(), 1);
+        let content = ContentStore::embedded();
+        let types = catalogue(content, POK);
+        let infantry = types.get("infantry").copied().expect("an infantry");
+        let infantry_batch = |state: &GameState| -> Option<String> {
+            let window = ProductionWindow::new(state, content, POK, &player(), &system);
+            window
+                .pending_choice(state, content, POK)?
+                .options
+                .into_iter()
+                .map(|option| option.id)
+                .find(|id| id.starts_with("build|") && id.contains("infantry"))
+        };
+        assert_eq!(
+            infantry_batch(&state)
+                .as_deref()
+                .map(|id| id.rsplit('|').next()),
+            Some(Some("2")),
+            "unbarred, a batch of two infantry is offered"
+        );
+        let barred = EconomyHooks {
+            cannot_produce: Some(|_, _, _, unit, producer| {
+                unit == "infantry" && producer == "spacedock"
+            }),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(barred, || {
+            let total = capacity(&state, content, POK, &player(), &system);
+            let dock = barred_capacity(&state, content, POK, &player(), &system, &infantry);
+            assert!(
+                dock > 0 && dock < total,
+                "the dock is a real share of the total"
+            );
+            let share = total - dock;
+            let expected = share.min(2);
+            match infantry_batch(&state) {
+                Some(id) => assert_eq!(id.rsplit('|').next(), Some(expected.to_string().as_str())),
+                None => assert_eq!(expected, 0),
+            }
+            // Ships are not barred, so their budget is the whole limit.
+            assert_eq!(
+                barred_capacity(
+                    &state,
+                    content,
+                    POK,
+                    &player(),
+                    &system,
+                    &types.get("cruiser").copied().unwrap()
+                ),
+                0
+            );
+        });
+    }
+
+    /// Infantry already produced this use spends the unbarred share: once it is used up, no
+    /// further infantry is offered however much of the barred dock's PRODUCTION remains.
+    #[test]
+    fn infantry_already_produced_spends_the_unbarred_share() {
+        let (mut state, system, planet) = a_producing_game();
+        put_on_planet(&mut state, &system, &planet, "titans_pds", &player(), 1);
+        let content = ContentStore::embedded();
+        let infantry = catalogue(content, POK)
+            .get("infantry")
+            .copied()
+            .expect("an infantry");
+        let barred = EconomyHooks {
+            cannot_produce: Some(|_, _, _, unit, producer| {
+                unit == "infantry" && producer == "spacedock"
+            }),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(barred, || {
+            let total = capacity(&state, content, POK, &player(), &system);
+            let share =
+                total - barred_capacity(&state, content, POK, &player(), &system, &infantry);
+            assert!(
+                share > 0 && share < total,
+                "the dock is a real share of the total"
+            );
+            let mut window = ProductionWindow::new(&state, content, POK, &player(), &system);
+            // As if `share` infantry had already been bought this use, leaving dock PRODUCTION.
+            for _ in 0..share {
+                window
+                    .report
+                    .produced
+                    .push((UnitTypeId::new("infantry"), planet.to_string()));
+            }
+            window.remaining = total - share;
+            let offered = window
+                .pending_choice(&state, content, POK)
+                .map(|choice| choice.options)
+                .unwrap_or_default();
+            assert!(
+                !offered
+                    .iter()
+                    .any(|option| option.id.starts_with("build|") && option.id.contains("infantry")),
+                "the unbarred share is spent; the dock cannot make infantry"
+            );
+        });
+    }
+
+    /// With every producer barred, nothing of that unit is offered at all.
+    #[test]
+    fn infantry_is_not_offered_when_every_producer_is_barred() {
+        let (state, system, _planet) = a_producing_game();
+        let content = ContentStore::embedded();
+        let barred = EconomyHooks {
+            cannot_produce: Some(|_, _, _, unit, _| unit == "infantry"),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(barred, || {
+            let window = ProductionWindow::new(&state, content, POK, &player(), &system);
+            let offered = window
+                .pending_choice(&state, content, POK)
+                .is_some_and(|choice| {
+                    choice.options.iter().any(|option| {
+                        option.id.starts_with("build|") && option.id.contains("infantry")
+                    })
+                });
+            assert!(!offered);
+        });
+    }
+
+    /// `resolve_timed` carries the caller's timing handle, so Warfare secondary / Construction can
+    /// announce `UNITS_PRODUCED`; with `None` it is `resolve`.
+    #[test]
+    fn resolve_timed_announces_units_produced_through_the_callers_handle() {
+        let (mut state, system, _planet) = a_producing_game();
+        let (mut resolver, seen) = listening_on("UNITS_PRODUCED");
+        let mut sequence = crate::event::EventSequence::new();
+        let mut table = Table::default();
+        let report = resolve_timed(
+            &mut state,
+            ContentStore::embedded(),
+            POK,
+            None,
+            &mut table,
+            Some(crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: None,
+            }),
+            &player(),
+            &system,
+        )
+        .unwrap();
+        assert!(!report.produced.is_empty());
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["source"], "production");
+    }
+}
+
+#[cfg(test)]
+mod mobile_dock_and_swap_tests {
+    use super::*;
+    use crate::fixtures::{a_placed_planet, game, put, put_on_planet};
+    use ti4_model::content_types::POK;
+
+    fn pid(id: &str) -> PlayerId {
+        PlayerId::new(id)
+    }
+
+    // -- mobile space dock (Saar Floating Factory) ------------------------------------------------
+
+    #[test]
+    fn a_floating_factory_in_the_space_area_is_a_producer_and_counts_for_capacity() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        let (system, planet) = a_placed_planet();
+        let a = pid("a");
+        assert!(mobile_docks(&state, content, POK, &a, &system).is_empty());
+        put(&mut state, &system, "saar_spacedock", &a, 1);
+        assert_eq!(mobile_docks(&state, content, POK, &a, &system).len(), 1);
+        assert!(mobile_docks(&state, content, POK, &pid("b"), &system).is_empty());
+        let made = producers(&state, content, POK, &a, &system);
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].1, None, "no planet: its flat printed value applies");
+        assert_eq!(capacity(&state, content, POK, &a, &system), 5);
+
+        // An ordinary dock on a planet is not a mobile dock, and adds its own value.
+        put_on_planet(&mut state, &system, &planet, "spacedock", &a, 1);
+        assert_eq!(mobile_docks(&state, content, POK, &a, &system).len(), 1);
+        assert!(capacity(&state, content, POK, &a, &system) > 5);
+    }
+
+    #[test]
+    fn it_is_still_the_same_plastic_as_a_space_dock() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a"]);
+        let (system, _) = a_placed_planet();
+        let a = pid("a");
+        put(&mut state, &system, "saar_spacedock", &a, 3);
+        assert_eq!(
+            crate::supply::remaining(&state, content, POK, &a, &UnitTypeId::new("spacedock")),
+            0,
+            "three docks of any kind are the whole box"
+        );
+    }
+
+    #[test]
+    fn an_enemy_ship_with_none_of_its_own_destroys_a_floating_factory() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        let (system, planet) = a_placed_planet();
+        let (a, b) = (pid("a"), pid("b"));
+        put(&mut state, &system, "saar_spacedock", &a, 1);
+        put_on_planet(&mut state, &system, &planet, "spacedock", &a, 1);
+
+        // No enemy, or only ground forces: not blockaded.
+        assert!(destroy_blockaded_mobile_docks(&mut state, content, POK, &system).is_empty());
+        put_on_planet(&mut state, &system, &planet, "infantry", &b, 1);
+        assert!(destroy_blockaded_mobile_docks(&mut state, content, POK, &system).is_empty());
+
+        // An enemy ship, but the owner has a ship too: not blockaded.
+        put(&mut state, &system, "cruiser", &b, 1);
+        put(&mut state, &system, "destroyer", &a, 1);
+        assert!(destroy_blockaded_mobile_docks(&mut state, content, POK, &system).is_empty());
+        assert_eq!(mobile_docks(&state, content, POK, &a, &system).len(), 1);
+
+        // The owner's last ship is gone: the dock is destroyed; the planet dock is not.
+        let pos = state
+            .system_state(&system)
+            .units
+            .iter()
+            .position(|unit| unit.type_id.as_str() == "destroyer")
+            .unwrap();
+        state.system_mut(&system).units.remove(pos);
+        let gone = destroy_blockaded_mobile_docks(&mut state, content, POK, &system);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].type_id.as_str(), "saar_spacedock");
+        assert!(mobile_docks(&state, content, POK, &a, &system).is_empty());
+        assert_eq!(
+            structures_on(&state, content, POK, &a, &planet, "spacedock"),
+            1
+        );
+        assert_eq!(
+            crate::supply::remaining(&state, content, POK, &a, &UnitTypeId::new("spacedock")),
+            2,
+            "its plastic is back in the box"
+        );
+        assert!(destroy_blockaded_mobile_docks(&mut state, content, POK, &system).is_empty());
+    }
+
+    #[test]
+    fn sling_relay_sees_a_floating_factory_as_a_space_dock() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        let (system, _) = a_placed_planet();
+        let a = pid("a");
+        state.player_mut(&a).unwrap().trade_goods = 10;
+        assert!(!sling_relay_candidates(&state, content, POK, &a).contains_key(&system));
+        put(&mut state, &system, "saar_spacedock", &a, 1);
+        let with_dock = sling_relay_candidates(&state, content, POK, &a);
+        assert!(
+            with_dock
+                .get(&system)
+                .is_some_and(|ships| !ships.is_empty()),
+            "a ship can be produced at a system whose only dock floats"
+        );
+        put(&mut state, &system, "cruiser", &pid("b"), 1);
+        assert!(!sling_relay_candidates(&state, content, POK, &a).contains_key(&system));
+    }
+
+    // -- Hegemonic Trade Policy value swap --------------------------------------------------------
+
+    /// A placed planet whose resources and influence differ, so a swap is visible.
+    fn lopsided_planet() -> (SystemId, PlanetId) {
+        let content = ContentStore::embedded();
+        ti4_content::galaxy::all_planets(content, POK)
+            .iter()
+            .filter(|(_, planet)| planet.system_id().is_some() && !planet.is_placed_during_play())
+            .map(|(id, planet)| {
+                (
+                    SystemId::new(planet.system_id().unwrap_or("18")),
+                    PlanetId::new(*id),
+                )
+            })
+            .find(|(_, planet)| {
+                planet_value(content, POK, planet, Spend::Resources)
+                    != planet_value(content, POK, planet, Spend::Influence)
+            })
+            .expect("a planet with unequal values")
+    }
+
+    #[test]
+    fn a_swap_reads_the_other_value_for_the_swapped_planet_only_and_only_during_its_use() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a"]);
+        let (_, planet) = lopsided_planet();
+        let other = PlanetId::new("elsewhere");
+        let res = planet_value_now(&state, content, POK, &planet, Spend::Resources);
+        let inf = planet_value_now(&state, content, POK, &planet, Spend::Influence);
+        assert_ne!(res, inf);
+        assert_eq!(
+            swapped_value(&state, content, POK, &planet, Spend::Resources),
+            None
+        );
+
+        state.production_seq = 3;
+        begin_value_swap(&mut state, &planet);
+        assert_eq!(swapped_planet(&state), Some(&planet));
+        assert_eq!(
+            swapped_value(&state, content, POK, &planet, Spend::Resources),
+            Some(inf)
+        );
+        assert_eq!(
+            swapped_value(&state, content, POK, &planet, Spend::Influence),
+            Some(res)
+        );
+        assert_eq!(
+            swapped_value(&state, content, POK, &other, Spend::Resources),
+            None
+        );
+
+        // A later use of PRODUCTION does not inherit it, even if nobody cleared it.
+        state.production_seq = 4;
+        assert_eq!(swapped_planet(&state), None);
+        assert_eq!(
+            swapped_value(&state, content, POK, &planet, Spend::Resources),
+            None
+        );
+        state.production_seq = 3;
+        end_value_swap(&mut state);
+        assert_eq!(swapped_planet(&state), None);
+        assert!(state.faction_marks.is_empty(), "nothing is left behind");
+        assert_eq!(state.production_value_swapped_planet, None);
+    }
+
+    #[test]
+    fn the_swap_reaches_a_docks_production_through_the_planet_value_hook() {
+        use crate::factions::hooks_economy::{EconomyHooks, with_test_hooks};
+        let content = ContentStore::embedded();
+        let mut state = game(&["a"]);
+        let (system, planet) = lopsided_planet();
+        let a = pid("a");
+        put_on_planet(&mut state, &system, &planet, "spacedock", &a, 1);
+        let inf = planet_value_now(&state, content, POK, &planet, Spend::Influence);
+        let printed = capacity(&state, content, POK, &a, &system);
+
+        let hooks = EconomyHooks {
+            planet_spend_value: Some(|state, content, _, planet, kind, value| {
+                swapped_value(state, content, POK, planet, kind).unwrap_or(value)
+            }),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(hooks, || {
+            assert_eq!(
+                capacity(&state, content, POK, &a, &system),
+                printed,
+                "no swap yet"
+            );
+            begin_value_swap(&mut state, &planet);
+            // Space dock: PRODUCTION is the planet's resources + 2; swapped, its influence + 2.
+            assert_eq!(capacity(&state, content, POK, &a, &system), inf + 2);
+            end_value_swap(&mut state);
+            assert_eq!(capacity(&state, content, POK, &a, &system), printed);
+        });
+    }
+
+    #[test]
+    fn a_finished_production_use_ends_the_swap() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a"]);
+        let (system, planet) = lopsided_planet();
+        begin_value_swap(&mut state, &planet);
+        let mut table = Table::new();
+        // No producing unit: the window closes at once, and the use is over.
+        let report = resolve(
+            &mut state,
+            content,
+            POK,
+            None,
+            &mut table,
+            &pid("a"),
+            &system,
+        )
+        .unwrap();
+        assert!(report.produced.is_empty());
+        assert_eq!(state.production_value_swapped_planet, None);
+        assert!(state.faction_marks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod bf_f3_tests {
+    use super::*;
+    use crate::factions::hooks_economy::{EconomyHooks, with_test_hooks};
+    use crate::fixtures::{a_placed_planet, game, put_on_planet};
+    use ti4_model::content_types::POK;
+
+    fn pid(id: &str) -> PlayerId {
+        PlayerId::new(id)
+    }
+
+    fn dock_game() -> (GameState, SystemId, PlanetId) {
+        let mut state = game(&["a", "b"]);
+        let (system, planet) = a_placed_planet();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), pid("a"));
+        put_on_planet(&mut state, &system, &planet, "spacedock", &pid("a"), 1);
+        state.player_mut(&pid("a")).unwrap().trade_goods = 20;
+        (state, system, planet)
+    }
+
+    fn costs(window: &ProductionWindow, state: &GameState) -> Vec<(String, i64)> {
+        window
+            .pending_choice(state, ContentStore::embedded(), POK)
+            .map(|choice| {
+                choice
+                    .options
+                    .iter()
+                    .filter_map(|option| {
+                        Some((
+                            option.payload.get("unit")?.as_str()?.to_owned(),
+                            option.payload.get("cost")?.as_i64()?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn nomad_grant_arena() -> (GameState, SystemId, PlanetId) {
+        let (mut state, system, planet) = dock_game();
+        state.player_mut(&pid("a")).unwrap().faction = ti4_model::id::FactionId::new("sol");
+        state.player_mut(&pid("a")).unwrap().trade_goods = 0;
+        state.exhausted_planets.extend(
+            state
+                .controlled_planets(&pid("a"))
+                .into_iter()
+                .map(|(_, p)| p.clone())
+                .collect::<Vec<_>>(),
+        );
+        (state, system, planet)
+    }
+
+    #[test]
+    fn borrowed_nomad_commander_places_a_free_flagship_without_spending_discounts() {
+        let (mut state, system, _) = nomad_grant_arena();
+        let content = ContentStore::embedded();
+        assert!(crate::promissory::grant_commander_ability(
+            &mut state,
+            content,
+            &pid("a"),
+            "nomadcommander"
+        ));
+        let mut window =
+            ProductionWindow::for_ability(&state, content, POK, &pid("a"), &system, Some(2));
+        window.discount_remaining = 3;
+        window.credit = 1;
+        assert!(
+            !buildable_for(&state, content, POK, &pid("a")).contains(&"nomad_flagship".to_owned()),
+            "borrowed rights do not add another faction's flagship"
+        );
+        let choice = window.pending_choice(&state, content, POK).unwrap();
+        let option = choice
+            .options
+            .iter()
+            .find(|option| option.id == "build|sol_flagship|1")
+            .expect("free flagship is affordable with zero resources")
+            .clone();
+        assert_eq!(option.payload["cost"], 0);
+        assert_eq!(option.payload["discount"], 0);
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(1);
+        let mut table = Table::default();
+        let mut ctx = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: None,
+        };
+        window.resolve(&mut state, &mut ctx, option).unwrap();
+        assert!(
+            state
+                .system_state(&system)
+                .units
+                .iter()
+                .any(|u| u.owner == pid("a") && u.type_id.as_str() == "sol_flagship")
+        );
+        assert_eq!(window.remaining, 1, "free still consumes production");
+        assert_eq!(window.discount_remaining, 3);
+        assert_eq!(window.credit, 1);
+        assert_eq!(state.player(&pid("a")).unwrap().trade_goods, 0);
+    }
+
+    #[test]
+    fn nomad_grants_are_recipient_bound_and_a_locked_alliance_is_not_free() {
+        let (mut state, system, _) = nomad_grant_arena();
+        let content = ContentStore::embedded();
+        assert!(crate::promissory::grant_commander_ability(
+            &mut state,
+            content,
+            &pid("b"),
+            "nomadcommander"
+        ));
+        state.player_mut(&pid("b")).unwrap().faction = ti4_model::id::FactionId::new("nomad");
+        state.player_mut(&pid("b")).unwrap().leaders.insert(
+            ti4_model::id::LeaderId::new("nomadcommander"),
+            ti4_model::state::LeaderStatus::Locked,
+        );
+        state
+            .promissory_notes
+            .insert("an:nomad".to_owned(), pid("a"));
+        state.promissory_faceup.insert("an:nomad".to_owned());
+        let window =
+            ProductionWindow::for_ability(&state, content, POK, &pid("a"), &system, Some(1));
+        assert!(
+            !window
+                .pending_choice(&state, content, POK)
+                .is_some_and(|choice| choice
+                    .options
+                    .iter()
+                    .any(|o| o.id == "build|sol_flagship|1"))
+        );
+        state.player_mut(&pid("b")).unwrap().leaders.insert(
+            ti4_model::id::LeaderId::new("nomadcommander"),
+            ti4_model::state::LeaderStatus::Unlocked,
+        );
+        assert!(
+            window
+                .pending_choice(&state, content, POK)
+                .unwrap()
+                .options
+                .iter()
+                .any(|o| o.id == "build|sol_flagship|1")
+        );
+    }
+
+    #[test]
+    fn cabal_exemptions_are_recipient_bound_and_require_an_unlocked_alliance_owner() {
+        let (mut state, system, _) = nomad_grant_arena();
+        let content = ContentStore::embedded();
+        state.player_mut(&pid("a")).unwrap().trade_goods = 10;
+        assert!(crate::promissory::grant_commander_ability(
+            &mut state,
+            content,
+            &pid("b"),
+            "cabalcommander"
+        ));
+        state.player_mut(&pid("b")).unwrap().faction = ti4_model::id::FactionId::new("cabal");
+        state.player_mut(&pid("b")).unwrap().leaders.insert(
+            ti4_model::id::LeaderId::new("cabalcommander"),
+            ti4_model::state::LeaderStatus::Locked,
+        );
+        state
+            .promissory_notes
+            .insert("an:cabal".to_owned(), pid("a"));
+        state.promissory_faceup.insert("an:cabal".to_owned());
+        let window =
+            ProductionWindow::for_ability(&state, content, POK, &pid("a"), &system, Some(1));
+        assert!(
+            !window
+                .pending_choice(&state, content, POK)
+                .is_some_and(|choice| choice
+                    .options
+                    .iter()
+                    .any(|o| o.id == "build|sol_infantry|2"))
+        );
+        state.player_mut(&pid("b")).unwrap().leaders.insert(
+            ti4_model::id::LeaderId::new("cabalcommander"),
+            ti4_model::state::LeaderStatus::Unlocked,
+        );
+        let window =
+            ProductionWindow::for_ability(&state, content, POK, &pid("a"), &system, Some(1));
+        assert!(
+            window
+                .pending_choice(&state, content, POK)
+                .unwrap()
+                .options
+                .iter()
+                .any(|o| o.id == "build|sol_infantry|2")
+        );
+    }
+
+    #[test]
+    fn borrowed_cabal_commander_preserves_two_small_unit_exemptions_after_normal_capacity() {
+        for cruiser_first in [true, false] {
+            let (mut state, system, _) = nomad_grant_arena();
+            let content = ContentStore::embedded();
+            state.player_mut(&pid("a")).unwrap().trade_goods = 10;
+            assert!(crate::promissory::grant_commander_ability(
+                &mut state,
+                content,
+                &pid("a"),
+                "cabalcommander"
+            ));
+            let mut window =
+                ProductionWindow::for_ability(&state, content, POK, &pid("a"), &system, Some(1));
+            let mut dice = crate::dice::Dice::new();
+            let mut rng = crate::rng::GameRng::new(1);
+            let mut table = Table::default();
+            let mut ctx = Resolving {
+                content,
+                sources: POK,
+                dice: &mut dice,
+                rng: &mut rng,
+                table: &mut table,
+                timing: None,
+            };
+            let ids = if cruiser_first {
+                ["build|cruiser|1", "build|sol_infantry|2"]
+            } else {
+                ["build|sol_infantry|2", "build|cruiser|1"]
+            };
+            for id in ids {
+                let choice = window
+                    .pending_choice(&state, content, POK)
+                    .expect("unused exemption keeps production open");
+                let option = choice
+                    .options
+                    .iter()
+                    .find(|option| option.id == id)
+                    .unwrap_or_else(|| panic!("{id} must be legal; {:?}", choice.options))
+                    .clone();
+                if cruiser_first && id.contains("infantry") {
+                    assert_eq!(window.remaining, 0);
+                    assert!(
+                        !choice
+                            .options
+                            .iter()
+                            .any(|o| o.id.starts_with("build|sol_mech|")
+                                || o.id.starts_with("build|cruiser|")),
+                        "only fighters and infantry can use the extra allowance"
+                    );
+                    assert_eq!(option.payload["production_spent"], 0);
+                }
+                window.resolve(&mut state, &mut ctx, option).unwrap();
+            }
+            assert_eq!(window.remaining, 0);
+            assert_eq!(window.report.produced.len(), 3);
+            assert_eq!(
+                state.player(&pid("a")).unwrap().trade_goods,
+                7,
+                "capacity exemption does not waive resource costs"
+            );
+            assert!(
+                window.pending_choice(&state, content, POK).is_none(),
+                "two exempt units exhaust the allowance"
+            );
+        }
+    }
+
+    #[test]
+    fn a_module_grants_production_to_a_system_with_no_producer() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        state.player_mut(&pid("a")).unwrap().trade_goods = 20;
+        let (system, _) = a_placed_planet();
+        let a = pid("a");
+        let types = catalogue(content, POK);
+        let infantry = types.get("infantry").copied().expect("an infantry");
+        assert_eq!(capacity(&state, content, POK, &a, &system), 0);
+        assert!(placements(&state, content, POK, &a, &system, &infantry).is_empty());
+        let reactor = EconomyHooks {
+            extra_production: Some(|_, _, _, player, _| i64::from(player.as_str() == "a") * 5),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(reactor, || {
+            assert_eq!(capacity(&state, content, POK, &a, &system), 5);
+            assert_eq!(capacity(&state, content, POK, &pid("b"), &system), 0);
+            assert!(
+                placements(&state, content, POK, &a, &system, &infantry)
+                    .contains(&SPACE.to_owned()),
+                "a producer in the space area is a spot"
+            );
+            let cruiser = types.get("cruiser").copied().expect("a cruiser");
+            assert_eq!(
+                placements(&state, content, POK, &a, &system, &cruiser),
+                vec![SPACE.to_owned()]
+            );
+            let window = ProductionWindow::new(&state, content, POK, &a, &system);
+            assert!(!costs(&window, &state).is_empty(), "the window opens");
+        });
+    }
+
+    #[test]
+    fn a_planet_hook_adds_capacity_and_a_ground_spot() {
+        let content = ContentStore::embedded();
+        let mut state = game(&["a", "b"]);
+        let (system, planet) = a_placed_planet();
+        let a = pid("a");
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), a.clone());
+        put_on_planet(&mut state, &system, &planet, "pds", &a, 1);
+        let types = catalogue(content, POK);
+        let infantry = types.get("infantry").copied().expect("an infantry");
+        assert_eq!(capacity(&state, content, POK, &a, &system), 0);
+        assert!(placements(&state, content, POK, &a, &system, &infantry).is_empty());
+        let hololattice = EconomyHooks {
+            extra_production_planet: Some(|_, _, _, _, _, _| 1),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(hololattice, || {
+            assert_eq!(capacity(&state, content, POK, &a, &system), 1);
+            assert_eq!(
+                placements(&state, content, POK, &a, &system, &infantry),
+                vec![planet.to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn a_cost_reduction_lowers_the_combined_bill_and_never_below_zero() {
+        let (state, system, _) = dock_game();
+        let content = ContentStore::embedded();
+        let a = pid("a");
+        let plain = ProductionWindow::new(&state, content, POK, &a, &system);
+        let base = costs(&plain, &state);
+        let cruiser = base
+            .iter()
+            .find(|(id, _)| id == "cruiser")
+            .expect("cruiser")
+            .1;
+        assert_eq!(cruiser, 2);
+        let synthesis = EconomyHooks {
+            production_cost_reduction: Some(|_, _, _| 1),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(synthesis, || {
+            let window = ProductionWindow::new(&state, content, POK, &a, &system);
+            let reduced = costs(&window, &state);
+            assert_eq!(reduced.iter().find(|(id, _)| id == "cruiser").unwrap().1, 1);
+            assert!(reduced.iter().all(|(_, cost)| *cost >= 0));
+        });
+        let huge = EconomyHooks {
+            production_cost_reduction: Some(|_, _, _| 50),
+            ..EconomyHooks::NONE
+        };
+        with_test_hooks(huge, || {
+            let window = ProductionWindow::new(&state, content, POK, &a, &system);
+            assert!(costs(&window, &state).iter().all(|(_, cost)| *cost == 0));
+        });
+    }
+
+    #[test]
+    fn an_ability_may_cap_the_cost_of_each_unit() {
+        let (state, system, _) = dock_game();
+        let content = ContentStore::embedded();
+        let a = pid("a");
+        let open = ProductionWindow::for_ability(&state, content, POK, &a, &system, Some(2));
+        let all: Vec<String> = costs(&open, &state).into_iter().map(|(id, _)| id).collect();
+        assert!(all.iter().any(|id| id == "dreadnought"));
+        let capped = ProductionWindow::for_ability(&state, content, POK, &a, &system, Some(2))
+            .with_max_unit_cost(Some(2));
+        let some: Vec<String> = costs(&capped, &state)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(some.iter().any(|id| id == "cruiser"), "cost 2 fits");
+        assert!(
+            !some.iter().any(|id| id == "dreadnought"),
+            "cost 4 does not"
+        );
+        assert!(!some.iter().any(|id| id == "carrier"), "cost 3 does not");
+    }
+
+    #[test]
+    fn production_with_no_timing_stages_units_produced_for_a_later_flush() {
+        let content = ContentStore::embedded();
+        let mut state = crate::fixtures::seated_game(&[("a", "mentak"), ("b", "sol")], POK);
+        let (system, planet) = a_placed_planet();
+        state
+            .system_mut(&system)
+            .set_control(planet.clone(), pid("a"));
+        put_on_planet(&mut state, &system, &planet, "spacedock", &pid("a"), 1);
+        state.player_mut(&pid("a")).unwrap().trade_goods = 20;
+        let mut table = Table::default();
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(1);
+        {
+            let mut quiet = Resolving {
+                content,
+                sources: POK,
+                dice: &mut dice,
+                rng: &mut rng,
+                table: &mut table,
+                timing: None,
+            };
+            let report =
+                produce_by_ability(&mut state, &mut quiet, None, &pid("a"), &system, Some(1))
+                    .expect("resolves");
+            assert!(!report.produced.is_empty());
+            assert_eq!(
+                crate::supply::staged_event_types(&state),
+                ["UNITS_PRODUCED"]
+            );
+            assert_eq!(
+                crate::supply::flush_staged_events(&mut state, &mut quiet),
+                0
+            );
+        }
+
+        let mut resolver = crate::timing::Resolver::new(
+            vec![pid("a"), pid("b")],
+            Some(pid("a")),
+            Table::default(),
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        resolver.register([crate::timing::Ability::new(
+            "test:listener",
+            pid("a"),
+            "UNITS_PRODUCED",
+            crate::timing::Relation::After,
+            std::sync::Arc::new(move |event, _| {
+                sink.lock().unwrap().push(event.payload.clone());
+                Ok(())
+            }),
+        )]);
+        let mut sequence = crate::event::EventSequence::new();
+        let mut table = Table::default();
+        let mut loud = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: Some(crate::choice::TimingHandle {
+                resolver: &mut resolver,
+                sequence: &mut sequence,
+                galaxy: None,
+            }),
+        };
+        assert_eq!(crate::supply::flush_staged_events(&mut state, &mut loud), 1);
+        assert_eq!(crate::supply::staged_events(&state), 0);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["source"], "ability");
+    }
+
+    #[test]
+    fn a_game_with_no_module_seat_stages_nothing() {
+        let (mut state, system, _) = dock_game();
+        let content = ContentStore::embedded();
+        let mut table = Table::default();
+        let mut dice = crate::dice::Dice::new();
+        let mut rng = crate::rng::GameRng::new(1);
+        let mut ctx = Resolving {
+            content,
+            sources: POK,
+            dice: &mut dice,
+            rng: &mut rng,
+            table: &mut table,
+            timing: None,
+        };
+        produce_by_ability(&mut state, &mut ctx, None, &pid("a"), &system, Some(1)).unwrap();
+        assert_eq!(crate::supply::staged_events(&state), 0);
+        assert!(state.faction_marks.is_empty());
     }
 }

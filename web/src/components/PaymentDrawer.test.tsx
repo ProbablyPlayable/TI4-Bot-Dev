@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { PaymentDrawer } from "./PaymentDrawer.tsx";
+import { PaymentDraftProvider } from "../presentation/PaymentDraftContext.tsx";
 import { PendingChoiceDto, PlayerView } from "../protocol/types.ts";
 
 const mockPaymentChoice: PendingChoiceDto = {
@@ -142,6 +143,26 @@ describe("PaymentDrawer Component", () => {
     expect(screen.queryByText("mecatol_rex")).not.toBeInTheDocument();
   });
 
+  it("keeps confirm disabled until the staged amount covers the bill", () => {
+    render(
+      <PaymentDrawer
+        choice={mockPaymentChoice}
+        player={mockPlayer}
+        onSubmit={vi.fn()}
+        isOpen={true}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const arinam = screen.getByTestId("planet-card-exhaust|arinam");
+    fireEvent.click(arinam.querySelector('input[type="checkbox"]')!);
+
+    const confirmBtn = screen.getByTestId("confirm-payment-btn");
+    expect(screen.getByTestId("committed-amount")).toHaveTextContent("1 Resources");
+    expect(confirmBtn).toBeDisabled();
+    expect(confirmBtn).toHaveTextContent("Stage 3 more to pay");
+  });
+
   it("toggles planet selection and enables confirm when debt is met", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(
@@ -221,5 +242,109 @@ describe("PaymentDrawer Component", () => {
       fireEvent.click(declineBtn);
     });
     expect(onSubmit).toHaveBeenCalledWith("decline");
+  });
+
+  it("stages only one variant of a planet that is offered as several options", () => {
+    const variants: PendingChoiceDto = {
+      ...mockPaymentChoice,
+      prompt: "pay 3 more influence",
+      options: [
+        {
+          id: "exhaust|archonren",
+          label: "exhaust archonren for 2 resources",
+          kind: "pay",
+          payload: { worth: 2, owed: 3, kind: "resources", source: "planet", planet_name: "Archon Ren" },
+        },
+        {
+          id: "exhaust|archonren|influence",
+          label: "exhaust archonren for 3 influence",
+          kind: "pay",
+          payload: { worth: 3, owed: 3, kind: "influence", source: "planet", planet_name: "Archon Ren" },
+        },
+        { id: "decline", label: "Cancel Payment", kind: "decline" },
+      ],
+    };
+    render(
+      <PaymentDrawer
+        choice={variants}
+        player={mockPlayer}
+        viewerSeat="p1"
+        onSubmit={vi.fn()}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    const resources = screen.getByTestId("planet-card-exhaust|archonren");
+    const influence = screen.getByTestId("planet-card-exhaust|archonren|influence");
+    fireEvent.click(resources.querySelector("input")!);
+    expect(resources).toHaveAttribute("data-selected", "true");
+    fireEvent.click(influence.querySelector("input")!);
+    expect(influence).toHaveAttribute("data-selected", "true");
+    expect(resources).toHaveAttribute("data-selected", "false");
+  });
+
+  it("Auto-pay stages the cheapest covering planets and nothing is submitted until confirm", () => {
+    const onSubmit = vi.fn();
+    render(
+      <PaymentDrawer
+        choice={mockPaymentChoice}
+        player={mockPlayer}
+        viewerSeat="p1"
+        onSubmit={onSubmit}
+        isOpen
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("payment-problem")).toHaveTextContent(/Short by 4/);
+    fireEvent.click(screen.getByTestId("auto-pay-btn"));
+    expect(screen.getByTestId("committed-amount")).toHaveTextContent("4 Resources");
+    expect(screen.getByTestId("planet-card-exhaust|jord")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByTestId("confirm-payment-btn")).toBeEnabled();
+    expect(screen.queryByTestId("payment-problem")).not.toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("shows a staged selection made on the map through the shared draft", () => {
+    const togglePlanet = vi.fn();
+    render(
+      <PaymentDraftProvider
+        value={{
+          draft: { planetIds: ["exhaust|arinam"], tradeGoods: 0 },
+          togglePlanet,
+          setTradeGoods: vi.fn(),
+          setDraft: vi.fn(),
+          reset: vi.fn(),
+        }}
+      >
+        <PaymentDrawer
+          choice={mockPaymentChoice}
+          player={mockPlayer}
+          viewerSeat="p1"
+          onSubmit={vi.fn()}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </PaymentDraftProvider>,
+    );
+    expect(screen.getByTestId("planet-card-exhaust|arinam")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByTestId("committed-amount")).toHaveTextContent("1 Resources");
+    fireEvent.click(screen.getByTestId("planet-card-exhaust|jord").querySelector("input")!);
+    expect(togglePlanet).toHaveBeenCalledWith("exhaust|jord");
+  });
+
+  it("Pick on map closes the list", () => {
+    const onClose = vi.fn();
+    render(
+      <PaymentDrawer
+        choice={mockPaymentChoice}
+        player={mockPlayer}
+        viewerSeat="p1"
+        onSubmit={vi.fn()}
+        isOpen
+        onClose={onClose}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("pick-on-map-btn"));
+    expect(onClose).toHaveBeenCalled();
   });
 });

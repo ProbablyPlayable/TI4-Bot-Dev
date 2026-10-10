@@ -3,7 +3,7 @@
 //! Ported from the oracle's `engine/factions.py` `deploy` and `home_systems`, and the
 //! galaxy-building half of `engine/game.py` `seated_game`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ti4_content::ContentStore;
 use ti4_content::factions::{self, FleetError, Placement};
@@ -13,8 +13,64 @@ use ti4_model::id::{FactionId, PlanetId, PlayerId, SystemId, TechnologyId};
 use ti4_model::state::GameState;
 use ti4_model::units::Unit;
 
-/// Mecatol Rex, which sits at the centre of the board.
+/// Mecatol Rex, which sits at the centre of the board: the base tile.
 pub const MECATOL: &str = "18";
+
+/// The Thunder's Edge Mecatol Rex tile, whose planet (`mrte`) is legendary (The Galactic Council).
+/// Placed instead of [`MECATOL`] whenever Thunder's Edge content is in scope.
+pub const MECATOL_TE: &str = "112";
+
+/// Whether `system` is Mecatol Rex, either printing.
+#[must_use]
+pub fn is_mecatol(system: &str) -> bool {
+    system == MECATOL || system == MECATOL_TE
+}
+
+/// Whether `planet` is the planet Mecatol Rex, either printing.
+#[must_use]
+pub fn is_mecatol_planet(planet: &str) -> bool {
+    planet == "mr" || planet == "mrte"
+}
+
+/// The Mecatol Rex tile a new board uses under `sources`: the Thunder's Edge printing when it is
+/// available, else the base tile.
+#[must_use]
+pub fn mecatol_for(content: &ContentStore, sources: SourceSet) -> &'static str {
+    if all_systems(content, sources).contains_key(MECATOL_TE) {
+        MECATOL_TE
+    } else {
+        MECATOL
+    }
+}
+
+/// The Mecatol Rex tile on this board (the base tile when neither is present).
+#[must_use]
+pub fn mecatol_on(state: &GameState) -> &'static str {
+    if state.board.contains_key(&SystemId::new(MECATOL_TE)) {
+        MECATOL_TE
+    } else {
+        MECATOL
+    }
+}
+
+/// The Mecatol Rex tile placed on this map (the base tile when neither is placed).
+#[must_use]
+pub fn mecatol_in_galaxy(galaxy: &Galaxy) -> &'static str {
+    if galaxy.coord_of(MECATOL_TE).is_some() {
+        MECATOL_TE
+    } else {
+        MECATOL
+    }
+}
+
+/// The Creuss Gate (tile 17): where the Creuss home position sits **on the map**. It prints a
+/// delta wormhole and no planet, and "is not a home system" (Creuss Gate ability).
+pub const CREUSS_GATE: &str = "17";
+
+/// The Creuss home system (tile 51): off the map, beside the board, connected to the gate by the
+/// delta wormholes both tiles print. The corpus's `homeSystem` for `ghost` names the gate; the
+/// seat's home system -- where its units start and its planet lies -- is this tile.
+pub const CREUSS_HOME: &str = "51";
 
 /// Something went wrong seating a game.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -27,10 +83,32 @@ pub enum SeatingError {
     UnknownPlayer(String),
     #[error("the board needs {wanted} filler tiles to space the homes, but was given {given}")]
     NotEnoughFiller { wanted: usize, given: usize },
+    /// The Tribuni: a Keleres variant must be an unplayed faction among Mentak, Xxcha and Argent.
+    #[error("Keleres variant {variant:?} needs {faction:?}, which another seat plays")]
+    TribuniFactionPlayed {
+        variant: String,
+        faction: &'static str,
+    },
+    /// Only one seat can be the Council Keleres.
+    #[error("the Council Keleres is seated more than once")]
+    KeleresSeatedTwice,
     #[error(transparent)]
     Fleet(#[from] FleetError),
     #[error(transparent)]
     Galaxy(#[from] GalaxyError),
+}
+
+/// Why an explicit seeded faction assignment could not be built.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FactionAssignmentError {
+    #[error("faction candidate roster is empty")]
+    EmptyRoster,
+    #[error("duplicate faction candidate {0:?}")]
+    DuplicateCandidate(String),
+    #[error("duplicate player id {0:?}")]
+    DuplicatePlayer(String),
+    #[error("{players} players require distinct factions, but the roster has only {candidates}")]
+    InsufficientCandidates { players: usize, candidates: usize },
 }
 
 /// The factions this project plays.
@@ -51,22 +129,83 @@ pub enum SeatingError {
 /// not a scope decision, and a scope decision should not be alphabetical order.
 pub const IN_SCOPE_FACTIONS: [&str; 6] = ["sol", "hacan", "letnev", "xxcha", "jolnar", "l1z1x"];
 
-/// Faction assignments for a table, taking the in-scope factions in order.
+/// The factions of seats seven and eight.
 ///
-/// Seats beyond the sixth reuse the list from the start, so a larger table is still playing
-/// factions this engine implements rather than falling off the end into unported ones.
+/// HACK (2026-10-09, owner decision): an eight-player table needs eight factions and eight home
+/// systems, and the scope has six. These two are seated although they are **not fully ported**.
+/// They are kept out of [`IN_SCOPE_FACTIONS`] on purpose, so nothing that reads the scope
+/// (coverage, training, the advisor) changes. To undo: port two factions, add them to the scope,
+/// and delete this constant.
+pub const EXTRA_SEAT_FACTIONS: [&str; 2] = ["sardakk", "yin"];
+
+/// The faction of the seat at `index` (0-based): the in-scope factions in order, then
+/// [`EXTRA_SEAT_FACTIONS`]. Seats beyond the eighth reuse the list from the start.
+#[must_use]
+pub fn seat_faction(index: usize) -> &'static str {
+    let seats = IN_SCOPE_FACTIONS.len() + EXTRA_SEAT_FACTIONS.len();
+    let index = index % seats;
+    IN_SCOPE_FACTIONS
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| EXTRA_SEAT_FACTIONS[index - IN_SCOPE_FACTIONS.len()])
+}
+
+/// Faction assignments for a table, by seat: see [`seat_faction`].
 #[must_use]
 pub fn seat_in_scope(players: &[PlayerId]) -> BTreeMap<PlayerId, FactionId> {
     players
         .iter()
         .enumerate()
-        .map(|(index, player)| {
-            (
-                player.clone(),
-                FactionId::new(IN_SCOPE_FACTIONS[index % IN_SCOPE_FACTIONS.len()]),
-            )
-        })
+        .map(|(index, player)| (player.clone(), FactionId::new(seat_faction(index))))
         .collect()
+}
+
+/// Assign distinct factions from an explicit ordered roster using an independent seeded stream.
+///
+/// Candidate order is part of the input: the helper shuffles a copy with the dedicated
+/// `seating:faction-assignment:v1` domain, then assigns the first candidates in that shuffled
+/// order to `players` in their input order. This preparation primitive is independent of
+/// [`IN_SCOPE_FACTIONS`] and is not wired into game setup by itself.
+///
+/// # Errors
+/// Returns an error for an empty or duplicate candidate roster, duplicate players, or too few
+/// candidates to give every player a distinct faction.
+pub fn seeded_faction_assignments(
+    candidates: &[&str],
+    players: &[PlayerId],
+    seed: u64,
+) -> Result<BTreeMap<PlayerId, FactionId>, FactionAssignmentError> {
+    if candidates.is_empty() {
+        return Err(FactionAssignmentError::EmptyRoster);
+    }
+    let mut seen_candidates = BTreeSet::new();
+    for candidate in candidates {
+        if !seen_candidates.insert(*candidate) {
+            return Err(FactionAssignmentError::DuplicateCandidate(
+                (*candidate).to_owned(),
+            ));
+        }
+    }
+    let mut seen_players = BTreeSet::new();
+    for player in players {
+        if !seen_players.insert(player.to_string()) {
+            return Err(FactionAssignmentError::DuplicatePlayer(player.to_string()));
+        }
+    }
+    if candidates.len() < players.len() {
+        return Err(FactionAssignmentError::InsufficientCandidates {
+            players: players.len(),
+            candidates: candidates.len(),
+        });
+    }
+
+    let mut rng = crate::rng::GameRng::new(seed);
+    let shuffled = rng.shuffled("seating:faction-assignment:v1", candidates);
+    Ok(players
+        .iter()
+        .zip(shuffled)
+        .map(|(player, alias)| (player.clone(), FactionId::new(alias)))
+        .collect())
 }
 
 /// Home system tile ids for a player-to-faction assignment, in assignment order.
@@ -90,7 +229,79 @@ pub fn home_systems(
         .collect()
 }
 
+/// The faction whose home system, command tokens and control markers a Keleres variant takes
+/// (The Tribuni), or `None` for any other faction.
+///
+/// "Take that faction's home system, command tokens and control markers" is, in this engine, the
+/// variant's own faction record: `keleresm` / `keleresx` / `keleresa` carry that faction's home
+/// system, home planets and starting fleet already (`factions.json`). Command tokens are pool
+/// counts (not coloured pieces) and control is recorded per seat, so there is nothing further to
+/// take: the substantive rule is that the base faction must not also be played.
+#[must_use]
+pub fn tribuni_base(variant: &str) -> Option<&'static str> {
+    match variant {
+        "keleresm" => Some("mentak"),
+        "keleresx" => Some("xxcha"),
+        "keleresa" => Some("argent"),
+        _ => None,
+    }
+}
+
+/// The Keleres variants The Tribuni still allows, given the factions the other seats play: those
+/// whose base faction is unplayed, in Tribuni order.
+#[must_use]
+pub fn tribuni_variants_available<'a>(
+    others: impl IntoIterator<Item = &'a str> + Clone,
+) -> Vec<&'static str> {
+    crate::factions::keleres::VARIANTS
+        .into_iter()
+        .filter(|variant| {
+            let base = tribuni_base(variant);
+            !others
+                .clone()
+                .into_iter()
+                .any(|played| Some(played) == base)
+        })
+        .collect()
+}
+
+/// The Tribuni (and the one-faction-per-seat rule): a Keleres variant's base faction is unplayed,
+/// and only one seat is the Council Keleres.
+///
+/// `factions` is every seat's faction. Order-independent, so a table is legal or not however its
+/// seats were listed.
+///
+/// # Errors
+/// [`SeatingError::TribuniFactionPlayed`] or [`SeatingError::KeleresSeatedTwice`].
+pub fn validate_tribuni<'a>(
+    factions: impl IntoIterator<Item = &'a str> + Clone,
+) -> Result<(), SeatingError> {
+    let mut keleres = factions
+        .clone()
+        .into_iter()
+        .filter(|faction| crate::factions::keleres::is_keleres_faction(faction));
+    let Some(variant) = keleres.next() else {
+        return Ok(());
+    };
+    if keleres.next().is_some() {
+        return Err(SeatingError::KeleresSeatedTwice);
+    }
+    match tribuni_base(variant) {
+        Some(base) if factions.into_iter().any(|played| played == base) => {
+            Err(SeatingError::TribuniFactionPlayed {
+                variant: variant.to_owned(),
+                faction: base,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Seat one player as a faction and place their opening position.
+///
+/// The Tribuni is enforced here as well as in [`build_board`]: a Keleres variant is refused while
+/// another seat holds its base faction, and a base faction is refused while a Keleres seat holds
+/// the variant that took it.
 ///
 /// Sets control of every home planet, deploys the starting fleet with `mech` and `flagship`
 /// resolved to the faction's own versions, and grants the faction's starting technology.
@@ -112,7 +323,29 @@ pub fn deploy(
     let home = faction
         .home_system()
         .ok_or_else(|| SeatingError::NoHomeSystem(alias.to_string()))?;
-    let system_id = SystemId::new(home);
+    // Creuss: "place the Creuss Gate (tile 17) where your home system would normally be placed ...
+    // Then, place your home system (tile 51) in your play area." The faction record names the
+    // gate; the seat's home system, with its planet and starting fleet, is tile 51.
+    let system_id = SystemId::new(if home == CREUSS_GATE {
+        CREUSS_HOME
+    } else {
+        home
+    });
+    // The Tribuni, against the seats as they stand with this one assigned (checked first, so a
+    // refused seat leaves the state untouched).
+    validate_tribuni(
+        state
+            .players
+            .iter()
+            .map(|seat| {
+                if &seat.id == player {
+                    alias.as_str()
+                } else {
+                    seat.faction.as_str()
+                }
+            })
+            .collect::<Vec<_>>(),
+    )?;
     let home_planets = faction.home_planets();
     let deployments = faction.deployments(content)?;
 
@@ -152,6 +385,12 @@ pub fn deploy(
     seat.home_system = Some(system_id);
     seat.home_planets = home_planets.iter().map(|p| PlanetId::new(*p)).collect();
     seat.technologies.extend(starting_tech);
+    // Nekro Virus: it cannot research, so the two Valefar Assimilator cards come with the faction
+    // (coordinator ruling; plans/evidence/BF-nekro.md).
+    if alias.as_str() == crate::factions::nekro::FACTION {
+        seat.technologies.insert(TechnologyId::new("vax"));
+        seat.technologies.insert(TechnologyId::new("vay"));
+    }
     // Commodities are deliberately not set. LRR 21: the faction record's `commodities` is
     // the *capacity* a player refreshes to, not an opening balance, and a player starts
     // with none. The oracle sets trade_goods to 0 here for the same reason.
@@ -162,6 +401,11 @@ pub fn deploy(
     // how well they worked. The same shape as the custodians token: implemented, wired, never
     // reached.
     crate::leaders::deploy(state, content, sources, player);
+
+    // Empyrean Dark Whispers: "During setup, take the additional Empyrean faction promissory
+    // note." Setup deals notes before factions are seated in some flows, so the seat's own pair
+    // is made certain here (a no-op for every other faction).
+    crate::factions::empyrean::deal_notes(state, content, player);
 
     Ok(())
 }
@@ -199,6 +443,12 @@ pub fn build_board(
     filler: &[&str],
     sources: SourceSet,
 ) -> Result<Galaxy, SeatingError> {
+    validate_tribuni(
+        assignments
+            .values()
+            .map(FactionId::as_str)
+            .collect::<Vec<_>>(),
+    )?;
     let homes = home_systems(content, assignments)?;
     let outer = RING_SIZES[3];
     // Evenly spaced: with six homes on an eighteen-tile ring that is every third slot. With
@@ -214,7 +464,12 @@ pub fn build_board(
     // Only up to the last home: outer slots beyond it can stay empty, because `Galaxy::build`
     // stops where the id list stops. Slots *before* it cannot — the spiral is filled
     // positionally, so a missing tile would slide every home one place round the ring.
-    let outer_used = homes.len().saturating_sub(1) * stride + usize::from(!homes.is_empty());
+    // Fill the whole ring when the filler allows it (so no outer slot is left empty), but never
+    // less than up to the last home, and never more than the filler can cover: the POK pool holds
+    // 33 tiles, one short of a full ring for two players.
+    let up_to_last_home = homes.len().saturating_sub(1) * stride + usize::from(!homes.is_empty());
+    let coverable = (filler.len() + homes.len()).saturating_sub(inner);
+    let outer_used = outer.min(coverable).max(up_to_last_home);
     let wanted = inner + outer_used.saturating_sub(homes.len());
     if filler.len() < wanted {
         return Err(SeatingError::NotEnoughFiller {
@@ -223,7 +478,7 @@ pub fn build_board(
         });
     }
 
-    let mut ids: Vec<&str> = vec![MECATOL];
+    let mut ids: Vec<&str> = vec![mecatol_for(content, sources)];
     let mut filler = filler.iter().copied();
     for _ in 0..inner {
         if let Some(tile) = filler.next() {
@@ -274,6 +529,7 @@ pub fn place_wormhole_nexus(
     content: &ContentStore,
     sources: SourceSet,
 ) -> Result<(), ti4_content::galaxy::GalaxyError> {
+    place_creuss_home(galaxy, content, sources)?;
     if !sources.contains(ti4_model::content_types::Source::Pok) {
         return Ok(());
     }
@@ -284,6 +540,27 @@ pub fn place_wormhole_nexus(
         return Ok(());
     }
     galaxy.place_off_map(content, LOCKED_NEXUS, sources)
+}
+
+/// Put the Creuss home system beside the board when the Creuss Gate is on it.
+///
+/// The gate occupies the Creuss seat's home position (see [`CREUSS_GATE`]); the home system is off
+/// the hex grid and reached only through the delta wormholes the two tiles print, which
+/// `Galaxy::adjacent` pairs by kind like any other wormhole. Called from
+/// [`place_wormhole_nexus`], which every map family already calls, so a board with no gate -- every
+/// board without a Creuss seat -- is untouched. Idempotent.
+///
+/// # Errors
+/// Any [`GalaxyError`] from registering the tile.
+pub fn place_creuss_home(
+    galaxy: &mut Galaxy,
+    content: &ContentStore,
+    sources: SourceSet,
+) -> Result<(), ti4_content::galaxy::GalaxyError> {
+    if galaxy.coord_of(CREUSS_GATE).is_none() || !galaxy.wormhole_kinds(CREUSS_HOME).is_empty() {
+        return Ok(());
+    }
+    galaxy.place_off_map(content, CREUSS_HOME, sources)
 }
 
 /// Whether anything has happened that opens the Wormhole Nexus.
@@ -330,7 +607,7 @@ pub fn neutral_systems(content: &ContentStore, count: usize, sources: SourceSet)
     all_systems(content, sources)
         .into_iter()
         .filter(|(id, system)| {
-            *id != MECATOL
+            !is_mecatol(id)
                 && !system.planets().is_empty()
                 && !system.is_anomaly()
                 && !system.is_hyperlane()
@@ -508,6 +785,17 @@ mod tests {
         let player = state.player(&PlayerId::new("a")).unwrap();
         assert!(!player.technologies.is_empty());
         assert!(player.technologies.contains(&TechnologyId::new("amd")));
+    }
+
+    #[test]
+    fn the_nekro_begins_with_both_valefar_assimilators() {
+        let state = seated(&[("a", "nekro"), ("b", "sol")]);
+        let nekro = state.player(&PlayerId::new("a")).unwrap();
+        assert!(nekro.technologies.contains(&TechnologyId::new("vax")));
+        assert!(nekro.technologies.contains(&TechnologyId::new("vay")));
+        assert!(nekro.technologies.contains(&TechnologyId::new("dxa")));
+        let other = state.player(&PlayerId::new("b")).unwrap();
+        assert!(!other.technologies.contains(&TechnologyId::new("vax")));
     }
 
     #[test]
@@ -719,20 +1007,31 @@ mod tests {
     }
 
     #[test]
-    fn a_table_larger_than_the_scope_still_plays_in_scope_factions() {
-        // Falling off the end of the list is how an unported faction gets seated. Reusing it is
-        // wrong as a matchup and right as a scope, and a duplicated faction is visible where a
-        // silently unported one is not.
-        let players: Vec<PlayerId> = (0..8)
+    fn seats_seven_and_eight_get_the_two_extra_factions() {
+        // Owner decision (2026-10-09): an eight-player table has eight distinct factions, two of
+        // them not fully ported. Larger tables reuse the eight.
+        let players: Vec<PlayerId> = (0..10)
             .map(|index| PlayerId::new(format!("p{index}")))
             .collect();
         let seated = seat_in_scope(&players);
 
-        assert_eq!(seated.len(), 8);
-        for faction in seated.values() {
+        for (index, alias) in IN_SCOPE_FACTIONS.iter().enumerate() {
+            assert_eq!(seated[&players[index]].as_str(), *alias);
+        }
+        assert_eq!(seated[&players[6]].as_str(), EXTRA_SEAT_FACTIONS[0]);
+        assert_eq!(seated[&players[7]].as_str(), EXTRA_SEAT_FACTIONS[1]);
+        assert_eq!(seated[&players[8]], seated[&players[0]]);
+        assert_eq!(seated[&players[9]], seated[&players[1]]);
+        for alias in EXTRA_SEAT_FACTIONS {
             assert!(
-                IN_SCOPE_FACTIONS.contains(&faction.as_str()),
-                "{faction} was seated and is not in scope"
+                !IN_SCOPE_FACTIONS.contains(&alias),
+                "{alias} is extra, not in scope"
+            );
+            assert!(
+                ti4_content::factions::get(content(), alias)
+                    .and_then(|faction| faction.home_system())
+                    .is_some(),
+                "{alias} has a home system"
             );
         }
     }
@@ -944,6 +1243,26 @@ mod tests {
     }
 
     #[test]
+    fn a_thunders_edge_board_uses_the_legendary_mecatol_and_never_deals_it_as_filler() {
+        let default = ti4_model::content_types::DEFAULT;
+        let pairs = [("a", "sol"), ("b", "winnu")];
+        let filler: Vec<SystemId> = neutral_systems(content(), 30, default);
+        assert!(filler.iter().all(|id| !is_mecatol(id.as_str())));
+        let filler_refs: Vec<&str> = filler.iter().map(SystemId::as_str).collect();
+        let galaxy = build_board(content(), &assignments(&pairs), &filler_refs, default).unwrap();
+        assert_eq!(galaxy.coord_of(MECATOL_TE), Some(ti4_model::Hex::ORIGIN));
+        assert_eq!(galaxy.coord_of(MECATOL), None);
+        assert_eq!(mecatol_in_galaxy(&galaxy), MECATOL_TE);
+        let mrte = ti4_content::galaxy::planet(content(), "mrte", default).expect("mrte");
+        assert!(
+            mrte.is_legendary(),
+            "Winnu's legendary-planet abilities can use Mecatol"
+        );
+        // The base game keeps the base tile.
+        assert_eq!(mecatol_for(content(), POK), MECATOL);
+    }
+
+    #[test]
     fn the_nexus_opens_when_a_unit_reaches_it_and_stays_open() {
         // Locked, it prints gamma alone; open, it adds alpha and beta. The flip is a fact about
         // the map, so it goes through the same token path a face-changing wormhole already uses.
@@ -1045,5 +1364,186 @@ mod tests {
             build_board(content(), &pairs, &refs, POK).unwrap()
         );
         assert_eq!(filler, neutral_systems(content(), 30, POK));
+    }
+
+    // -- the Creuss Gate and the Creuss home system -----------------------------------------------
+
+    fn board_for(pairs: &[(&str, &str)]) -> Galaxy {
+        let seats = assignments(pairs);
+        let filler = full_filler();
+        let refs: Vec<&str> = filler.iter().map(SystemId::as_str).collect();
+        build_board(content(), &seats, &refs, POK).unwrap()
+    }
+
+    #[test]
+    fn the_creuss_gate_sits_in_the_seats_home_position_and_the_home_system_is_off_the_map() {
+        let galaxy = board_for(&[("a", "sol"), ("b", "ghost"), ("c", "hacan")]);
+        assert!(
+            galaxy.coord_of(CREUSS_GATE).is_some(),
+            "the gate is on the hex grid"
+        );
+        assert!(
+            galaxy.coord_of(CREUSS_HOME).is_none(),
+            "the Creuss home system is not on the hex grid"
+        );
+        assert!(
+            galaxy.wormhole_kinds(CREUSS_HOME).contains("DELTA"),
+            "but it is in play"
+        );
+        // Home position: the gate took the slot a home system would, so it is as far from the
+        // other homes as they are from each other (every third outer slot).
+        let sol = galaxy.coord_of("01").unwrap();
+        let gate = galaxy.coord_of(CREUSS_GATE).unwrap();
+        assert!(sol.distance(gate) >= 3, "spaced like a home, not huddled");
+        // Connected through the delta wormholes, in both directions, and nothing else reaches it.
+        assert!(galaxy.are_adjacent(CREUSS_GATE, CREUSS_HOME));
+        assert!(galaxy.are_adjacent(CREUSS_HOME, CREUSS_GATE));
+        assert_eq!(
+            galaxy.adjacent(CREUSS_HOME).into_iter().collect::<Vec<_>>(),
+            vec![CREUSS_GATE],
+            "only the gate is adjacent to the off-map home"
+        );
+    }
+
+    #[test]
+    fn boards_without_a_creuss_seat_are_unchanged() {
+        let galaxy = board_for(&[("a", "sol"), ("b", "hacan"), ("c", "letnev")]);
+        assert!(galaxy.coord_of(CREUSS_GATE).is_none());
+        assert!(galaxy.wormhole_kinds(CREUSS_HOME).is_empty());
+        let six = board_for(&[
+            ("a", "sol"),
+            ("b", "hacan"),
+            ("c", "letnev"),
+            ("d", "xxcha"),
+            ("e", "jolnar"),
+            ("f", "l1z1x"),
+        ]);
+        assert!(
+            six.system_ids().iter().all(|id| *id != CREUSS_GATE),
+            "no gate on a six-faction board"
+        );
+        let mut again = six.clone();
+        place_creuss_home(&mut again, content(), POK).unwrap();
+        assert_eq!(again, six, "placing the home is a no-op without the gate");
+    }
+
+    #[test]
+    fn placing_the_creuss_home_twice_changes_nothing() {
+        let mut galaxy = board_for(&[("a", "sol"), ("b", "ghost")]);
+        let once = galaxy.clone();
+        place_creuss_home(&mut galaxy, content(), POK).unwrap();
+        place_wormhole_nexus(&mut galaxy, content(), POK).unwrap();
+        assert_eq!(galaxy, once);
+    }
+
+    #[test]
+    fn a_creuss_seat_starts_in_tile_51_not_on_the_gate() {
+        let state = seated(&[("a", "ghost")]);
+        let player = state.player(&PlayerId::new("a")).unwrap();
+        assert_eq!(player.home_system, Some(SystemId::new(CREUSS_HOME)));
+        let home = state.system_state(&SystemId::new(CREUSS_HOME));
+        assert!(home.controls_a_planet(&PlayerId::new("a")));
+        assert!(!home.units.is_empty(), "the starting fleet is at home");
+        assert!(
+            state
+                .system_state(&SystemId::new(CREUSS_GATE))
+                .units
+                .is_empty(),
+            "nothing starts on the gate"
+        );
+    }
+
+    const PLANNED_FACTIONS: [&str; 18] = [
+        "sol", "hacan", "letnev", "xxcha", "jolnar", "l1z1x", "arborec", "argent", "ghost",
+        "mentak", "muaat", "naalu", "naaz", "saar", "sardakk", "winnu", "yin", "yssaril",
+    ];
+
+    fn six_players() -> Vec<PlayerId> {
+        (0..6)
+            .map(|index| PlayerId::new(format!("p{index}")))
+            .collect()
+    }
+
+    #[test]
+    fn seeded_assignment_draws_six_unique_content_backed_factions_from_explicit_eighteen() {
+        for alias in PLANNED_FACTIONS {
+            assert!(
+                ti4_content::factions::get(content(), alias).is_some(),
+                "planned candidate {alias} must exist in the content corpus"
+            );
+        }
+        let players = six_players();
+        let assignments = seeded_faction_assignments(&PLANNED_FACTIONS, &players, 1042).unwrap();
+        let assigned: BTreeSet<String> = assignments
+            .values()
+            .map(|faction| faction.to_string())
+            .collect();
+        assert_eq!(assignments.len(), 6);
+        assert_eq!(assigned.len(), 6, "a faction cannot be assigned twice");
+        assert!(
+            assigned
+                .iter()
+                .all(|alias| PLANNED_FACTIONS.contains(&alias.as_str()))
+        );
+    }
+
+    #[test]
+    fn seeded_assignment_replays_and_varies_by_seed() {
+        let players = six_players();
+        let first = seeded_faction_assignments(&PLANNED_FACTIONS, &players, 1042).unwrap();
+        assert_eq!(
+            first,
+            seeded_faction_assignments(&PLANNED_FACTIONS, &players, 1042).unwrap()
+        );
+        assert!(
+            (1043..1060).any(|seed| {
+                seeded_faction_assignments(&PLANNED_FACTIONS, &players, seed)
+                    .is_ok_and(|assignment| assignment != first)
+            }),
+            "the fixed seed sample should exercise a different assignment"
+        );
+    }
+
+    #[test]
+    fn seeded_assignment_uses_roster_and_player_input_order() {
+        let players = [PlayerId::new("b"), PlayerId::new("a")];
+        let assignment = seeded_faction_assignments(&PLANNED_FACTIONS, &players, 57).unwrap();
+        let reversed = [players[1].clone(), players[0].clone()];
+        let reassigned = seeded_faction_assignments(&PLANNED_FACTIONS, &reversed, 57).unwrap();
+        assert_eq!(reassigned[&players[0]], assignment[&players[1]]);
+        assert_eq!(reassigned[&players[1]], assignment[&players[0]]);
+
+        let ordered = seeded_faction_assignments(&["sol", "hacan"], &players, 57).unwrap();
+        let reversed_roster = seeded_faction_assignments(&["hacan", "sol"], &players, 57).unwrap();
+        assert_eq!(reversed_roster[&players[0]], ordered[&players[1]]);
+        assert_eq!(reversed_roster[&players[1]], ordered[&players[0]]);
+    }
+
+    #[test]
+    fn seeded_assignment_rejects_empty_duplicate_and_undersized_inputs() {
+        let players = [PlayerId::new("a"), PlayerId::new("b")];
+        assert_eq!(
+            seeded_faction_assignments(&[], &players, 1),
+            Err(FactionAssignmentError::EmptyRoster)
+        );
+        assert_eq!(
+            seeded_faction_assignments(&["sol", "sol"], &players, 1),
+            Err(FactionAssignmentError::DuplicateCandidate("sol".to_owned()))
+        );
+        assert_eq!(
+            seeded_faction_assignments(
+                &["sol", "hacan"],
+                &[players[0].clone(), players[0].clone()],
+                1
+            ),
+            Err(FactionAssignmentError::DuplicatePlayer("a".to_owned()))
+        );
+        assert_eq!(
+            seeded_faction_assignments(&["sol"], &players, 1),
+            Err(FactionAssignmentError::InsufficientCandidates {
+                players: 2,
+                candidates: 1,
+            })
+        );
     }
 }

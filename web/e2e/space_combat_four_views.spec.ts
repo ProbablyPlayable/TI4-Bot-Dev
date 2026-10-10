@@ -73,15 +73,39 @@ async function expectFleetPills(page: Page, state: InitialSnapshotMsg, step: num
         await expect(pill, `step ${step} ${side} ${type} undamaged`).toHaveCount(0);
       }
     }
-    for (const row of await card.locator('[data-testid^="unit-row-"]').all()) {
-      const type = (await row.getAttribute("data-testid"))?.replace(/^unit-row-(lost-)?/, "");
+    // Read the row ids in one pass: the card re-renders while the views catch up.
+    const rowIds = await card
+      .locator('[data-testid^="unit-row-"]')
+      .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-testid") ?? ""));
+    for (const rowId of rowIds) {
+      const type = rowId.replace(/^unit-row-(lost-)?/, "");
+      // A row seen alive a moment ago is redrawn as lost once this view catches up.
+      const row = card
+        .locator(`[data-testid="unit-row-${type}"], [data-testid="unit-row-lost-${type}"]`)
+        .first();
       if (type && !groups.has(type)) {
-        await expect(row, `step ${step} ${side} ${type} destroyed`).toContainText("×0");
+        // Destroyed: shown as ×0, or already dropped from the card.
+        await expect
+          .poll(
+            async () => ((await row.count()) ? ((await row.textContent()) ?? "") : "×0"),
+            { message: `step ${step} ${side} ${type} destroyed` },
+          )
+          .toContain("×0");
         await expect(row.locator(".combat-unit-row__damaged-badge")).toHaveCount(0);
       }
     }
   }
 }
+
+/** Hits are staged in one panel and sent as a single plan; let the panel pick the units. */
+async function assignHits(page: import("@playwright/test").Page) {
+  const fill = page.getByTestId("hit-auto-assign").first();
+  await expect(fill).toBeVisible();
+  if (await fill.isEnabled()) await fill.click();
+  await page.getByTestId("hit-confirm").first().click();
+}
+const assignsHits = (subtype: string | undefined) =>
+  subtype === "sustain_damage" || subtype === "assign_casualty";
 
 test("a complete human battle stays public in four independent views", async ({
   browser,
@@ -337,6 +361,8 @@ test("a complete human battle stays public in four independent views", async ({
       if (!choice?.context && choice?.prompt.startsWith("remove a unit:")) {
         await actorPage!.getByRole("radio", { name: selected.label }).click();
         await actorPage!.getByRole("button", { name: "Confirm choice" }).click();
+      } else if (assignsHits(subtype)) {
+        await assignHits(actorPage!);
       } else {
         await actorPage!.getByTestId(selector).first().click();
       }
@@ -576,7 +602,8 @@ test("a complete human battle stays public in four independent views", async ({
       if (await generic.isVisible())
         await generic.getByRole("button", { name: "Minimize decision" }).click();
       await page.getByTestId("event-log-toggle").click();
-      for (const label of [/Round 1/, /Action phase/, /Tactical action/]) {
+      // Rounds and phases fold; actions and their stages are flat labels inside them.
+      for (const label of [/Round 1/, /Action phase/]) {
         const branch = page.getByRole("button", { name: label });
         if ((await branch.getAttribute("aria-expanded")) === "false") await branch.click();
       }
@@ -673,7 +700,8 @@ test("undo during a Shields Holding reaction preserves a healthy, playable game"
               : subtype === "assign_casualty"
                 ? `casualty-opt-${selected.id}`
                 : `combat-follow-up-${selected.id}`;
-      await actorPage.getByTestId(selector).first().click();
+      if (assignsHits(subtype)) await assignHits(actorPage);
+      else await actorPage.getByTestId(selector).first().click();
       await expect
         .poll(async () => (await snapshot(request, game, seats[host])).game_version)
         .toBeGreaterThan(state.game_version);
@@ -801,7 +829,8 @@ test("replaying Direct Hit, Sabotage and Shields Holding after undo keeps the ga
                 : subtype === "assign_casualty"
                   ? `casualty-opt-${selected.id}`
                   : `combat-follow-up-${selected.id}`;
-        await actorPage.getByTestId(selector).first().click();
+        if (assignsHits(subtype)) await assignHits(actorPage);
+        else await actorPage.getByTestId(selector).first().click();
         await expect
           .poll(async () => {
             const response = await request.get(`${backend}/api/games/${game}/snapshot`, {

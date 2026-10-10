@@ -1,5 +1,7 @@
-import React, { useRef, useState } from "react";
-import { CreateGameResponse, LobbyDto, LobbySlot } from "../protocol/types.ts";
+import React, { useEffect, useRef, useState } from "react";
+import { CreateGameResponse, LobbyDto, LobbySlot, MapChoice } from "../protocol/types.ts";
+import { MapPicker } from "./MapPicker.tsx";
+import { mapChangeNotice, mapName } from "../presentation/mapPicker.ts";
 import { decodeCreateGameResponse } from "../protocol/decode.ts";
 import { preferredNickname, rememberNickname, validNickname } from "../protocol/nickname.ts";
 import { SeatBadge } from "../presentation/PlayerIdentity.tsx";
@@ -10,6 +12,9 @@ export const CreateLobby: React.FC<{
   onError: (message: string) => void;
 }> = ({ onCreated, onError }) => {
   const [count, setCount] = useState(3);
+  // The seed lets whoever knows it predict dice and deck order, so players never see the field;
+  // it exists only in dev builds (the API field itself is unchanged).
+  const showSeed = import.meta.env.DEV;
   const [seed, setSeed] = useState("");
   const [nickname, setNickname] = useState(preferredNickname);
   const [creating, setCreating] = useState(false);
@@ -17,7 +22,7 @@ export const CreateLobby: React.FC<{
   const create = async (event: React.FormEvent) => {
     event.preventDefault();
     if (inFlight.current) return;
-    const parsedSeed = seed === "" ? undefined : Number(seed);
+    const parsedSeed = !showSeed || seed === "" ? undefined : Number(seed);
     if (parsedSeed !== undefined && (!Number.isSafeInteger(parsedSeed) || parsedSeed < 0))
       return onError("Seed must be a non-negative whole number.");
     if (!validNickname(nickname))
@@ -74,18 +79,20 @@ export const CreateLobby: React.FC<{
               onChange={(event) => setNickname(event.target.value)}
             />
           </label>
-          <label className="field-label">
-            Seed (advanced, optional)
-            <input
-              className="input"
-              disabled={creating}
-              type="number"
-              min="0"
-              step="1"
-              value={seed}
-              onChange={(event) => setSeed(event.target.value)}
-            />
-          </label>
+          {showSeed && (
+            <label className="field-label">
+              Seed (dev, optional)
+              <input
+                className="input"
+                disabled={creating}
+                type="number"
+                min="0"
+                step="1"
+                value={seed}
+                onChange={(event) => setSeed(event.target.value)}
+              />
+            </label>
+          )}
           <p className="text-faint">
             You join as host. Other players and bots join from the shared URL.
           </p>
@@ -115,8 +122,26 @@ interface LobbyStatusProps {
   onWatch: () => void;
   onAddBot?: (password: string, nickname?: string) => Promise<boolean | void>;
   onRemoveBot?: (playerId: string) => Promise<boolean | void>;
+  /** Host only: save a map choice (resolves once the lobby has been updated). */
+  onChooseMap?: (choice: MapChoice, startPreset?: string) => Promise<boolean | void>;
   watching?: boolean;
   pendingAction?: string | null;
+}
+
+function rememberedSeen(key: string): boolean {
+  try {
+    return sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markSeen(key: string): void {
+  try {
+    sessionStorage.setItem(key, "1");
+  } catch {
+    // Without storage the picker may open again after a reload; that is harmless.
+  }
 }
 
 /** Nicknames are public display data; the position distinguishes duplicate names. */
@@ -136,6 +161,7 @@ export const LobbyStatus: React.FC<LobbyStatusProps> = ({
   onWatch,
   onAddBot,
   onRemoveBot,
+  onChooseMap,
   watching,
   pendingAction,
 }) => {
@@ -154,6 +180,23 @@ export const LobbyStatus: React.FC<LobbyStatusProps> = ({
   const viewer =
     playerId === null ? undefined : lobby.slots.find((slot) => slot.occupant === playerId);
   const isHost = playerId !== null && playerId === lobby.host_player_id;
+  const canEditMap = isHost && lobby.phase === "lobby" && !!onChooseMap;
+  // The picker opens by itself for a host who has not chosen yet (a fresh lobby), once per tab.
+  const seenKey = `ti4.map-picker-seen:${lobby.game_id}`;
+  const [pickerOpen, setPickerOpen] = useState(
+    () => canEditMap && !!lobby.map && !lobby.map_revision && !rememberedSeen(seenKey),
+  );
+  const closePicker = () => {
+    setPickerOpen(false);
+    markSeen(seenKey);
+  };
+  const [mapNotice, setMapNotice] = useState<string | null>(null);
+  const previousMap = useRef<{ revision: number | undefined; map: LobbyDto["map"] } | null>(null);
+  useEffect(() => {
+    const now = { revision: lobby.map_revision, map: lobby.map };
+    if (!isHost) setMapNotice((old) => mapChangeNotice(previousMap.current, now) ?? old);
+    previousMap.current = now;
+  }, [lobby.map_revision, lobby.map, isHost]);
   const canStart =
     lobby.phase === "lobby" && lobby.slots.every((slot) => slot.occupant && slot.ready);
   const handleAddBot = async (event: React.FormEvent) => {
@@ -225,6 +268,45 @@ export const LobbyStatus: React.FC<LobbyStatusProps> = ({
           <p role="status" className="text-muted">
             {copyState}
           </p>
+        )}
+        {lobby.map && (
+          <div className="lobby-map-row" data-testid="lobby-map-row">
+            <span className="lobby-map-row__name">
+              Map: <strong>{mapName(lobby.map)}</strong>
+              {lobby.map.recommended ? " (recommended)" : ""}
+            </span>
+            <button
+              type="button"
+              className="button button--outline"
+              data-testid="lobby-map-button"
+              disabled={!!pendingAction && pendingAction !== "map"}
+              onClick={() => setPickerOpen(true)}
+            >
+              {canEditMap ? "Choose map" : "View map"}
+            </button>
+          </div>
+        )}
+        {mapNotice && (
+          <p role="status" className="text-muted" data-testid="map-change-notice">
+            {mapNotice}{" "}
+            <button
+              type="button"
+              className="button button--outline"
+              onClick={() => setMapNotice(null)}
+            >
+              Dismiss
+            </button>
+          </p>
+        )}
+        {pickerOpen && lobby.map && (
+          <MapPicker
+            lobby={lobby}
+            editable={canEditMap}
+            viewerPosition={viewer?.position ?? null}
+            saving={pendingAction === "map"}
+            onChoose={(choice, startPreset) => void onChooseMap?.(choice, startPreset)}
+            onClose={closePicker}
+          />
         )}
         <div className="lobby-list">
           {lobby.slots.map((slot, index) => (

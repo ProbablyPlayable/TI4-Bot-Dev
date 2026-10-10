@@ -1,0 +1,237 @@
+/**
+ * The part of the wire protocol that web2 reads. The shapes are the serde output of the Rust
+ * types named in each comment (`crates/ti4-view`, `crates/ti4-engine`). The server sends them in
+ * `StateUpdateMsg`, the wasm build hands them over as `SessionUpdate`: same names, same shapes.
+ */
+
+/** `ti4_view::status::ViewerRole` */
+export type ViewerRole = { role: "player"; seat: string } | { role: "spectator" };
+
+/** `ti4_view::status::PublicTurnStatus` */
+export type PublicTurnStatus =
+  | { kind: "active_turn"; player: string; phase: string; round: number }
+  | { kind: "waiting_for_decision"; seat: string; phase: string; round: number; stage: string }
+  | { kind: "phase_transition"; phase: string; round: number }
+  | { kind: "game_over"; winner?: string | null };
+
+/** `ti4_engine::choice::ChoiceOption` */
+export interface ChoiceOption {
+  id: string;
+  kind: string;
+  label: string;
+  payload: Record<string, unknown>;
+  auto_resolved?: boolean;
+}
+
+/** `ti4_engine::decision_context::DecisionContext`: the fields that web2 reads. */
+export interface DecisionContext {
+  /** What is asked: "activate_system", "movement_step", "load_cargo", "reaction_…". */
+  subtype: string;
+  actor: string;
+}
+
+/** `ti4_engine::choice::Choice`. `details` is not read yet. */
+export interface Choice {
+  player: string;
+  prompt: string;
+  options: ChoiceOption[];
+  context?: DecisionContext | null;
+  details?: Record<string, unknown>;
+}
+
+/** `ti4_view::projection::PendingChoiceEnvelope` */
+export interface PendingChoiceEnvelope {
+  nonce: string;
+  choice: Choice;
+}
+
+/** `ti4_view::view::PlayerView` */
+export interface PlayerView {
+  id: string;
+  faction: string;
+  victory_points: number;
+  trade_goods: number;
+  commodities: number;
+  tactic_tokens: number;
+  fleet_tokens: number;
+  strategic_tokens: number;
+  passed: boolean;
+  strategy_cards: string[];
+  exhausted_strategy_cards: string[];
+  technologies: string[];
+  exhausted_technologies: string[];
+  relics: string[];
+  exhausted_relics: string[];
+  action_cards_count: number;
+  secret_objectives_count: number;
+  held_action_cards?: string[];
+  held_secret_objectives?: string[];
+  scored_secret_objectives?: string[];
+  leaders: Record<string, string>;
+}
+
+/** `ti4_view::view::PlanetView` */
+export interface PlanetView {
+  planet_id: string;
+  controlled_by: string | null;
+  exhausted: boolean;
+  attachments?: string[];
+}
+
+/** `ti4_view::view::PlacedUnitView` */
+export interface PlacedUnitView {
+  unit_type: string;
+  owner: string;
+  planet: string | null;
+  damaged: boolean;
+  galvanized?: boolean;
+}
+
+/** `ti4_view::view::SystemView` */
+export interface SystemView {
+  system_id: string;
+  command_tokens: string[];
+  planets: Record<string, PlanetView>;
+  units: PlacedUnitView[];
+}
+
+/** `ti4_view::view::PlanetMetaView` */
+export interface PlanetMetaView {
+  id: string;
+  label: string;
+  resources: number;
+  influence: number;
+  traits?: string[];
+  tech_specialties?: string[];
+  legendary?: boolean;
+  space_station?: boolean;
+}
+
+/** `ti4_view::view::BoardTileView` */
+export interface BoardTileView {
+  system_id: string;
+  label: string;
+  q: number;
+  r: number;
+  hyperlane?: boolean;
+  special_area?: string;
+  anomalies?: string[];
+  wormholes?: string[];
+  egress?: boolean;
+  planets?: PlanetMetaView[];
+}
+
+/** `ti4_view::view::BoardView`. `combat` and `invasion` are not read yet. */
+export interface BoardView {
+  systems: Record<string, SystemView>;
+  active_system?: string;
+  map_tiles?: BoardTileView[];
+  combat?: unknown;
+  invasion?: unknown;
+}
+
+/** `ti4_view::view::TableView`. `objective_progress` is not read yet. */
+export interface TableView {
+  revealed_objectives: string[];
+  scored_objectives: Record<string, string[]>;
+  objective_progress?: unknown;
+  unclaimed_strategy_cards: string[];
+  strategy_card_goods: Record<string, number>;
+  laws: Record<string, string>;
+}
+
+/** `ti4_view::view::GameView` */
+export interface GameView {
+  round: number;
+  phase: string;
+  speaker: string;
+  seating_order: string[];
+  active_player?: string;
+  finished: boolean;
+  players: PlayerView[];
+  board: BoardView;
+  table: TableView;
+}
+
+/** `ti4_view::tactical::MoveFact` */
+export interface MoveFact {
+  /** The ship cannot arrive without Gravity Drive. */
+  gravity_drive: boolean;
+  ionian: boolean;
+  /** The systems of the way, from the system of the ship to the active system. */
+  path: string[];
+  /** The gravity rifts that the ship leaves: one roll for each. */
+  rifts: string[];
+}
+
+/** `ti4_view::tactical::ShipFact` */
+export interface ShipFact {
+  origin: string;
+  index: number;
+  unit: string;
+  damaged: boolean;
+  capacity: number;
+  /** The ship counts against the fleet pool. */
+  fleet: boolean;
+  /** The move value in this activation, without Gravity Drive and the Ionian Fuel Refinery. */
+  move_value: number;
+  /** The ship starts in a nebula: it moves with a value of 1. */
+  nebula?: boolean;
+  move?: MoveFact;
+  blocked?: "command_token" | "range";
+  /** What the ship can load: places in `MovementFacts.cargo`. */
+  loads?: number[];
+}
+
+/** `ti4_view::tactical::CargoPool` */
+export interface CargoPool {
+  system: string;
+  /** The planet, or null for the space area. */
+  source: string | null;
+  unit: string;
+  damaged: boolean;
+  galvanized: boolean;
+  count: number;
+}
+
+/** `ti4_view::tactical::ActivationFacts` */
+export interface ActivationFacts {
+  kind: "activation";
+  tactic_tokens: number;
+  systems: {
+    system: string;
+    ships: number;
+    origins: number;
+    /** The production value of the seat in the system, when it is more than 0. */
+    production?: number;
+    /** The guns of the seat that roll SPACE CANNON at the activation, when there are any. */
+    cannon?: number;
+  }[];
+}
+
+/** `ti4_view::tactical::MovementFacts` */
+export interface MovementFacts {
+  kind: "movement";
+  active: string;
+  ships: ShipFact[];
+  cargo: CargoPool[];
+  /** Gravity Drive can still give one ship of this action its move. */
+  gravity_drive: boolean;
+  ionian: boolean;
+  fleet_supply: { limit: number; charged: number };
+  /** How many ships already moved in this activation. */
+  moved: number;
+}
+
+/** `ti4_view::tactical::TacticalFacts` */
+export type TacticalFacts = ActivationFacts | MovementFacts;
+
+/** `ti4_view::projection::SessionUpdate`: the fields of `StateUpdateMsg` that web2 reads. */
+export interface SessionUpdate {
+  viewer: ViewerRole;
+  view: GameView;
+  pending_choice?: PendingChoiceEnvelope;
+  turn_status: PublicTurnStatus;
+  /** What the engine says about the pending choice of a tactical action. The wasm host fills it. */
+  tactical?: TacticalFacts;
+}

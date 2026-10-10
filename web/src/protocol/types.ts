@@ -28,6 +28,47 @@ export interface LobbyDto {
   host_player_id: string;
   slots: LobbySlot[];
   bot_service_enabled?: boolean;
+  /** What the table plays on; absent from servers that predate the map choice. Never a seed. */
+  map?: MapChoiceDto;
+  /** Changes whenever the previewed board changes (new choice, re-roll, new seat order). */
+  map_revision?: number;
+}
+
+/** The host's choice: a predefined layout or the seeded random board. */
+export type MapChoice = { kind: "template"; alias: string } | { kind: "random" };
+
+export interface MapChoiceDto {
+  kind: "template" | "random";
+  alias?: string;
+  author?: string;
+  systems: number;
+  hyperlanes: boolean;
+  recommended: boolean;
+}
+
+export interface MapTemplateSummary {
+  alias: string;
+  author: string;
+  player_count: number;
+  buildable: boolean;
+  systems: number;
+  hyperlanes: boolean;
+  recommended: boolean;
+}
+
+export interface MapSeatPreview {
+  /** 1-based, the lobby position. */
+  seat: number;
+  faction: string;
+  faction_name: string;
+  home_system_id: string;
+}
+
+export interface MapPreviewDto {
+  choice: MapChoice;
+  player_count: number;
+  tiles: BoardTileView[];
+  seats: MapSeatPreview[];
 }
 
 export interface CreateGameResponse {
@@ -69,6 +110,64 @@ export interface ChoiceOptionDto {
   label: string;
   description?: string;
   payload?: Record<string, unknown>;
+  auto_resolved?: boolean;
+}
+
+/** What happened to open a reaction window: public facts only (engine `DecisionTrigger`). */
+export type TriggerKindDto =
+  | "action_card_played"
+  | "action_card_discarded"
+  | "system_activated"
+  | "ship_moved"
+  | "strategic_action_began"
+  | "strategy_card_chosen"
+  | "strategy_phase_began"
+  | "turn_began"
+  | "turn_passed"
+  | "player_passed"
+  | "action_completed"
+  | "strategy_cards_would_return"
+  | "agenda_phase_began"
+  | "agenda_revealed"
+  | "votes_cast"
+  | "agenda_resolved"
+  | "transaction"
+  | "planet_control_gained"
+  | "invasion_began"
+  | "units_committed"
+  | "ground_rolls"
+  | "combat_started"
+  | "anti_fighter_barrage"
+  | "space_cannon_hits"
+  | "hits_to_assign"
+  | "sustain_damage"
+  | "ship_destroyed"
+  | "retreat"
+  | "space_combat_won"
+  | "production_used"
+  | "unit_ability_rolled"
+  | "other";
+
+export interface TriggerUnitsDto {
+  owner: string;
+  unit_type: string;
+  count: number;
+}
+
+export interface DecisionTriggerDto {
+  kind: TriggerKindDto;
+  event_type: string;
+  event_id: number;
+  relation: "when" | "after";
+  actor?: string;
+  subject?: string;
+  card?: string;
+  agenda?: string;
+  system?: string;
+  planet?: string;
+  units?: TriggerUnitsDto[];
+  hits?: number;
+  chain?: number[];
 }
 
 export interface DecisionContextDto {
@@ -85,6 +184,8 @@ export interface DecisionContextDto {
   outstanding?: OutstandingConstraintDto[];
   kind?: string;
   details?: Record<string, unknown>;
+  /** Present on reaction decisions from servers that send it; absent in older saves and fixtures. */
+  trigger?: DecisionTriggerDto | null;
 }
 
 export interface OutstandingConstraintDto {
@@ -101,6 +202,8 @@ export interface PendingChoiceDto {
   nonce: string;
   options: ChoiceOptionDto[];
   context?: DecisionContextDto;
+  /** Display-only facts the server adds for some decisions (pools, who played a card, ...). */
+  details?: Record<string, unknown>;
 }
 
 /** Serde shape of `ti4_engine::choice::Choice` on the wire. */
@@ -109,6 +212,7 @@ export interface EngineChoice {
   prompt: string;
   options: ChoiceOptionDto[];
   context?: DecisionContextDto;
+  details?: Record<string, unknown>;
 }
 
 /** Opaque submission capability kept outside the engine choice contract. */
@@ -140,6 +244,7 @@ export interface PlacedUnitView {
   owner: string;
   planet?: string | null;
   damaged: boolean;
+  galvanized?: boolean;
 }
 
 export interface SystemView {
@@ -368,7 +473,14 @@ export interface InitialSnapshotMsg {
   events?: GameEvent[];
   history?: HistoryStatus;
   current_path?: CurrentLogPath;
+  reaction_modes?: ReactionModes;
 }
+
+/** How a seat wants an action card handled in reaction windows. Absent means always offered. */
+export type ReactionModeSetting = "always" | "never";
+
+/** The viewing seat's own choices by printed card name; the server only lists "never". */
+export type ReactionModes = Record<string, ReactionModeSetting>;
 
 export interface StateUpdateMsg {
   type?: "state_update";
@@ -383,6 +495,22 @@ export interface StateUpdateMsg {
   turn_status: PublicTurnStatus;
   history?: HistoryStatus;
   current_path?: CurrentLogPath;
+  /** Decisions the engine made for this seat since the last update because only one option was legal. */
+  auto_resolved?: AutoResolvedNote[];
+  reaction_modes?: ReactionModes;
+}
+
+/** One decision settled on the viewer's behalf (single legal option). Feedback only. */
+export interface AutoResolvedNote {
+  id: string;
+  /** The question that was not asked. */
+  prompt: string;
+  /** What was chosen, as labelled. */
+  selected: string;
+  /** Why there was no real choice. */
+  reason: string;
+  /** Identical notes this one stands for; absent means one. */
+  count?: number;
 }
 
 export interface PendingChoiceMsg {
@@ -442,7 +570,136 @@ export interface PongMsg {
   sequence: number;
 }
 
+export interface AttemptIdentity {
+  checkpoint_id: number;
+  plan_revision: number;
+  generation_id: number;
+}
+
+export interface PlanningPublication {
+  position: GameView;
+  choice: EngineChoice | null;
+  events: string[];
+}
+
+export type PlanningStopReason =
+  | "Uncertainty"
+  | "UnsupportedOffer"
+  | "OtherPlayerRequired"
+  | "UnsupportedParticipation"
+  | "UnsupportedSegment"
+  | "KnowledgeChanged"
+  | "ReplayMismatch"
+  | "StepLimit"
+  | "MovementComplete"
+  | "SecondaryComplete";
+export type PlanningUpdate =
+  | "Preparing"
+  | { SafeOffer: PlanningPublication }
+  | { SafeStep: PlanningPublication }
+  | { Stopped: { reason: PlanningStopReason; last_safe_publication: PlanningPublication | null } }
+  | { Failed: "Preparation" | "Engine" | "Worker" };
+export interface PlanningEnvelope {
+  publication_id: number;
+  identity: AttemptIdentity;
+  /** Changes only when the retained script is explicitly replaced, including across reconnects. */
+  reset_revision?: number;
+  editing_movement?: boolean;
+  movement_edit_revision?: number;
+  awaiting_answer: boolean;
+  recorded_request_ids: string[];
+  recorded_decisions?: RecordedDecisionDto[];
+  assumptions: string[];
+  progress: {
+    recorded_answers: number;
+    replayed: number;
+    remaining: number;
+    completed_steps: number;
+    nested_answers_since_checkpoint: number;
+  };
+  update: PlanningUpdate;
+}
+export interface RecordedDecisionDto {
+  player: string;
+  prompt: string;
+  context: DecisionContextDto | null;
+  option_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+}
+export interface DraftApplication {
+  applied: number;
+  total: number;
+  state: "applying" | "waiting_for_player" | "needs_decision" | "applied";
+  message: string;
+}
+export interface PlanningStatusMsg {
+  type: "planning_status";
+  protocol_version: number;
+  game_id: string;
+  checkpoint_id: number;
+  available: boolean;
+  can_start: boolean;
+  has_draft: boolean;
+  identity: AttemptIdentity | null;
+  can_apply?: boolean;
+  application?: DraftApplication | null;
+  /** The strategic action whose secondary this seat may draft while it waits. */
+  secondary?: SecondaryDraftStatus | null;
+}
+/** A seat holds two independent drafts; absent means tactical. */
+export type DraftKind = "tactical" | "secondary";
+export interface SecondaryDraftStatus {
+  card: string;
+  played_by: string;
+  /** False while the primary ability is still resolving. */
+  window_open: boolean;
+  /** Followers the live window asks before this seat, once it is open. */
+  seats_before: number | null;
+  can_start: boolean;
+  has_draft: boolean;
+  identity: AttemptIdentity | null;
+  /** The draft is submitted for the seat when the live window reaches it. */
+  ready: boolean;
+  application: DraftApplication | null;
+}
+export type SecondaryPlanningRequest =
+  | { action: "start" }
+  | { action: "reset"; identity: AttemptIdentity }
+  | { action: "answer"; identity: AttemptIdentity; option_id: string }
+  | { action: "set_ready"; identity: AttemptIdentity; ready: boolean };
+export interface PlanningUpdateMsg {
+  type: "planning_update";
+  protocol_version: number;
+  game_id: string;
+  draft?: DraftKind;
+  envelope: PlanningEnvelope;
+}
+export type PlanningRejection =
+  | "unauthorized"
+  | "wrong_game"
+  | "unavailable"
+  | "unknown_seat"
+  | "active_player"
+  | "not_started"
+  | "retired"
+  | "not_waiting"
+  | "unknown_option"
+  | "no_action_opportunity"
+  | "replay_mismatch";
+export interface PlanningResultMsg {
+  type: "planning_result";
+  protocol_version: number;
+  game_id: string;
+  draft?: DraftKind;
+  identity: AttemptIdentity | null;
+  rejection: PlanningRejection | null;
+}
+
 export type ServerMessage =
+  | PlanningStatusMsg
+  | PlanningUpdateMsg
+  | PlanningResultMsg
   | ({ type: "initial_snapshot" } & InitialSnapshotMsg)
   | ({ type: "state_update" } & StateUpdateMsg)
   | ({ type: "pending_choice" } & PendingChoiceMsg)
@@ -455,6 +712,36 @@ export type ServerMessage =
   | ({ type: "event" } & GameEventMsg);
 
 export type ClientMessage =
+  | { type: "start_planning"; protocol_version: number; game_id: string }
+  | {
+      type: "secondary_planning";
+      protocol_version: number;
+      game_id: string;
+      request: SecondaryPlanningRequest;
+    }
+  | { type: "reset_planning"; protocol_version: number; game_id: string; identity: AttemptIdentity }
+  | {
+      type: "edit_planning_movement";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+    }
+  | {
+      type: "apply_planning";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+      nonce: string;
+      expected_version: number;
+    }
+  | {
+      type: "submit_planning_choice";
+      protocol_version: number;
+      game_id: string;
+      identity: AttemptIdentity;
+      option_id: string;
+      request_id?: string;
+    }
   | {
       type: "subscribe";
       protocol_version: number;
@@ -468,6 +755,14 @@ export type ClientMessage =
       nonce: string;
       expected_version: number;
       option_id: string;
+    }
+  | {
+      type: "set_reaction_mode";
+      protocol_version: number;
+      game_id: string;
+      /** The printed card name; every copy of it is covered. */
+      card: string;
+      mode: ReactionModeSetting;
     }
   | {
       type: "ping";

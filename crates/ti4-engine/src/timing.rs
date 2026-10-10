@@ -64,6 +64,10 @@ pub type StatefulAbilityEffect = Arc<
 /// A rule-specific eligibility predicate.
 pub type AbilityCondition = Arc<dyn Fn(&Event, &Resolver) -> bool + Send + Sync>;
 
+/// Decide participation before either eligibility predicate reads private state.
+/// Returning false skips the ability; callers may latch a stop outside the rules.
+pub type Participation = Arc<dyn Fn(&Ability) -> bool + Send + Sync>;
+
 /// A state-aware eligibility predicate for a timing ability.
 pub type StatefulAbilityCondition =
     Arc<dyn for<'a> Fn(&Event, &Resolver, &TimingContext<'a>) -> bool + Send + Sync>;
@@ -258,6 +262,27 @@ pub struct AbilityRegistry {
     cannot: Vec<CannotEffect>,
 }
 
+/// Rollback resolver bookkeeping and its own decision log without rewinding decider input.
+/// Contextual callers must separately checkpoint `TimingContext.table.log`.
+#[derive(Clone)]
+pub(crate) struct ResolverCheckpoint {
+    table_log: crate::choice::DecisionLog,
+    registry: AbilityRegistry,
+    initiative_order: Vec<PlayerId>,
+    seating_order: Vec<PlayerId>,
+    active_player: Option<PlayerId>,
+    speaker: Option<PlayerId>,
+    phase: Phase,
+    log: Vec<String>,
+    applied_events: Vec<Event>,
+    relation_being_resolved: Option<Relation>,
+    emission_stack: Vec<(String, u64)>,
+    maximum_depth: usize,
+    used: BTreeSet<(String, FrequencyScope)>,
+    round_number: u64,
+    turn_number: u64,
+}
+
 /// A timing-window resolver.
 ///
 /// It owns registration, player order, and decision routing. Frequency scopes are deliberately
@@ -279,9 +304,48 @@ pub struct Resolver {
     used: BTreeSet<(String, FrequencyScope)>,
     round_number: u64,
     turn_number: u64,
+    participation: Option<Participation>,
 }
 
 impl Resolver {
+    pub(crate) fn checkpoint(&self) -> ResolverCheckpoint {
+        ResolverCheckpoint {
+            table_log: self.table.log.clone(),
+            registry: self.registry.clone(),
+            initiative_order: self.initiative_order.clone(),
+            seating_order: self.seating_order.clone(),
+            active_player: self.active_player.clone(),
+            speaker: self.speaker.clone(),
+            phase: self.phase,
+            log: self.log.clone(),
+            applied_events: self.applied_events.clone(),
+            relation_being_resolved: self.relation_being_resolved,
+            emission_stack: self.emission_stack.clone(),
+            maximum_depth: self.maximum_depth,
+            used: self.used.clone(),
+            round_number: self.round_number,
+            turn_number: self.turn_number,
+        }
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: ResolverCheckpoint) {
+        self.table.log = checkpoint.table_log;
+        self.registry = checkpoint.registry;
+        self.initiative_order = checkpoint.initiative_order;
+        self.seating_order = checkpoint.seating_order;
+        self.active_player = checkpoint.active_player;
+        self.speaker = checkpoint.speaker;
+        self.phase = checkpoint.phase;
+        self.log = checkpoint.log;
+        self.applied_events = checkpoint.applied_events;
+        self.relation_being_resolved = checkpoint.relation_being_resolved;
+        self.emission_stack = checkpoint.emission_stack;
+        self.maximum_depth = checkpoint.maximum_depth;
+        self.used = checkpoint.used;
+        self.round_number = checkpoint.round_number;
+        self.turn_number = checkpoint.turn_number;
+    }
+
     /// Construct an action-phase resolver with the supplied initiative order and table.
     #[must_use]
     pub fn new(
@@ -305,12 +369,81 @@ impl Resolver {
             used: BTreeSet::new(),
             round_number: 1,
             turn_number: 1,
+            participation: None,
+        }
+    }
+
+    /// Copy resolver state and shared rule functions, with fresh decision routing.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            initiative_order: self.initiative_order.clone(),
+            seating_order: self.seating_order.clone(),
+            active_player: self.active_player.clone(),
+            speaker: self.speaker.clone(),
+            phase: self.phase,
+            table: Table::new(),
+            log: self.log.clone(),
+            applied_events: self.applied_events.clone(),
+            relation_being_resolved: self.relation_being_resolved,
+            emission_stack: self.emission_stack.clone(),
+            maximum_depth: self.maximum_depth,
+            used: self.used.clone(),
+            round_number: self.round_number,
+            turn_number: self.turn_number,
+            participation: None,
+        }
+    }
+
+    /// Carry rules state to a worker without carrying its thread-local deciders.
+    pub(crate) fn into_worker(self) -> impl FnOnce() -> Self + Send {
+        let Self {
+            registry,
+            initiative_order,
+            seating_order,
+            active_player,
+            speaker,
+            phase,
+            table: _,
+            log,
+            applied_events,
+            relation_being_resolved,
+            emission_stack,
+            maximum_depth,
+            used,
+            round_number,
+            turn_number,
+            participation: _,
+        } = self;
+        move || Self {
+            registry,
+            initiative_order,
+            seating_order,
+            active_player,
+            speaker,
+            phase,
+            table: Table::new(),
+            log,
+            applied_events,
+            relation_being_resolved,
+            emission_stack,
+            maximum_depth,
+            used,
+            round_number,
+            turn_number,
+            participation: None,
         }
     }
 
     /// Configure the game phase used to select window priority order.
     pub fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
+    }
+
+    /// Filter both eligibility paths before either kind of condition runs.
+    /// Ordinary live resolution has no filter; a fork starts without this binding.
+    pub fn set_participation(&mut self, participation: Participation) {
+        self.participation = Some(participation);
     }
 
     /// Configure clockwise seating order for strategy and agenda timing windows.
@@ -674,6 +807,10 @@ impl Resolver {
         self.for_event(&event.event_type, relation)
             .filter(|ability| {
                 ability.owner == *player
+                    && self
+                        .participation
+                        .as_ref()
+                        .is_none_or(|policy| policy(ability))
                     && (ability.repeatable_in_window || !resolved_here.contains(&ability.id))
                     && !self.is_used(ability, event)
                     && ability
@@ -696,6 +833,10 @@ impl Resolver {
         self.for_event(&event.event_type, relation)
             .filter(|ability| {
                 ability.owner == *player
+                    && self
+                        .participation
+                        .as_ref()
+                        .is_none_or(|policy| policy(ability))
                     && (ability.repeatable_in_window || !resolved_here.contains(&ability.id))
                     && !self.is_used(ability, event)
                     && ability
@@ -781,6 +922,17 @@ impl Resolver {
                         event,
                         relation,
                     );
+                    // Every printed name this slot could play, so a seat's "never offer"
+                    // preference can tell a slot that holds only such cards. Not part of the
+                    // option's identity or of the recorded decision.
+                    let mut names: Vec<String> = Vec::new();
+                    for candidate in &cards {
+                        let name = crate::action_cards::name_of(context.content, candidate);
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                    option = option.with("card_names", serde_json::json!(names));
                     if let Some(card) = cards.first().filter(|first| {
                         cards.iter().all(|candidate| {
                             crate::action_cards::name_of(context.content, candidate)
@@ -819,7 +971,12 @@ impl Resolver {
                 context.state.round,
             )
             .optional(declinable)
-            .about_battle(context.state),
+            .about_battle(context.state)
+            .with_trigger(crate::decision_context::DecisionTrigger::from_event(
+                event,
+                relation_name(relation),
+                &self.emission_chain(event),
+            )),
         );
         let chosen = context
             .ask_seeing(&choice)
@@ -833,6 +990,17 @@ impl Resolver {
             return Ok(None);
         }
         Ok(eligible.into_iter().find(|ability| ability.id == chosen.id))
+    }
+
+    /// Ids of the events being resolved right now, outermost first, `event` itself excluded: what
+    /// a reaction to a reaction was nested inside.
+    #[must_use]
+    pub fn emission_chain(&self, event: &Event) -> Vec<u64> {
+        self.emission_stack
+            .iter()
+            .map(|(_, id)| *id)
+            .filter(|id| *id != event.id)
+            .collect()
     }
 
     fn player_order(&self) -> Vec<PlayerId> {
@@ -994,7 +1162,161 @@ mod tests {
     use ti4_content::ContentStore;
     use ti4_model::content_types::POK;
 
+    #[test]
+    fn checkpoint_restores_standalone_decision_log_without_rewinding_input() {
+        let player = PlayerId::new("a");
+        let mut resolver = Resolver::new(
+            vec![player.clone()],
+            Some(player.clone()),
+            Table::with_default(Box::new(Scripted::new([
+                "copy".to_owned(),
+                "decline".to_owned(),
+            ]))),
+        );
+        resolver.register([Ability::stateful(
+            "copy",
+            player,
+            "E",
+            Relation::After,
+            Arc::new(|_, _, _| Ok(())),
+        )
+        .with_optional(true)]);
+        let checkpoint = resolver.checkpoint();
+        let log_before = resolver.table.log.clone();
+        assert!(matches!(
+            resolver.emit(Event::new(1, "E", BTreeMap::new()), |_| {}),
+            Err(TimingError::StatefulContextRequired(_))
+        ));
+        assert!(resolver.table.log.len() > log_before.len());
+        resolver.restore(checkpoint);
+        assert_eq!(resolver.table.log, log_before);
+        resolver
+            .emit(Event::new(1, "E", BTreeMap::new()), |_| {})
+            .unwrap();
+        assert_eq!(resolver.table.log.records.last().unwrap().chosen, "decline");
+    }
+
     type GeneratedAbility = (u8, bool, bool, bool, u8, bool);
+
+    #[test]
+    fn participation_runs_before_both_kinds_of_condition_and_forks_reset_it() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut timing = resolver(&["sol", "letnev"], "sol");
+        let condition_calls = calls.clone();
+        let stateful_calls = calls.clone();
+        timing.register([Ability::new(
+            "optional",
+            player("letnev"),
+            "E",
+            Relation::When,
+            Arc::new(|_, _| Ok(())),
+        )
+        .with_optional(true)
+        .with_condition(Arc::new(move |_, _| {
+            condition_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }))
+        .with_stateful_condition(Arc::new(move |_, _, _| {
+            stateful_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }))]);
+        timing.set_participation(Arc::new(|_| false));
+        let mut live = timing.fork();
+        timing
+            .emit(Event::new(1, "E", BTreeMap::new()), |_| {})
+            .unwrap();
+
+        let mut state = crate::fixtures::game(&["sol", "letnev"]);
+        let mut table = Table::with_default(Box::new(AlwaysDecline));
+        let mut dice = Dice::new();
+        let mut rng = GameRng::new(7);
+        let mut sequence = EventSequence::new();
+        let mut context =
+            stateful_context(&mut state, &mut table, &mut dice, &mut rng, &mut sequence);
+        timing
+            .emit_with_context(&mut context, Event::new(2, "E", BTreeMap::new()), |_, _| {})
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        live.emit_with_context(&mut context, Event::new(2, "E", BTreeMap::new()), |_, _| {})
+            .unwrap();
+        assert!(calls.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn fork_preserves_frequency_usage_and_resets_its_decision_table() {
+        let mut timing = resolver(&["sol"], "sol");
+        timing.sync_lifecycle(3, 7);
+        timing.table = Table::with_default(Box::new(AlwaysDecline));
+        timing.register([
+            Ability::new(
+                "turn",
+                player("sol"),
+                "E",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.payload.insert("turn".to_owned(), true.into());
+                    Ok(())
+                }),
+            )
+            .with_frequency(Frequency::OncePerTurn),
+            Ability::new(
+                "round",
+                player("sol"),
+                "E",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.payload.insert("round".to_owned(), true.into());
+                    Ok(())
+                }),
+            )
+            .with_frequency(Frequency::OncePerRound),
+            Ability::new(
+                "optional",
+                player("sol"),
+                "OPTIONAL",
+                Relation::When,
+                Arc::new(|event, _| {
+                    event.cancel();
+                    Ok(())
+                }),
+            )
+            .with_optional(true),
+        ]);
+        let event = |id, kind| Event::new(id, kind, BTreeMap::new());
+        assert_eq!(timing.emit(event(1, "E"), |_| {}).unwrap().payload.len(), 2);
+        assert!(!timing.emit(event(2, "OPTIONAL"), |_| {}).unwrap().cancelled);
+
+        let mut fork = timing.fork();
+        assert_eq!(fork.log(), timing.log());
+        assert_eq!(fork.applied_events(), timing.applied_events());
+        assert!(fork.table.log.is_empty());
+        assert!(fork.emit(event(3, "E"), |_| {}).unwrap().payload.is_empty());
+        assert!(
+            timing
+                .emit(event(3, "E"), |_| {})
+                .unwrap()
+                .payload
+                .is_empty()
+        );
+
+        // Fresh first-option input takes the optional ability; the original still declines it.
+        assert!(fork.emit(event(4, "OPTIONAL"), |_| {}).unwrap().cancelled);
+        assert!(!timing.emit(event(4, "OPTIONAL"), |_| {}).unwrap().cancelled);
+
+        fork.begin_turn(player("sol")).unwrap();
+        let next_turn = fork.emit(event(5, "E"), |_| {}).unwrap();
+        assert_eq!(next_turn.payload.len(), 1);
+        assert_eq!(next_turn.payload["turn"], true);
+        fork.begin_round().unwrap();
+        assert_eq!(fork.emit(event(6, "E"), |_| {}).unwrap().payload.len(), 2);
+        assert!(
+            timing
+                .emit(event(6, "E"), |_| {})
+                .unwrap()
+                .payload
+                .is_empty()
+        );
+    }
 
     fn generated_registry() -> impl Strategy<Value = Vec<GeneratedAbility>> {
         prop::collection::vec(

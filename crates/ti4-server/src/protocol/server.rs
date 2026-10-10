@@ -11,14 +11,9 @@ use crate::map::GalaxyLayout;
 pub use ti4_engine::choice::{Choice, ChoiceOption};
 use ti4_model::state::GameState;
 use ti4_model::state::Phase;
+use ti4_model::state::ReactionMode;
 
-/// Server submission metadata around the engine's wire-serialized choice.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PendingChoiceEnvelope {
-    pub nonce: String,
-    pub choice: Choice,
-}
+pub use ti4_view::projection::PendingChoiceEnvelope;
 
 /// Initial per-viewer snapshot sent upon subscription or reconnection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +35,10 @@ pub struct InitialSnapshotMsg {
     pub history: HistoryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_path: Option<CurrentLogPath>,
+    /// The receiving seat's own "never offer" choices, by printed card name; absent when it has
+    /// none. Always empty for spectators and for every other seat's view.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reaction_modes: BTreeMap<String, ReactionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +93,12 @@ fn is_default_history(value: &HistoryStatus) -> bool {
 }
 
 impl InitialSnapshotMsg {
+    #[must_use]
+    pub fn with_reaction_modes(mut self, modes: BTreeMap<String, ReactionMode>) -> Self {
+        self.reaction_modes = modes;
+        self
+    }
+
     #[must_use]
     pub fn with_history(mut self, cursor: usize, redo_count: usize, generation: u64) -> Self {
         self.history = HistoryStatus {
@@ -428,20 +433,22 @@ fn public_choice_detail(
     Some(detail)
 }
 
-#[must_use]
-pub fn decision_grouping(
-    record: &ti4_engine::choice::DecisionRecord,
-    offered: Option<&ChoiceOption>,
-    records: &[ti4_engine::choice::DecisionRecord],
-    cursor: usize,
-) -> (
+pub type DecisionGrouping = (
     Option<PlayerId>,
     Option<u32>,
     Option<Phase>,
     Option<String>,
     Option<PlayerId>,
     Option<String>,
-) {
+);
+
+#[must_use]
+pub fn decision_grouping(
+    record: &ti4_engine::choice::DecisionRecord,
+    offered: Option<&ChoiceOption>,
+    records: &[ti4_engine::choice::DecisionRecord],
+    cursor: usize,
+) -> DecisionGrouping {
     let context = record.context.as_ref();
     let selection = records
         .iter()
@@ -982,9 +989,14 @@ mod fact_tests {
             Some("p1 played Diplomacy")
         );
         assert_eq!(
-            decision_grouping(&selection, Some(&action), &[selection.clone()], 1)
-                .5
-                .as_deref(),
+            decision_grouping(
+                &selection,
+                Some(&action),
+                std::slice::from_ref(&selection),
+                1
+            )
+            .5
+            .as_deref(),
             Some("action selection")
         );
         let effect = ChoiceOption::new("unknown", "effect").with("card", "hidden_card");
@@ -1347,7 +1359,7 @@ mod fact_tests {
             ..record("select_action", &ChoiceOption::new("tactical", "action"))
         };
         assert_eq!(
-            action_id_for(&[action.clone()], 1).as_deref(),
+            action_id_for(std::slice::from_ref(&action), 1).as_deref(),
             Some("action_1")
         );
         assert_eq!(
@@ -1377,7 +1389,7 @@ mod fact_tests {
     fn pending_turn_prompt_never_reopens_the_previous_action() {
         let player = PlayerId::new("p1");
         let mut state = GameState::new(
-            &[player.clone()],
+            std::slice::from_ref(&player),
             &[],
             std::collections::BTreeMap::new(),
             None,
@@ -1425,9 +1437,52 @@ pub struct StateUpdateMsg {
     pub history: HistoryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_path: Option<CurrentLogPath>,
+    /// Decisions the engine settled for the receiving seat since the previous update because
+    /// exactly one option was legal. Feedback only: never journaled, never sent to other seats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_resolved: Vec<AutoResolvedNote>,
+    /// The receiving seat's own "never offer" choices, by printed card name; absent when it has
+    /// none. Always empty for spectators and for every other seat's view.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reaction_modes: BTreeMap<String, ReactionMode>,
+}
+
+/// One decision made on a seat's behalf because it had a single legal option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoResolvedNote {
+    /// Unique per note, so a client can drop a repeat.
+    pub id: String,
+    /// The question that was not asked.
+    pub prompt: String,
+    /// What was chosen, as the option was labelled.
+    pub selected: String,
+    /// Why there was no real choice.
+    pub reason: String,
+    /// How many identical notes this one stands for (a bill paid in several steps).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub count: u32,
+}
+
+const fn one() -> u32 {
+    1
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if signature"
+)]
+const fn is_one(count: &u32) -> bool {
+    *count == 1
 }
 
 impl StateUpdateMsg {
+    #[must_use]
+    pub fn with_reaction_modes(mut self, modes: BTreeMap<String, ReactionMode>) -> Self {
+        self.reaction_modes = modes;
+        self
+    }
+
     #[must_use]
     pub fn with_history(mut self, cursor: usize, redo_count: usize, generation: u64) -> Self {
         self.history = HistoryStatus {
@@ -1510,10 +1565,122 @@ pub struct PongMsg {
     pub sequence: u64,
 }
 
+/// A gated planning publication delivered only to its owning player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningStatusMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    pub checkpoint_id: u64,
+    pub available: bool,
+    pub can_start: bool,
+    pub has_draft: bool,
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    pub can_apply: bool,
+    pub application: Option<DraftApplication>,
+    /// The strategic action whose secondary this seat may draft, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<SecondaryDraftStatus>,
+}
+
+/// Which of a seat's two independent drafts a planning message is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftKind {
+    #[default]
+    Tactical,
+    Secondary,
+}
+
+impl DraftKind {
+    fn is_tactical(&self) -> bool {
+        *self == Self::Tactical
+    }
+}
+
+/// A follower's private view of the secondary they may draft while they wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecondaryDraftStatus {
+    pub card: String,
+    pub played_by: PlayerId,
+    /// False while the primary ability is still resolving.
+    pub window_open: bool,
+    /// Followers the live window asks before this seat, once it is open.
+    pub seats_before: Option<usize>,
+    pub can_start: bool,
+    pub has_draft: bool,
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    /// The draft is submitted for the seat when the live window reaches it.
+    pub ready: bool,
+    pub application: Option<DraftApplication>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftApplicationState {
+    Applying,
+    WaitingForPlayer,
+    NeedsDecision,
+    Applied,
+}
+
+/// Seat-private live execution progress, retained across socket reconnects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftApplication {
+    pub applied: usize,
+    pub total: usize,
+    pub state: DraftApplicationState,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningUpdateMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    #[serde(default, skip_serializing_if = "DraftKind::is_tactical")]
+    pub draft: DraftKind,
+    pub envelope: crate::planning::runner::PlanningEnvelope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningRejection {
+    Unauthorized,
+    WrongGame,
+    Unavailable,
+    UnknownSeat,
+    ActivePlayer,
+    NotStarted,
+    Retired,
+    NotWaiting,
+    UnknownOption,
+    NoActionOpportunity,
+    ReplayMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningResultMsg {
+    pub protocol_version: u16,
+    pub game_id: String,
+    #[serde(default, skip_serializing_if = "DraftKind::is_tactical")]
+    pub draft: DraftKind,
+    /// None identifies a start request; Some identifies an answer, reset, or apply request.
+    pub identity: Option<crate::planning::runner::AttemptIdentity>,
+    /// None means accepted by the controller. Application progress is seat-private status.
+    pub rejection: Option<PlanningRejection>,
+}
+
 /// Messages emitted from server to client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerMessage {
+    PlanningUpdate(PlanningUpdateMsg),
+    PlanningStatus(PlanningStatusMsg),
+    PlanningResult(PlanningResultMsg),
     InitialSnapshot(InitialSnapshotMsg),
     StateUpdate(StateUpdateMsg),
     PendingChoice(PendingChoiceMsg),
@@ -1531,6 +1698,9 @@ impl ServerMessage {
     #[must_use]
     pub fn protocol_version(&self) -> u16 {
         match self {
+            Self::PlanningUpdate(m) => m.protocol_version,
+            Self::PlanningStatus(m) => m.protocol_version,
+            Self::PlanningResult(m) => m.protocol_version,
             Self::InitialSnapshot(m) => m.protocol_version,
             Self::StateUpdate(m) => m.protocol_version,
             Self::PendingChoice(m) => m.protocol_version,
@@ -1548,6 +1718,9 @@ impl ServerMessage {
     #[must_use]
     pub fn game_id(&self) -> Option<&str> {
         match self {
+            Self::PlanningUpdate(m) => Some(&m.game_id),
+            Self::PlanningStatus(m) => Some(&m.game_id),
+            Self::PlanningResult(m) => Some(&m.game_id),
             Self::InitialSnapshot(m) => Some(&m.game_id),
             Self::StateUpdate(m) => Some(&m.game_id),
             Self::PendingChoice(m) => Some(&m.game_id),
@@ -1572,7 +1745,11 @@ impl ServerMessage {
             Self::ActionRejected(m) => Some(m.game_version),
             Self::GameOver(m) => Some(m.game_version),
             Self::Event(m) => m.entry.version,
-            Self::Error(_) | Self::Pong(_) => None,
+            Self::Error(_)
+            | Self::Pong(_)
+            | Self::PlanningUpdate(_)
+            | Self::PlanningStatus(_)
+            | Self::PlanningResult(_) => None,
         }
     }
 }

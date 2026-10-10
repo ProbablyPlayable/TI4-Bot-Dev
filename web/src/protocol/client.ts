@@ -8,10 +8,33 @@ import {
   StateUpdateMsg,
   ViewerRole,
   HistoryStatus,
+  ReactionModeSetting,
 } from "./types.ts";
-import { decodeInitialSnapshot, decodeServerMessage, isStaleServerMessage } from "./decode.ts";
+import {
+  decodeDecisionTrigger,
+  decodeInitialSnapshot,
+  decodeServerMessage,
+  isStaleServerMessage,
+} from "./decode.ts";
+import {
+  initialPlanningState,
+  applyPlanningEnvelope,
+  applyPlanningStatus,
+  applySecondaryStatus,
+  planningChoice,
+  attemptKey,
+  sameAttempt,
+  PlanningRefreshError,
+  type PlanningState,
+} from "./planning.ts";
+import type {
+  AttemptIdentity,
+  SecondaryDraftStatus,
+  SecondaryPlanningRequest,
+} from "./types.ts";
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+export type ConnectionStatus =
+  "connecting" | "connected" | "disconnected" | "error";
 export type SnapshotState = InitialSnapshotMsg | StateUpdateMsg;
 export type GameLogEntry = import("./types.ts").GameEvent;
 export type HistoryChange =
@@ -26,24 +49,109 @@ export type HistoryChange =
 
 export type MovementStep =
   | { kind: "move"; origin: string; unit: string; damaged: boolean }
-  | { kind: "load"; origin: string; unit: string; source: string | null; damaged: boolean }
+  | {
+      kind: "load";
+      origin: string;
+      unit: string;
+      source: string | null;
+      damaged: boolean;
+      galvanized?: boolean;
+    }
   | { kind: "done_loading" }
   | { kind: "done_moving" };
 export type BasketPlan =
-  | { kind: "payment"; steps: ({ kind: "exhaust"; planet: string } | { kind: "trade_good" })[] }
+  | {
+      kind: "payment";
+      steps: ({ kind: "exhaust"; planet: string } | { kind: "trade_good" })[];
+    }
   | {
       kind: "agenda_vote_planets";
-      steps: ({ kind: "vote_planet"; planet: string } | { kind: "done_voting" })[];
+      steps: (
+        { kind: "vote_planet"; planet: string } | { kind: "done_voting" }
+      )[];
     }
   | {
       kind: "production";
       destination: string;
-      steps: ({ kind: "produce"; unit: string; count: number } | { kind: "done_producing" })[];
+      steps: (
+        | { kind: "produce"; unit: string; count: number }
+        | { kind: "done_producing" }
+      )[];
+    }
+  | {
+      kind: "casualties";
+      steps: import("../presentation/hitAssignment.ts").CasualtyStep[];
+    }
+  | {
+      kind: "tokens";
+      steps: import("../presentation/commandTokens.ts").TokenStep[];
     };
 
+export type BatchPlan =
+  | BasketPlan
+  | { kind: "tactical_movement"; destination: string; steps: MovementStep[] };
+
+/**
+ * A plan the server stopped part-way because a reaction window opened between its steps. The
+ * applied steps are committed and the window waits for its holder; `plan` is what was left. It is
+ * sent again only when the player asks, and the server re-checks it against the offers then.
+ */
+export interface BatchResume {
+  plan: BatchPlan;
+  /** Planned steps the server applied before it stopped. */
+  applied: number;
+  /** What the engine is waiting on now. */
+  waiting: { subtype: string | null; ownSeat: boolean };
+}
+
+/** Decision subtypes each plan kind is answered through. */
+const PLAN_SUBTYPES: Record<BatchPlan["kind"], string[]> = {
+  tactical_movement: ["movement_step"],
+  payment: ["pay_resources", "pay_influence"],
+  agenda_vote_planets: ["vote_exhaust_planet"],
+  production: ["produce_unit"],
+  casualties: ["sustain_damage", "assign_casualty", "assign_ground_casualty"],
+  tokens: ["gain_command_token", "buy_token_with_influence", "pay_influence"],
+};
+
+/**
+ * Keeps a paused plan only while it can still be continued: the engine is asking for a reaction,
+ * or is back at a decision the plan answers. Anything else means the game moved on.
+ */
+export function settleBatchResume(state: GameSessionState): GameSessionState {
+  const resume = state.batchResume;
+  if (!resume) return state;
+  const subtype = state.pendingChoice?.context?.subtype;
+  if (!state.pendingChoice || !subtype) return state;
+  if (subtype.startsWith("reaction_") || subtype.startsWith("play_reaction_")) return state;
+  if (PLAN_SUBTYPES[resume.plan.kind].includes(subtype)) return state;
+  return { ...state, batchResume: null };
+}
+
+/** Whether the paused plan can be sent again now: its own seat is back at a decision it answers. */
+export function canContinueBatch(
+  resume: BatchResume,
+  pending: { actor: string; context?: { subtype: string } } | null,
+  seat: string | null | undefined,
+): boolean {
+  return Boolean(
+    pending &&
+      seat &&
+      pending.actor === seat &&
+      pending.context &&
+      PLAN_SUBTYPES[resume.plan.kind].includes(pending.context.subtype),
+  );
+}
+
 const HISTORY_RETRY_ATTEMPTS = 20;
+/** A submit the server never acknowledges is abandoned after this long, so a click can re-send. */
+const SUBMISSION_TIMEOUT_MS = 10_000;
 
 export interface GameSessionState {
+  planning: PlanningState;
+  /** The strategic action whose secondary this seat may draft, and that draft. */
+  secondaryStatus: SecondaryDraftStatus | null;
+  secondaryPlanning: PlanningState;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -52,6 +160,8 @@ export interface GameSessionState {
   lastError: string | null;
   events: GameLogEntry[];
   history: HistoryStatus;
+  /** A plan the server paused at a reaction window; see {@link BatchResume}. */
+  batchResume?: BatchResume | null;
 }
 
 export interface GameSessionClientOptions {
@@ -63,6 +173,9 @@ export interface GameSessionClientOptions {
 type Listener = () => void;
 
 const initialState: GameSessionState = {
+  planning: initialPlanningState,
+  secondaryStatus: null,
+  secondaryPlanning: initialPlanningState,
   status: "connecting",
   gameVersion: 0,
   snapshot: null,
@@ -74,7 +187,9 @@ const initialState: GameSessionState = {
 };
 
 /** Keep the complete authoritative history, including early rounds and batches. */
-export function serverEventLog(entries: readonly GameLogEntry[] | undefined): GameLogEntry[] {
+export function serverEventLog(
+  entries: readonly GameLogEntry[] | undefined,
+): GameLogEntry[] {
   return [...(entries ?? [])];
 }
 
@@ -88,7 +203,9 @@ function idsFor(entries: GameLogEntry[]): Set<string> {
   return ids;
 }
 
-function rejectionMessage(message: Extract<ServerMessage, { type: "action_rejected" }>): string {
+function rejectionMessage(
+  message: Extract<ServerMessage, { type: "action_rejected" }>,
+): string {
   switch (message.reason.reason) {
     case "stale_version":
       return `Rejected: Stale version (expected ${message.reason.expected}, server at ${message.reason.current})`;
@@ -105,14 +222,22 @@ function rejectionMessage(message: Extract<ServerMessage, { type: "action_reject
   }
 }
 
-function pendingChoice(envelope: import("./types.ts").PendingChoiceEnvelope): PendingChoiceDto {
+function pendingChoice(
+  envelope: import("./types.ts").PendingChoiceEnvelope,
+): PendingChoiceDto {
   if (!envelope.choice) return envelope as unknown as PendingChoiceDto;
+  const context = envelope.choice.context;
   return {
     nonce: envelope.nonce,
     actor: envelope.choice.player,
     prompt: envelope.choice.prompt,
     options: envelope.choice.options,
-    context: envelope.choice.context,
+    // The trigger is display data: keep a well-formed one, drop a damaged one.
+    context:
+      context && "trigger" in context
+        ? { ...context, trigger: decodeDecisionTrigger(context.trigger) }
+        : context,
+    ...(envelope.choice.details ? { details: envelope.choice.details } : {}),
   };
 }
 
@@ -124,6 +249,26 @@ export function reduceServerMessage(
   if (isStaleServerMessage(message, state.gameVersion)) return state;
 
   switch (message.type) {
+    case "planning_status":
+      return {
+        ...state,
+        planning: applyPlanningStatus(state.planning, message),
+        secondaryStatus: message.secondary ?? null,
+        secondaryPlanning: applySecondaryStatus(
+          state.secondaryPlanning,
+          state.secondaryStatus,
+          message,
+        ),
+      };
+    case "planning_update":
+      if (message.draft === "secondary")
+        return {
+          ...state,
+          secondaryPlanning: applyPlanningEnvelope(state.secondaryPlanning, message.envelope),
+        };
+      return { ...state, planning: applyPlanningEnvelope(state.planning, message.envelope) };
+    case "planning_result":
+      return state;
     case "initial_snapshot":
     case "state_update":
       return {
@@ -131,8 +276,13 @@ export function reduceServerMessage(
         snapshot: message,
         gameVersion: message.game_version,
         turnStatus: message.turn_status,
-        pendingChoice: message.pending_choice ? pendingChoice(message.pending_choice) : null,
-        events: message.type === "initial_snapshot" ? serverEventLog(message.events) : state.events,
+        pendingChoice: message.pending_choice
+          ? pendingChoice(message.pending_choice)
+          : null,
+        events:
+          message.type === "initial_snapshot"
+            ? serverEventLog(message.events)
+            : state.events,
         history: message.history ?? state.history,
       };
     case "event":
@@ -147,7 +297,10 @@ export function reduceServerMessage(
             ? state.history
             : {
                 ...state.history,
-                cursor: Math.max(state.history.cursor, message.entry.decision_count),
+                cursor: Math.max(
+                  state.history.cursor,
+                  message.entry.decision_count,
+                ),
                 redo_count: 0,
               },
       };
@@ -155,7 +308,10 @@ export function reduceServerMessage(
       return {
         ...state,
         gameVersion: message.game_version,
-        pendingChoice: pendingChoice({ nonce: message.nonce, choice: message.choice }),
+        pendingChoice: pendingChoice({
+          nonce: message.nonce,
+          choice: message.choice,
+        }),
       };
     case "turn_status":
       return {
@@ -201,6 +357,20 @@ export class GameSessionClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private pingSequence = 0;
   private pendingBatch: { nonce: string; plan: string; requestId: string } | null = null;
+  private planningSubmission: {
+    kind: "start" | "answer" | "reset" | "apply" | "edit";
+    identity: AttemptIdentity | null;
+    requestId: string;
+    recorded: number;
+    reconnecting: boolean;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
+
+  // One secondary-draft request at a time. Its result only acknowledges the
+  // request; the next publication or status shows what it changed.
+  private secondarySubmission: { resolve: () => void; reject: (error: Error) => void } | null =
+    null;
 
   constructor(private readonly options: GameSessionClientOptions) {}
 
@@ -225,6 +395,186 @@ export class GameSessionClient {
     this.clearTimers();
     this.detachSocket();
     this.rejectSubmission("Submission stopped");
+    this.rejectPlanning("Submission stopped");
+    this.settleSecondary("Submission stopped");
+  }
+
+  startSecondaryPlanning(): Promise<void> {
+    return this.sendSecondary({ action: "start" });
+  }
+  resetSecondaryPlanning(identity: AttemptIdentity): Promise<void> {
+    return this.sendSecondary({ action: "reset", identity });
+  }
+  setSecondaryReady(identity: AttemptIdentity, ready: boolean): Promise<void> {
+    return this.sendSecondary({ action: "set_ready", identity, ready });
+  }
+  submitSecondaryPlanningChoice(identity: AttemptIdentity, optionId: string): Promise<void> {
+    const choice = planningChoice(this.state.secondaryPlanning);
+    const envelope = this.state.secondaryPlanning.envelope;
+    if (!choice || !envelope || attemptKey(identity) !== attemptKey(envelope.identity))
+      return Promise.reject(new PlanningRefreshError("Draft refreshed; choose again."));
+    if (!choice.options.some((option) => option.id === optionId))
+      return Promise.reject(new Error("This draft selection is no longer available."));
+    return this.sendSecondary({ action: "answer", identity, option_id: optionId });
+  }
+  private sendSecondary(request: SecondaryPlanningRequest): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN)
+      return Promise.reject(new Error("Planning is not connected."));
+    if (this.secondarySubmission)
+      return Promise.reject(new Error("A draft submission is still pending."));
+    const promise = new Promise<void>((resolve, reject) => {
+      this.secondarySubmission = { resolve, reject };
+    });
+    // An answered offer is spent: hide it until the next publication replaces it.
+    this.setState({
+      ...this.state,
+      secondaryPlanning: {
+        ...this.state.secondaryPlanning,
+        busy: true,
+        error: null,
+        current: request.action === "set_ready" ? this.state.secondaryPlanning.current : false,
+      },
+    });
+    try {
+      this.socket.send(
+        JSON.stringify({
+          type: "secondary_planning",
+          protocol_version: PROTOCOL_VERSION,
+          game_id: this.options.gameId,
+          request,
+        } satisfies ClientMessage),
+      );
+    } catch (error) {
+      this.settleSecondary(String(error));
+    }
+    return promise;
+  }
+
+  private settleSecondary(error: string | null): void {
+    const pending = this.secondarySubmission;
+    this.secondarySubmission = null;
+    this.setState({
+      ...this.state,
+      secondaryPlanning: {
+        ...this.state.secondaryPlanning,
+        busy: false,
+        error: pending ? error : this.state.secondaryPlanning.error,
+      },
+    });
+    if (error) pending?.reject(new Error(error));
+    else pending?.resolve();
+  }
+
+  startPlanning(): Promise<void> {
+    return this.sendPlanning("start");
+  }
+  resetPlanning(identity: AttemptIdentity): Promise<void> {
+    return this.sendPlanning("reset", identity);
+  }
+  editPlanningMovement(identity: AttemptIdentity): Promise<void> {
+    return this.sendPlanning("edit", identity);
+  }
+  applyPlanning(identity: AttemptIdentity, nonce: string, expectedVersion: number): Promise<void> {
+    if (!this.state.planning.availability?.can_apply || this.submission)
+      return Promise.reject(new Error("The draft is not ready at this live action opportunity."));
+    return this.sendPlanning("apply", identity, undefined, { nonce, expectedVersion });
+  }
+  submitPlanningChoice(identity: AttemptIdentity, optionId: string): Promise<void> {
+    const choice = planningChoice(this.state.planning);
+    if (
+      !choice ||
+      !this.state.planning.envelope ||
+      attemptKey(identity) !== attemptKey(this.state.planning.envelope.identity)
+    )
+      return Promise.reject(
+        new PlanningRefreshError("Draft refreshed; revalidating remaining instructions."),
+      );
+    if (!choice.options.some((option) => option.id === optionId))
+      return Promise.reject(new Error("This draft selection is no longer available."));
+    return this.sendPlanning("answer", identity, optionId);
+  }
+  private sendPlanning(
+    kind: "start" | "answer" | "reset" | "apply" | "edit",
+    identity?: AttemptIdentity,
+    optionId?: string,
+    live?: { nonce: string; expectedVersion: number },
+  ): Promise<void> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN)
+      return Promise.reject(new Error("Planning is not connected."));
+    if (this.planningSubmission)
+      return Promise.reject(new Error("A draft submission is still pending."));
+    const requestId = crypto.randomUUID();
+    const message: ClientMessage =
+      kind === "start"
+        ? {
+            type: "start_planning",
+            protocol_version: PROTOCOL_VERSION,
+            game_id: this.options.gameId,
+          }
+        : kind === "reset" || kind === "edit"
+          ? {
+              type: kind === "edit" ? "edit_planning_movement" : "reset_planning",
+              protocol_version: PROTOCOL_VERSION,
+              game_id: this.options.gameId,
+              identity: identity!,
+            }
+          : kind === "apply"
+            ? {
+                type: "apply_planning",
+                protocol_version: PROTOCOL_VERSION,
+                game_id: this.options.gameId,
+                identity: identity!,
+                nonce: live!.nonce,
+                expected_version: live!.expectedVersion,
+              }
+            : {
+                type: "submit_planning_choice",
+                protocol_version: PROTOCOL_VERSION,
+                game_id: this.options.gameId,
+                identity: identity!,
+                option_id: optionId!,
+                request_id: requestId,
+              };
+    const promise = new Promise<void>((resolve, reject) => {
+      this.planningSubmission = {
+        kind,
+        identity: identity ?? null,
+        requestId,
+        recorded: this.state.planning.envelope?.progress.recorded_answers ?? 0,
+        reconnecting: false,
+        resolve,
+        reject,
+      };
+    });
+    this.setState({
+      ...this.state,
+      planning: {
+        ...this.state.planning,
+        busy: true,
+        error: null,
+        current: kind === "answer" ? this.state.planning.current : false,
+      },
+    });
+    try {
+      this.socket.send(JSON.stringify(message));
+    } catch (error) {
+      this.rejectPlanning(String(error));
+    }
+    return promise;
+  }
+
+  private rejectPlanning(reason: string): void {
+    const pending = this.planningSubmission;
+    this.planningSubmission = null;
+    pending?.reject(new Error(reason));
+    this.setState({
+      ...this.state,
+      planning: {
+        ...this.state.planning,
+        busy: false,
+        error: pending ? reason : this.state.planning.error,
+      },
+    });
   }
 
   async submitChoice(optionId: string): Promise<void> {
@@ -240,7 +590,10 @@ export class GameSessionClient {
       throw new Error(message);
     }
     if (this.submission) {
-      if (this.submission.nonce === pendingChoice.nonce && this.submission.optionId === optionId)
+      if (
+        this.submission.nonce === pendingChoice.nonce &&
+        this.submission.optionId === optionId
+      )
         return this.submission.promise;
       if (this.submission.nonce === pendingChoice.nonce)
         throw new Error("Another choice submission is still pending");
@@ -258,9 +611,16 @@ export class GameSessionClient {
     };
     let resolve!: () => void;
     let reject!: (error: Error) => void;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const promise = new Promise<void>((done, fail) => {
-      resolve = done;
-      reject = fail;
+      resolve = () => {
+        clearTimeout(timeout);
+        done();
+      };
+      reject = (error) => {
+        clearTimeout(timeout);
+        fail(error);
+      };
     });
     this.submission = {
       nonce: pendingChoice.nonce,
@@ -276,60 +636,157 @@ export class GameSessionClient {
     } catch (error) {
       this.rejectSubmission(`Could not send choice: ${String(error)}`);
     }
+    // Without this, a submit that never gets an answer keeps returning the same dead promise to
+    // every later click for the same option, and the decision looks frozen.
+    timeout = setTimeout(() => {
+      if (this.submission?.promise === promise && !this.submission.accepted)
+        this.rejectSubmission("No response from the server; try again");
+    }, SUBMISSION_TIMEOUT_MS);
     return promise;
   }
 
-  async submitMovementBatch(destination: string, steps: MovementStep[]): Promise<void> {
+  /**
+   * Asks the server to stop (or resume) offering one action card to this seat for the rest of
+   * the game. The answer is the seat's next state update, which carries the modes; nothing is
+   * assumed locally. Rejected when not connected or when watching.
+   */
+  setReactionMode(card: string, mode: ReactionModeSetting): void {
+    if (this.options.viewer.role !== "player") {
+      this.setState({ ...this.state, lastError: "Only a seated player can change reaction modes" });
+      return;
+    }
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      this.setState({
+        ...this.state,
+        lastError: "Cannot change the setting: not connected to server",
+      });
+      return;
+    }
+    const message: ClientMessage = {
+      type: "set_reaction_mode",
+      protocol_version: PROTOCOL_VERSION,
+      game_id: this.options.gameId,
+      card,
+      mode,
+    };
+    try {
+      this.socket.send(JSON.stringify(message));
+    } catch (error) {
+      this.setState({ ...this.state, lastError: `Could not send the setting: ${String(error)}` });
+    }
+  }
+
+  async submitMovementBatch(
+    destination: string,
+    steps: MovementStep[],
+  ): Promise<void> {
     return this.submitBatch({ kind: "tactical_movement", destination, steps });
   }
 
-  async submitBatch(
-    plan: BasketPlan | { kind: "tactical_movement"; destination: string; steps: MovementStep[] },
-  ): Promise<void> {
-    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+  /** Sends what is left of a plan the server paused at a reaction window. */
+  async resumeBatch(): Promise<void> {
+    const resume = this.state.batchResume;
+    if (!resume) throw new Error("There is no paused plan to continue");
+    const seat =
+      this.options.viewer.role === "player" ? this.options.viewer.seat : null;
+    if (!canContinueBatch(resume, this.state.pendingChoice, seat))
+      throw new Error("Workflow is no longer pending");
+    try {
+      await this.submitBatch(resume.plan);
+    } catch (error) {
+      // The server checked the remainder against the current offers and refused it: stage again.
+      if (this.state.batchResume === resume)
+        this.setState({
+          ...this.state,
+          batchResume: null,
+          lastError: error instanceof Error ? error.message : String(error),
+        });
+      throw error;
+    }
+  }
+
+  dismissBatchResume(): void {
+    if (this.state.batchResume) this.setState({ ...this.state, batchResume: null });
+  }
+
+  async submitBatch(plan: BatchPlan): Promise<void> {
+    if (
+      this.options.viewer.role !== "player" ||
+      !this.options.viewer.playerSession
+    )
       throw new Error("A player session is required");
     const pending = this.state.pendingChoice;
-    if (!pending || pending.actor !== this.options.viewer.seat || !pending.context)
+    if (
+      !pending ||
+      pending.actor !== this.options.viewer.seat ||
+      !pending.context
+    )
       throw new Error("Decision is no longer pending");
-    const expected = {
-      tactical_movement: ["movement_step"],
-      payment: ["pay_resources", "pay_influence"],
-      agenda_vote_planets: ["vote_exhaust_planet"],
-      production: ["produce_unit"],
-    }[plan.kind];
+    const expected = PLAN_SUBTYPES[plan.kind];
     if (!expected.includes(pending.context.subtype))
       throw new Error("Workflow is no longer pending");
     const serialized = JSON.stringify(plan);
-    if (this.pendingBatch?.nonce !== pending.nonce || this.pendingBatch.plan !== serialized)
+    if (
+      this.pendingBatch?.nonce !== pending.nonce ||
+      this.pendingBatch.plan !== serialized
+    )
       this.pendingBatch = {
         nonce: pending.nonce,
         plan: serialized,
         requestId: crypto.randomUUID(),
       };
-    const response = await fetch(this.snapshotUrl().replace(/\/snapshot$/, "/batches"), {
-      method: "POST",
-      headers: { ...this.snapshotHeaders(), "content-type": "application/json" },
-      body: JSON.stringify({
-        request_id: this.pendingBatch.requestId,
-        expected_version: this.state.gameVersion,
-        nonce: pending.nonce,
-        plan,
-      }),
-    });
+    const response = await fetch(
+      this.snapshotUrl().replace(/\/snapshot$/, "/batches"),
+      {
+        method: "POST",
+        headers: {
+          ...this.snapshotHeaders(),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          request_id: this.pendingBatch.requestId,
+          expected_version: this.state.gameVersion,
+          nonce: pending.nonce,
+          plan,
+        }),
+      },
+    );
     if (!response.ok) {
-      if (response.status !== 500 && response.status !== 502 && response.status !== 503)
+      if (
+        response.status !== 500 &&
+        response.status !== 502 &&
+        response.status !== 503
+      )
         this.pendingBatch = null;
-      const failure = (await response.json()) as {
+      const body = await response.text();
+      let failure: {
         failed_step?: number;
         reason?: string;
         expected?: string;
+        message?: string;
       };
+      try {
+        failure = JSON.parse(body);
+      } catch {
+        failure = { message: body || `HTTP ${response.status}` };
+      }
+      // The server explains the rejection in `message`; older servers only send the reason.
       throw new Error(
-        `Batch step ${(failure.failed_step ?? 0) + 1}: ${failure.reason ?? "batch rejected"}${failure.expected ? ` (${failure.expected})` : ""}`,
+        failure.message
+          ? `Batch rejected: ${failure.message}`
+          : `Batch step ${(failure.failed_step ?? 0) + 1}: ${failure.reason ?? "batch rejected"}${failure.expected ? ` (${failure.expected})` : ""}`,
       );
     }
     this.pendingBatch = null;
-    const result = (await response.json()) as { snapshot: unknown; active?: boolean };
+    const result = (await response.json()) as {
+      snapshot: unknown;
+      active?: boolean;
+      interrupted?: {
+        applied_steps: number;
+        remaining_steps: unknown[];
+        offered?: { subtype?: string | null; own_seat?: boolean };
+      };
+    };
     if (result.active === false)
       throw new Error(
         "This confirmation was already committed but is now undone. Refresh the decision before confirming again.",
@@ -338,21 +795,61 @@ export class GameSessionClient {
       { type: "initial_snapshot", ...(result.snapshot as object) },
       this.options.gameId,
     );
+    // A reaction window opened between planned steps: what was applied is kept, the window waits
+    // for its holder, and the rest of the plan is offered again once it resolves.
+    const stopped = result.interrupted?.remaining_steps.length
+      ? result.interrupted
+      : undefined;
     this.rejectSubmission("Game history changed");
     this.detachSocket();
     this.clearTimers();
     this.setState(
       reduceServerMessage(
-        { ...this.state, pendingChoice: null, lastError: null },
+        {
+          ...this.state,
+          pendingChoice: null,
+          lastError: null,
+          batchResume: stopped
+            ? {
+                plan: { ...plan, steps: stopped.remaining_steps } as BatchPlan,
+                applied: stopped.applied_steps,
+                waiting: {
+                  subtype: stopped.offered?.subtype ?? null,
+                  ownSeat: stopped.offered?.own_seat ?? false,
+                },
+              }
+            : null,
+        },
         { ...snapshot, type: "initial_snapshot" },
       ),
     );
     this.openSocket();
   }
 
+  /** Any seated player: the live game history (seed, seats, decisions, events) as pretty JSON. */
+  async fetchReplay(): Promise<{ text: string; filename: string }> {
+    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+      throw new Error("A player session is required");
+    const response = await fetch(this.snapshotUrl().replace(/\/snapshot$/, "/replay"), {
+      headers: this.snapshotHeaders(),
+    });
+    if (!response.ok) {
+      const reason = (await response.text().catch(() => "")).trim();
+      throw new Error(reason || `The server refused the replay (${response.status})`);
+    }
+    const replay: unknown = await response.json();
+    return {
+      text: JSON.stringify(replay, null, 2),
+      filename: `ti4-replay-${this.options.gameId}.json`,
+    };
+  }
+
   /** The host changes the authoritative Rust timeline; all clients reconnect to it. */
   async changeHistory(action: HistoryChange): Promise<void> {
-    if (this.options.viewer.role !== "player" || !this.options.viewer.playerSession)
+    if (
+      this.options.viewer.role !== "player" ||
+      !this.options.viewer.playerSession
+    )
       throw new Error("A player session is required");
     const url = this.snapshotUrl().replace(/\/snapshot$/, "/history");
     const body =
@@ -369,7 +866,10 @@ export class GameSessionClient {
       conflictReason = undefined;
       response = await fetch(url, {
         method: "POST",
-        headers: { ...this.snapshotHeaders(), "content-type": "application/json" },
+        headers: {
+          ...this.snapshotHeaders(),
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ ...body, expected_version: version }),
       });
       if (response.ok || response.status !== 409) break;
@@ -382,9 +882,14 @@ export class GameSessionClient {
       // The worker may still be advancing automatically toward its next human choice.
       // Refresh the version, but never rewind a different decision if someone acted meanwhile.
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const latest = await fetch(this.snapshotUrl(), { headers: this.snapshotHeaders() });
+      const latest = await fetch(this.snapshotUrl(), {
+        headers: this.snapshotHeaders(),
+      });
       if (!latest.ok) break;
-      const snapshot = decodeInitialSnapshot(await latest.json(), this.options.gameId);
+      const snapshot = decodeInitialSnapshot(
+        await latest.json(),
+        this.options.gameId,
+      );
       if (snapshot.history?.cursor !== cursor) break;
       version = snapshot.game_version;
     }
@@ -394,12 +899,16 @@ export class GameSessionClient {
       this.setState({ ...this.state, lastError: error });
       throw new Error(error);
     }
-    const snapshot = decodeInitialSnapshot(await response.json(), this.options.gameId);
+    const snapshot = decodeInitialSnapshot(
+      await response.json(),
+      this.options.gameId,
+    );
     const expected = this.options.viewer;
     if (
       snapshot.viewer.role !== expected.role ||
       (expected.role === "player" &&
-        (snapshot.viewer.role !== "player" || snapshot.viewer.seat !== expected.seat))
+        (snapshot.viewer.role !== "player" ||
+          snapshot.viewer.seat !== expected.seat))
     ) {
       throw new Error("Server viewer identity does not match this session");
     }
@@ -408,7 +917,7 @@ export class GameSessionClient {
     this.clearTimers();
     this.setState(
       reduceServerMessage(
-        { ...this.state, pendingChoice: null, lastError: null },
+        { ...this.state, pendingChoice: null, lastError: null, batchResume: null },
         { ...snapshot, type: "initial_snapshot" },
       ),
     );
@@ -417,22 +926,40 @@ export class GameSessionClient {
 
   private async loadSnapshot(): Promise<void> {
     try {
-      const response = await fetch(this.snapshotUrl(), { headers: this.snapshotHeaders() });
-      if (!response.ok) throw new Error(`Snapshot request failed (${response.status})`);
+      const response = await fetch(this.snapshotUrl(), {
+        headers: this.snapshotHeaders(),
+      });
+      if (!response.ok)
+        throw new Error(
+          `Snapshot request failed (${response.status}): ${await response.text().catch(() => "")}`,
+        );
       this.ingestHttpSnapshot(await response.json());
     } catch (error) {
       if (!this.stopped)
-        this.setState({ ...this.state, lastError: `Snapshot request failed: ${String(error)}` });
+        this.setState({
+          ...this.state,
+          lastError: `Snapshot request failed: ${String(error)}`,
+        });
     }
   }
 
   private openSocket(): void {
+    if (this.planningSubmission?.kind === "answer") this.planningSubmission.reconnecting = true;
+    this.settleSecondary("Connection lost before the draft request was acknowledged.");
+    this.setState({
+      ...this.state,
+      planning: { ...this.state.planning, availability: null, current: false },
+      secondaryStatus: null,
+      secondaryPlanning: initialPlanningState,
+    });
     const socket = new WebSocket(this.webSocketUrl());
     this.socket = socket;
     socket.onopen = () => {
       if (this.stopped || this.socket !== socket) return;
       const playerSession =
-        this.options.viewer.role === "player" ? this.options.viewer.playerSession : undefined;
+        this.options.viewer.role === "player"
+          ? this.options.viewer.playerSession
+          : undefined;
       const message: ClientMessage = {
         type: "subscribe",
         protocol_version: PROTOCOL_VERSION,
@@ -453,7 +980,9 @@ export class GameSessionClient {
         }, 10_000);
       this.setState({ ...this.state, status: "connected", lastError: null });
     };
-    socket.onmessage = (event) => this.ingestWebSocket(event.data);
+    socket.onmessage = (event) => {
+      if (this.socket === socket && !this.stopped) this.ingestWebSocket(event.data);
+    };
     socket.onerror = () => {
       if (!this.stopped && this.socket === socket) {
         this.setState({
@@ -468,11 +997,13 @@ export class GameSessionClient {
         this.clearTimers();
         this.socket = null;
         this.rejectSubmission("Submission disconnected before confirmation");
+        // An answer's outcome is reconciled from the server-held script on reconnect.
+        if (this.planningSubmission?.kind !== "answer")
+          this.rejectPlanning("Planning disconnected before confirmation");
         this.setState({
           ...this.state,
           status: "disconnected",
-          pendingChoice: null,
-          snapshot: null,
+          planning: { ...this.state.planning, availability: null, current: false },
         });
         this.retry = setTimeout(
           () => {
@@ -514,12 +1045,161 @@ export class GameSessionClient {
   }
 
   private apply(message: ServerMessage): void {
+    if (message.type === "planning_result" && message.draft === "secondary") {
+      this.settleSecondary(
+        !message.rejection
+          ? null
+          : message.rejection === "replay_mismatch"
+            ? "This draft no longer fits the game. Review or reset it before marking it ready."
+            : message.rejection === "retired" || message.rejection === "not_waiting"
+              ? "The draft changed. Review it and try again."
+              : message.rejection === "unavailable"
+                ? "This secondary can no longer be drafted."
+                : `Draft request rejected: ${message.rejection}`,
+      );
+      return;
+    }
+    if (message.type === "planning_update" && message.draft === "secondary") {
+      this.setState(reduceServerMessage(this.state, message));
+      return;
+    }
+    if (message.type === "planning_result") {
+      const pending = this.planningSubmission;
+      if (
+        !pending ||
+        (pending.identity
+          ? !message.identity || attemptKey(pending.identity) !== attemptKey(message.identity)
+          : message.identity !== null)
+      )
+        return;
+      // Answer results acknowledge reservation only. A publication confirms recording.
+      if (pending.kind === "answer") {
+        if (
+          this.state.planning.envelope &&
+          attemptKey(this.state.planning.envelope.identity) !== attemptKey(pending.identity!)
+        )
+          return;
+        if (message.rejection && message.rejection !== "retired")
+          this.rejectPlanning(`Draft answer rejected: ${message.rejection}`);
+        return;
+      }
+      this.planningSubmission = null;
+      if (message.rejection) {
+        const reason =
+          message.rejection === "replay_mismatch"
+            ? "The draft no longer matches the live game. Review or reset it before applying."
+            : message.rejection === "no_action_opportunity"
+              ? "Apply draft is available only at your tactical action opportunity."
+              : message.rejection === "retired"
+                ? "The draft or live decision changed. Review the current draft and try again."
+                : `Draft request rejected: ${message.rejection}`;
+        pending.reject(new Error(reason));
+        this.setState({
+          ...this.state,
+          planning: {
+            ...this.state.planning,
+            busy: false,
+            error: reason,
+          },
+        });
+      } else {
+        this.setState({
+          ...this.state,
+          planning: {
+            ...this.state.planning,
+            busy: false,
+          },
+        });
+        pending.resolve();
+      }
+      return;
+    }
+    if (message.type === "planning_update" || message.type === "planning_status") {
+      const previousResetEpoch = this.state.planning.resetEpoch;
+      const previousEditRevision = this.state.planning.envelope?.movement_edit_revision ?? 0;
+      this.setState(reduceServerMessage(this.state, message));
+      const pending = this.planningSubmission;
+      const envelope = this.state.planning.envelope;
+      if (pending?.kind === "answer" && this.state.planning.resetEpoch !== previousResetEpoch) {
+        this.rejectPlanning("Draft reset; remaining instructions were cancelled.");
+        return;
+      }
+      if (
+        pending?.kind === "answer" &&
+        (envelope?.movement_edit_revision ?? 0) !== previousEditRevision
+      ) {
+        this.rejectPlanning("Draft movement reopened; remaining instructions were cancelled.");
+        return;
+      }
+      if (
+        message.type === "planning_status" &&
+        this.state.planning.availability === message &&
+        !message.available &&
+        this.planningSubmission?.kind === "answer"
+      ) {
+        this.rejectPlanning("Draft planning is unavailable; remaining instructions were paused.");
+        return;
+      }
+      if (
+        message.type === "planning_update" &&
+        envelope === message.envelope &&
+        pending?.kind === "answer" &&
+        envelope.update !== "Preparing"
+      ) {
+        const recorded = envelope.recorded_request_ids.includes(pending.requestId);
+        if (
+          !recorded &&
+          (envelope.progress.recorded_answers > pending.recorded ||
+            envelope.progress.recorded_answers < pending.recorded ||
+            (envelope.identity.plan_revision > pending.identity!.plan_revision &&
+              sameAttempt(envelope.identity, pending.identity!)))
+        ) {
+          this.rejectPlanning(
+            "Another connection answered this draft offer. Remaining instructions were paused.",
+          );
+          return;
+        }
+        const retired = pending.identity && !sameAttempt(pending.identity, envelope.identity);
+        // Only the replacement socket's authoritative publication can prove that
+        // an unchanged offer was never reserved. Ordinary duplicate deliveries cannot.
+        const undelivered =
+          pending.reconnecting &&
+          envelope.awaiting_answer &&
+          pending.identity &&
+          attemptKey(pending.identity) === attemptKey(envelope.identity);
+        const terminal =
+          typeof envelope.update === "object" &&
+          ("Stopped" in envelope.update || "Failed" in envelope.update);
+        if (
+          recorded ||
+          undelivered ||
+          (retired &&
+            (envelope.awaiting_answer ||
+              (typeof envelope.update === "object" &&
+                ("Stopped" in envelope.update || "Failed" in envelope.update))))
+        ) {
+          this.planningSubmission = null;
+          this.setState({ ...this.state, planning: { ...this.state.planning, busy: false } });
+          if (recorded) pending.resolve();
+          else
+            pending.reject(
+              new PlanningRefreshError("Draft refreshed; revalidating remaining instructions."),
+            );
+        } else if (terminal) {
+          this.rejectPlanning(
+            "The preview stopped before this answer was recorded. Remaining instructions were paused.",
+          );
+        }
+      }
+      return;
+    }
     if (message.type === "initial_snapshot" || message.type === "state_update") {
       const expected = this.options.viewer;
       if (
         message.viewer.role !== expected.role ||
         (expected.role === "player" &&
-          (message.viewer.role !== "player" || message.viewer.seat !== expected.seat))
+          (message.viewer.role !== "player" ||
+            message.viewer.seat !== expected.seat))
       ) {
         this.setState({
           ...initialState,
@@ -535,7 +1215,8 @@ export class GameSessionClient {
     if (message.type === "action_accepted") {
       const index = this.priorSubmissions.findIndex(
         (pending) =>
-          pending.optionId === message.option_id && message.game_version >= pending.version,
+          pending.optionId === message.option_id &&
+          message.game_version >= pending.version,
       );
       if (index !== -1) {
         this.priorSubmissions.splice(index, 1)[0].resolve();
@@ -588,7 +1269,8 @@ export class GameSessionClient {
     const submission = this.submission;
     this.submission = null;
     submission?.reject(new Error(reason));
-    for (const prior of this.priorSubmissions.splice(0)) prior.reject(new Error(reason));
+    for (const prior of this.priorSubmissions.splice(0))
+      prior.reject(new Error(reason));
   }
 
   private detachSocket(): void {
@@ -599,7 +1281,10 @@ export class GameSessionClient {
     socket.onmessage = null;
     socket.onerror = null;
     socket.onclose = null;
-    if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
+    if (
+      socket.readyState === WebSocket.CONNECTING ||
+      socket.readyState === WebSocket.OPEN
+    )
       socket.close();
   }
 
@@ -611,7 +1296,7 @@ export class GameSessionClient {
   }
 
   private setState(next: GameSessionState): void {
-    this.state = next;
+    this.state = settleBatchResume(next);
     this.listeners.forEach((listener) => listener());
   }
 
@@ -632,7 +1317,8 @@ export class GameSessionClient {
   }
 
   private snapshotHeaders(): HeadersInit {
-    return this.options.viewer.role === "player" && this.options.viewer.playerSession
+    return this.options.viewer.role === "player" &&
+      this.options.viewer.playerSession
       ? { "x-ti4-player-session": this.options.viewer.playerSession }
       : {};
   }

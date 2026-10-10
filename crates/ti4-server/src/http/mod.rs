@@ -51,6 +51,16 @@ pub fn create_app(registry: Arc<GameRegistry>) -> Router {
             "/api/games",
             get(games::list_games).post(games::create_game),
         )
+        .route("/api/maps", get(games::list_maps))
+        .route("/api/maps/{alias}/preview", get(games::preview_map))
+        .route(
+            "/api/games/{game_id}/lobby/map",
+            axum::routing::post(games::choose_lobby_map),
+        )
+        .route(
+            "/api/games/{game_id}/lobby/map-preview",
+            get(games::lobby_map_preview),
+        )
         .route("/api/games/{game_id}/lobby", get(games::get_lobby))
         .route(
             "/api/games/{game_id}/lobby/join",
@@ -93,6 +103,7 @@ pub fn create_app(registry: Arc<GameRegistry>) -> Router {
             "/api/games/{game_id}/history",
             axum::routing::post(games::change_history),
         )
+        .route("/api/games/{game_id}/replay", get(games::get_replay))
         .route("/api/games/{game_id}/map", get(games::get_map))
         .route("/api/content/catalog", get(content::get_catalog))
         .route("/api/dev/scenarios", get(crate::dev::list_scenarios))

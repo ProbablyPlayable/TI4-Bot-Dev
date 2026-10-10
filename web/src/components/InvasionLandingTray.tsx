@@ -5,9 +5,11 @@ import {
   normalizeFaction,
   type GroundOddsRequest,
 } from "../services/advisorService.ts";
+import { getPlanetEffectiveValues } from "../presentation/playerStats.ts";
 import { DecisionHeader } from "./DecisionHeader.tsx";
 import { UnitIcon, getUnitDisplayName } from "./UnitIcon.tsx";
 import { WorkflowShell } from "./WorkflowShell.tsx";
+import { useWorkspace } from "./WorkspaceContext.tsx";
 
 export type Landing = { planet: string; unit: string; damaged: boolean };
 const same = (a: Landing, b: Landing) =>
@@ -48,6 +50,11 @@ export const InvasionLandingTray: React.FC<{
   onDraftChange,
   embedded = false,
 }) => {
+  const workspace = useWorkspace();
+  const binding = `${workspace.refreshKey}:${workspace.movementEditRevision ?? 0}`;
+  const currentBinding = useRef(binding);
+  currentBinding.current = binding;
+  const confirmedBinding = useRef(binding);
   const system = board?.invasion?.system_id ?? board?.active_system ?? "";
   const [localDraft, setLocalDraft] = useState<Landing[]>([]);
   const draft = controlledDraft ?? localDraft;
@@ -79,7 +86,27 @@ export const InvasionLandingTray: React.FC<{
   const planets = [...new Set(options.map(({ landing }) => landing.planet))];
 
   const units = board?.systems[system]?.units ?? [];
-  const [planet, setPlanet] = useState<string | null>(planets[0] ?? null);
+
+  // M20: Calculate default target planet (highest value by resources + influence)
+  const getDefaultTargetPlanet = (): string | null => {
+    if (planets.length === 0) return null;
+    const mapTiles = board?.map_tiles;
+    let highestValuePlanet = planets[0];
+    let highestValue = -1;
+    for (const planetId of planets) {
+      const values = getPlanetEffectiveValues(planetId, undefined, mapTiles);
+      const totalValue = values.resources + values.influence;
+      if (totalValue > highestValue) {
+        highestValue = totalValue;
+        highestValuePlanet = planetId;
+      }
+    }
+    return highestValuePlanet;
+  };
+
+  const defaultTargetPlanet = getDefaultTargetPlanet();
+  const [planet, setPlanet] = useState<string | null>(defaultTargetPlanet);
+  const [hasAutoPopulated, setHasAutoPopulated] = useState(false);
   useEffect(() => {
     if (!planet && planets[0]) setPlanet(planets[0]);
   }, [planets, planet]);
@@ -169,7 +196,18 @@ export const InvasionLandingTray: React.FC<{
   }, [previewKey, choice.actor, viewerSeat]);
 
   useEffect(() => {
-    if (!running || submitting.current || submittedNonce.current === choice.nonce || !draft.length)
+    if (running && confirmedBinding.current !== binding) {
+      setRunning(false);
+      setError("Draft refreshed. Review the remaining landings before confirming again.");
+      return;
+    }
+    if (
+      !workspace.actionable ||
+      !running ||
+      submitting.current ||
+      submittedNonce.current === choice.nonce ||
+      !draft.length
+    )
       return;
     if (
       choice.actor !== origin.current.actor ||
@@ -191,20 +229,36 @@ export const InvasionLandingTray: React.FC<{
     }
     submitting.current = true;
     const nonce = choice.nonce;
+    const submittedBinding = binding;
     void onSubmitRef
       .current(offered.option.id)
       .then(() => {
-        submittedNonce.current = nonce;
-        setDraft((current) => current.slice(1));
+        // Success confirms this instruction was recorded, including when a
+        // replacement envelope retained its request ID. Refresh retires automatic
+        // execution, not the receipt's reconciliation of the remaining draft.
+        if (currentBinding.current === submittedBinding) submittedNonce.current = nonce;
+        const current = draftRef.current;
+        const index = current.indexOf(next);
+        if (index >= 0) setDraft([...current.slice(0, index), ...current.slice(index + 1)]);
       })
       .catch((cause: unknown) => {
+        if (currentBinding.current !== submittedBinding) return;
         setRunning(false);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         submitting.current = false;
       });
-  }, [running, draft, choice.nonce, choice.actor, choice.context?.subtype, system]);
+  }, [
+    running,
+    draft,
+    choice.nonce,
+    choice.actor,
+    choice.context?.subtype,
+    system,
+    binding,
+    workspace.actionable,
+  ]);
 
   useEffect(() => {
     if (running && draft.length === 0) setRunning(false);
@@ -218,6 +272,41 @@ export const InvasionLandingTray: React.FC<{
         piece.unit_type === unit &&
         piece.damaged === damaged,
     ).length ?? 1;
+
+  // M20: Auto-populate default troop draft on first load
+  useEffect(() => {
+    if (
+      !hasAutoPopulated &&
+      defaultTargetPlanet &&
+      draft.length === 0 &&
+      localDraft.length === 0 &&
+      !controlledDraft?.length
+    ) {
+      const groundForceOptions = options.filter(
+        ({ landing }) => landing.planet === defaultTargetPlanet
+      );
+      const defaultDraft: Landing[] = [];
+      for (const { landing } of groundForceOptions) {
+        const availableCount = stock(landing.unit, landing.damaged);
+        for (let i = 0; i < availableCount; i++) {
+          defaultDraft.push(landing);
+        }
+      }
+      if (defaultDraft.length > 0) {
+        setDraft(defaultDraft);
+        setPlanet(defaultTargetPlanet);
+      }
+      setHasAutoPopulated(true);
+    }
+  }, [defaultTargetPlanet, hasAutoPopulated, draft.length, localDraft.length, controlledDraft?.length]);
+
+  // M20: Reset to default selections
+  const resetToDefaults = () => {
+    setDraft([]);
+    setPlanet(defaultTargetPlanet);
+    setError(null);
+    setHasAutoPopulated(false);
+  };
 
   const visibleOdds = odds?.key === previewKey ? odds.value : "loading";
   const available = (landing: Landing) =>
@@ -236,7 +325,10 @@ export const InvasionLandingTray: React.FC<{
         isActor && (
           <div className="invasion-landing-body">
             <p className="invasion-landing-instruction">
-              Stage forces to planets with + and −. Only confirmed landings are public.
+              Stage forces to planets with + and −.{" "}
+              {workspace.draft
+                ? "Confirmed draft landings remain private."
+                : "Only confirmed landings are public."}
             </p>
 
             <div className="invasion-landing-planets-container">
@@ -264,6 +356,24 @@ export const InvasionLandingTray: React.FC<{
                         >
                           <span aria-hidden="true">🪐 </span>
                           {name}
+                          {name === defaultTargetPlanet && (
+                            <span
+                              className="invasion-default-badge"
+                              title="Pre-selected as default target"
+                              aria-label="default target"
+                              style={{
+                                display: "inline-block",
+                                marginLeft: "4px",
+                                fontSize: "10px",
+                                backgroundColor: "rgba(255, 193, 7, 0.3)",
+                                padding: "2px 6px",
+                                borderRadius: "3px",
+                                fontWeight: "bold",
+                              }}
+                            >
+                              ★ Default
+                            </span>
+                          )}
                         </button>
                         <span className="invasion-planet-landing-card__meta">
                           Already on planet: {planetUnitsAlready} · Staged: {planetDraftCount}
@@ -394,12 +504,10 @@ export const InvasionLandingTray: React.FC<{
                 type="button"
                 className="button button--secondary"
                 disabled={running}
-                onClick={() => {
-                  setDraft([]);
-                  setError(null);
-                }}
+                onClick={resetToDefaults}
+                title="Reset to default planet and all available troops"
               >
-                Reset draft
+                Reset to Defaults
               </button>
               <button
                 type="button"
@@ -409,6 +517,7 @@ export const InvasionLandingTray: React.FC<{
                   origin.current = { actor: choice.actor, system };
                   submittedNonce.current = null;
                   setError(null);
+                  confirmedBinding.current = binding;
                   setRunning(true);
                 }}
               >

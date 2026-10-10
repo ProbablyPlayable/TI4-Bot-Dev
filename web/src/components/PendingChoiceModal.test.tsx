@@ -247,3 +247,227 @@ describe("PendingChoiceModal Component", () => {
     expect(screen.queryByText("Morale Boost")).toBeNull();
   });
 });
+
+describe("PendingChoiceModal context header", () => {
+  it("shows what the decision is about and when it was asked", () => {
+    render(
+      <PendingChoiceModal
+        choice={{
+          actor: "seat_1",
+          nonce: "ctx-1",
+          prompt: "gain a command token into which pool",
+          context: {
+            subtype: "gain_command_token",
+            source: { Rule: "52.4" },
+            phase: "Status",
+            round: 4,
+          },
+          options: [
+            { id: "tactic_tokens", label: "tactic pool", kind: "pool" },
+            { id: "fleet_tokens", label: "fleet pool", kind: "pool" },
+          ],
+        }}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("decision-eyebrow")).toHaveTextContent("Command tokens");
+    expect(screen.getByTestId("decision-context-strip")).toHaveTextContent("Status phase · Round 4");
+    expect(screen.getByTestId("decision-context-strip")).toHaveTextContent("Rule 52.4");
+  });
+
+  it("shows no context strip when the server sent no context", () => {
+    render(
+      <PendingChoiceModal
+        choice={{
+          actor: "seat_1",
+          nonce: "ctx-2",
+          prompt: "spend a strategy token to draw two action cards",
+          options: [{ id: "yes", label: "draw" }],
+        }}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("decision-context-strip")).not.toBeInTheDocument();
+  });
+});
+
+describe("PendingChoiceModal hand decisions", () => {
+  it("shows the name, text and phase of each card offered for discard", () => {
+    render(
+      <PendingChoiceModal
+        choice={{
+          actor: "seat_1",
+          nonce: "hand-1",
+          prompt: "over the hand limit — discard one of 8",
+          context: { subtype: "discard_over_hand_limit", source: { Rule: "2.4" } },
+          options: [
+            { id: "4", label: "Ancient Burial Sites", kind: "discard" },
+            { id: "3", label: "Direct Hit", kind: "discard" },
+          ],
+        }}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const texts = screen.getAllByTestId("card-option-text");
+    expect(texts[0]).toHaveTextContent("Exhaust each cultural planet");
+    expect(screen.getAllByTestId("card-option-badge")[0]).toHaveTextContent("Agenda phase");
+    expect(screen.getByTestId("decision-eyebrow")).toHaveTextContent("Action card hand limit");
+    expect(screen.getByText(/You hold 8 action cards/)).toBeInTheDocument();
+    expect(screen.getByTestId("submit-choice-button")).toHaveTextContent("Discard card");
+  });
+
+  it("names secret objectives instead of showing their alias", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PendingChoiceModal
+        choice={{
+          actor: "seat_1",
+          nonce: "hand-2",
+          prompt: "return a secret objective to the deck",
+          context: { subtype: "return_over_secret_hand_limit", source: { Rule: "45.4" } },
+          options: [
+            { id: "baf", label: "return baf", kind: "return" },
+            { id: "ans", label: "return ans", kind: "return" },
+          ],
+        }}
+        onSubmit={onSubmit}
+      />,
+    );
+    expect(screen.getByText("Betray a Friend")).toBeInTheDocument();
+    expect(screen.queryByText("return baf")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("card-option-badge")[0]).toHaveTextContent("1 VP");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("submit-choice-button"));
+    });
+    expect(onSubmit).toHaveBeenCalledWith("baf");
+  });
+});
+
+describe("PendingChoiceModal strategy secondary", () => {
+  const secondaryChoice = (overrides: Record<string, unknown> = {}): PendingChoiceDto => ({
+    actor: "seat_1",
+    nonce: "sec-1",
+    prompt: "spend a strategy token to draw two action cards",
+    options: [
+      { id: "no", label: "decline", kind: "strategy" },
+      { id: "yes", label: "draw", kind: "strategy" },
+    ],
+    details: {
+      kind: "strategy_secondary",
+      card: "pok3politics",
+      played_by: "seat_2",
+      tokens_left: 3,
+      costs_token: true,
+      ...overrides,
+    },
+  });
+
+  it("shows the card, its secondary text and the tokens left, with named buttons", () => {
+    render(<PendingChoiceModal choice={secondaryChoice()} onSubmit={vi.fn()} />);
+    expect(screen.getByTestId("strategy-secondary-panel")).toHaveTextContent("Politics");
+    expect(screen.getByTestId("secondary-played-by")).toHaveTextContent("Played by");
+    expect(screen.getByTestId("secondary-text").textContent?.length).toBeGreaterThan(10);
+    expect(screen.getByTestId("secondary-tokens")).toHaveTextContent("3 (2 after)");
+    expect(screen.getByTestId("secondary-yes-btn")).toHaveTextContent(
+      "Spend 1 strategy token to draw two action cards",
+    );
+    expect(screen.queryByTestId("choice-option")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("submit-choice-button")).not.toBeInTheDocument();
+  });
+
+  it("submits the spend or the skip with one click", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<PendingChoiceModal choice={secondaryChoice()} onSubmit={onSubmit} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("secondary-yes-btn"));
+    });
+    expect(onSubmit).toHaveBeenLastCalledWith("yes");
+    rerender(
+      <PendingChoiceModal choice={{ ...secondaryChoice(), nonce: "sec-2" }} onSubmit={onSubmit} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("secondary-skip-btn"));
+    });
+    expect(onSubmit).toHaveBeenLastCalledWith("no");
+  });
+
+  it("cannot spend a token the seat does not have", () => {
+    render(
+      <PendingChoiceModal choice={secondaryChoice({ tokens_left: 0 })} onSubmit={vi.fn()} />,
+    );
+    expect(screen.getByTestId("secondary-yes-btn")).toBeDisabled();
+    expect(screen.getByTestId("secondary-skip-btn")).toBeEnabled();
+  });
+
+  it("keeps the plain list for a decision without the server's details", () => {
+    render(
+      <PendingChoiceModal
+        choice={{ ...secondaryChoice(), details: undefined }}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("strategy-secondary-panel")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("choice-option")).toHaveLength(2);
+  });
+});
+
+describe("PendingChoiceModal system pick", () => {
+  const board = {
+    systems: {
+      "14": {
+        system_id: "14",
+        command_tokens: ["p2"],
+        units: [{ unit_type: "fighter", owner: "p1", damaged: false }],
+        planets: {},
+      },
+      "18": { system_id: "18", command_tokens: [], units: [], planets: {} },
+    },
+    map_tiles: [
+      { system_id: "14", label: "Arinam", q: 0, r: 0, planets: [] },
+      { system_id: "18", label: "Mecatol Rex", q: 1, r: 0, planets: [] },
+    ],
+  };
+  const pick: PendingChoiceDto = {
+    prompt: "choose a system",
+    actor: "p1",
+    nonce: "sp1",
+    context: { subtype: "diplomacy_choose_system" },
+    options: [
+      { id: "14", kind: "system", label: "14" },
+      { id: "18", kind: "system", label: "18" },
+    ],
+  };
+
+  it("shows each system's facts and still submits the option id from the list", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PendingChoiceModal choice={pick} onSubmit={onSubmit} boardView={board} />);
+    expect(screen.getByTestId("system-facts-14")).toHaveTextContent("Arinam (#14)");
+    expect(screen.getByTestId("system-facts-14")).toHaveTextContent("1 fighter");
+    expect(screen.getByTestId("system-facts-14")).toHaveTextContent("Command tokens: p2");
+    expect(screen.getAllByTestId("choice-option")).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("submit-choice-button"));
+    });
+    expect(onSubmit).toHaveBeenCalledWith("18");
+  });
+
+  it("can be answered on the map: minimize, then confirm the selected system", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PendingChoiceModal choice={pick} onSubmit={onSubmit} boardView={board} selectedOptionId="18" />,
+    );
+    fireEvent.click(screen.getByTestId("system-pick-inspect-map-btn"));
+    expect(screen.getByTestId("system-pick-selected")).toHaveTextContent("Mecatol Rex (#18)");
+    expect(screen.getByTestId("resume-choice-button")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("confirm-activation-btn"));
+    });
+    expect(onSubmit).toHaveBeenCalledWith("18");
+  });
+
+  it("leaves other decisions without the map button", () => {
+    render(<PendingChoiceModal choice={mockChoice} onSubmit={vi.fn()} boardView={board} />);
+    expect(screen.queryByTestId("system-pick-inspect-map-btn")).not.toBeInTheDocument();
+  });
+});

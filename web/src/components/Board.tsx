@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useMemo, useState, useRef } from "react";
 import { BoardView, PlayerView, PendingChoiceDto } from "../protocol/types.ts";
 import {
   buildBoardPresentationModel,
@@ -14,6 +14,12 @@ import { MapOverlayToolbar } from "./MapOverlayToolbar.tsx";
 import { BoardTile } from "./board/BoardTile.tsx";
 import { BoardTooltip, HoveredTileInfo } from "./board/BoardTooltip.tsx";
 import { MovementVectorsOverlay } from "./board/MovementVectorsOverlay.tsx";
+import {
+  EMPTY_PAYMENT_DRAFT,
+  derivePaymentMarks,
+  derivePaymentOffer,
+} from "../presentation/paymentDraft.ts";
+import { useSharedPaymentDraft } from "../presentation/PaymentDraftContext.tsx";
 
 export { getPlayerColor, PLAYER_PALETTE };
 export type { MapOverlayMode };
@@ -87,6 +93,26 @@ export const Board: React.FC<BoardProps> = ({
     selectedSystemId,
   );
 
+  // Only the standard overlay draws clickable planets for every system, so a pending planet pick
+  // shows it regardless of the chosen overlay; the preference returns afterwards.
+  const isPlanetTargeting =
+    presentation.targets.targetMode === "planet" || presentation.targets.targetMode === "payment";
+  const effectiveOverlay: MapOverlayMode = isPlanetTargeting ? "none" : activeOverlay;
+
+  // While paying, each payable planet shows what it is worth and whether it is staged.
+  const sharedDraft = useSharedPaymentDraft();
+  const paymentMarks = useMemo(
+    () =>
+      presentation.targets.targetMode === "payment" && pendingChoice
+        ? derivePaymentMarks(
+            derivePaymentOffer(pendingChoice),
+            sharedDraft?.draft ?? EMPTY_PAYMENT_DRAFT,
+          )
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presentation.targets.targetMode, pendingChoice, sharedDraft?.draft],
+  );
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button === 0) {
       setIsPanning(true);
@@ -140,7 +166,7 @@ export const Board: React.FC<BoardProps> = ({
         }}
       >
         <div style={{ display: "flex", gap: 6 }}>
-          <Tooltip content="Zoom In">
+          <Tooltip content="Zoom In" position="bottom">
             <button
               type="button"
               onClick={zoomIn}
@@ -151,7 +177,7 @@ export const Board: React.FC<BoardProps> = ({
               +
             </button>
           </Tooltip>
-          <Tooltip content="Zoom Out">
+          <Tooltip content="Zoom Out" position="bottom">
             <button
               type="button"
               onClick={zoomOut}
@@ -162,7 +188,7 @@ export const Board: React.FC<BoardProps> = ({
               −
             </button>
           </Tooltip>
-          <Tooltip content="Reset Pan & Zoom">
+          <Tooltip content="Reset Pan & Zoom" position="bottom">
             <button
               type="button"
               onClick={resetView}
@@ -175,7 +201,13 @@ export const Board: React.FC<BoardProps> = ({
           </Tooltip>
         </div>
 
-        <MapOverlayToolbar activeMode={activeOverlay} onSelectMode={handleSelectOverlay} />
+        <MapOverlayToolbar
+          activeMode={effectiveOverlay}
+          onSelectMode={handleSelectOverlay}
+          disabledReason={
+            isPlanetTargeting ? "Overlays are paused while you choose a planet" : undefined
+          }
+        />
       </div>
 
       <div className="board-seat-legend" aria-label="Player positions">
@@ -235,9 +267,11 @@ export const Board: React.FC<BoardProps> = ({
               key={`hex-${tile.systemId}-${idx}`}
               tile={tile}
               isSelected={selectedSystemId === tile.systemId}
-              activeOverlay={activeOverlay}
+              activeOverlay={effectiveOverlay}
               viewerSeat={viewerSeat}
               isActivationMode={presentation.targets.isActivationMode}
+              targetMode={presentation.targets.targetMode}
+              paymentMarks={paymentMarks}
               players={players}
               onSelectTarget={onSelectTarget}
               onSelectOptionId={onSelectOptionId}
@@ -280,7 +314,7 @@ export const Board: React.FC<BoardProps> = ({
         <BoardTooltip
           hoveredTile={hoveredTile}
           tilePresentation={presentation.tiles.find((t) => t.systemId === hoveredTile.systemId)}
-          activeOverlay={activeOverlay}
+          activeOverlay={effectiveOverlay}
           seatingOrder={seatingOrder}
           players={players}
         />

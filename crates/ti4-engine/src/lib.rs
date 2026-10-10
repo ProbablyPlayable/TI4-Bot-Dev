@@ -34,6 +34,7 @@ pub mod event;
 pub mod exploration;
 pub mod faction_abilities;
 pub mod faction_techs;
+pub mod factions;
 pub mod fingerprint;
 /// Test scaffolding: a small galaxy, and helpers that place units on it.
 ///
@@ -56,6 +57,7 @@ pub mod legendary;
 pub mod movement;
 pub mod neutral_units;
 pub mod objectives;
+pub mod observation;
 pub mod opening;
 pub mod payment;
 pub mod phase;
@@ -63,6 +65,7 @@ pub mod planets;
 pub mod preview;
 pub mod production;
 pub mod promissory;
+pub mod reaction_modes;
 pub mod reactions;
 pub mod registry;
 pub mod relics;
@@ -83,6 +86,7 @@ pub mod timing;
 pub mod tokens;
 pub mod transactions;
 pub mod transit;
+pub mod trigger;
 pub mod vote;
 #[cfg(test)]
 mod wiring;

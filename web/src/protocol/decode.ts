@@ -1,12 +1,17 @@
 import {
   JoinResponse,
   CreateGameResponse,
+  AutoResolvedNote,
+  DecisionTriggerDto,
   InitialSnapshotMsg,
   LobbyDto,
   PROTOCOL_VERSION,
   ServerMessage,
+  TriggerKindDto,
+  TriggerUnitsDto,
 } from "./types.ts";
 import { validNickname } from "./nickname.ts";
+import { decodeMapChoice } from "./mapDecode.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,6 +33,76 @@ const isGameId = (value: unknown): value is string => isBoundedString(value, 64)
 const isSlotId = (value: unknown): value is string => isBoundedString(value, 64);
 const isPlayerId = (value: unknown): value is string => isBoundedString(value, 128);
 const isPlayerSession = (value: unknown): value is string => isBoundedString(value, 128);
+
+function isAttempt(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    ["checkpoint_id", "plan_revision", "generation_id"].every((key) =>
+      isNonNegativeInteger(value[key]),
+    )
+  );
+}
+
+function isDraftKind(value: unknown): boolean {
+  return value === undefined || value === "tactical" || value === "secondary";
+}
+
+function isDraftApplication(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.applied) &&
+    isNonNegativeInteger(value.total) &&
+    value.applied <= value.total &&
+    ["applying", "waiting_for_player", "needs_decision", "applied"].includes(String(value.state)) &&
+    typeof value.message === "string"
+  );
+}
+
+function isSecondaryDraftStatus(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.card === "string" &&
+    typeof value.played_by === "string" &&
+    [value.window_open, value.can_start, value.has_draft, value.ready].every(
+      (flag) => typeof flag === "boolean",
+    ) &&
+    (value.seats_before === null || isNonNegativeInteger(value.seats_before)) &&
+    (value.identity === null || isAttempt(value.identity)) &&
+    (value.application === null || isDraftApplication(value.application))
+  );
+}
+
+function isPlanningPublication(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.position) ||
+    !isRecord(value.position.board) ||
+    !isRecord(value.position.board.systems) ||
+    !Array.isArray(value.position.players) ||
+    !Array.isArray(value.position.seating_order) ||
+    !isRecord(value.position.table) ||
+    !Array.isArray(value.events) ||
+    !value.events.every((event) => typeof event === "string")
+  )
+    return false;
+  const choice = value.choice;
+  return (
+    choice === null ||
+    (isRecord(choice) &&
+      typeof choice.player === "string" &&
+      typeof choice.prompt === "string" &&
+      Array.isArray(choice.options) &&
+      choice.options.every(
+        (option) =>
+          isRecord(option) &&
+          typeof option.id === "string" &&
+          typeof option.label === "string" &&
+          (option.payload === undefined || isRecord(option.payload)),
+      ) &&
+      (choice.context === undefined ||
+        (isRecord(choice.context) && typeof choice.context.subtype === "string")))
+  );
+}
 
 export function decodeLobby(value: unknown, expectedGameId: string): LobbyDto {
   if (!isRecord(value) || value.game_id !== expectedGameId) fail("invalid lobby game id");
@@ -73,6 +148,12 @@ export function decodeLobby(value: unknown, expectedGameId: string): LobbyDto {
       can_take_over: entry.can_take_over,
     })),
     bot_service_enabled: Boolean(value.bot_service_enabled),
+    ...(value.map === undefined
+      ? {}
+      : {
+          map: decodeMapChoice(value.map),
+          map_revision: isNonNegativeInteger(value.map_revision) ? value.map_revision : 0,
+        }),
   } as LobbyDto;
 }
 
@@ -116,6 +197,81 @@ export function decodeJoinResponse(value: unknown, expectedGameId: string): Join
   };
 }
 
+const optionalString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value : undefined;
+
+/**
+ * The reaction trigger of a decision context, or null when absent or malformed. Tolerant on
+ * purpose: it is display data, so an unknown or damaged shape degrades the dialog's wording and
+ * never fails the message. An unknown `kind` reads as "other".
+ */
+export function decodeDecisionTrigger(raw: unknown): DecisionTriggerDto | null {
+  if (!isRecord(raw) || typeof raw.event_type !== "string" || raw.event_type.length === 0)
+    return null;
+  const units: TriggerUnitsDto[] = [];
+  if (Array.isArray(raw.units)) {
+    for (const entry of raw.units) {
+      if (
+        isRecord(entry) &&
+        typeof entry.owner === "string" &&
+        typeof entry.unit_type === "string" &&
+        isNonNegativeInteger(entry.count)
+      )
+        units.push({ owner: entry.owner, unit_type: entry.unit_type, count: entry.count });
+    }
+  }
+  const chain = Array.isArray(raw.chain) ? raw.chain.filter(isNonNegativeInteger) : [];
+  return {
+    kind: (typeof raw.kind === "string" ? raw.kind : "other") as TriggerKindDto,
+    event_type: raw.event_type,
+    event_id: isNonNegativeInteger(raw.event_id) ? raw.event_id : 0,
+    relation: raw.relation === "when" ? "when" : "after",
+    ...(optionalString(raw.actor) ? { actor: optionalString(raw.actor) } : {}),
+    ...(optionalString(raw.subject) ? { subject: optionalString(raw.subject) } : {}),
+    ...(optionalString(raw.card) ? { card: optionalString(raw.card) } : {}),
+    ...(optionalString(raw.agenda) ? { agenda: optionalString(raw.agenda) } : {}),
+    ...(optionalString(raw.system) ? { system: optionalString(raw.system) } : {}),
+    ...(optionalString(raw.planet) ? { planet: optionalString(raw.planet) } : {}),
+    ...(units.length ? { units } : {}),
+    ...(isNonNegativeInteger(raw.hits) ? { hits: raw.hits } : {}),
+    ...(chain.length ? { chain } : {}),
+  };
+}
+
+/** The well-formed auto-resolved notes in a state update; anything else is ignored. */
+export function decodeAutoResolved(raw: unknown): AutoResolvedNote[] {
+  if (!Array.isArray(raw)) return [];
+  const notes: AutoResolvedNote[] = [];
+  for (const item of raw) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "string" ||
+      typeof item.prompt !== "string" ||
+      typeof item.selected !== "string"
+    )
+      continue;
+    const count = typeof item.count === "number" && Number.isInteger(item.count) && item.count > 1 ? item.count : undefined;
+    notes.push({
+      id: item.id,
+      prompt: item.prompt,
+      selected: item.selected,
+      reason: typeof item.reason === "string" ? item.reason : "",
+      ...(count ? { count } : {}),
+    });
+  }
+  return notes;
+}
+
+/** The seat's reaction modes; anything that is not a known mode is dropped (settings, not state). */
+export function decodeReactionModes(value: unknown): Record<string, "always" | "never"> {
+  const modes: Record<string, "always" | "never"> = {};
+  if (!isRecord(value)) return modes;
+  for (const [card, mode] of Object.entries(value)) {
+    if (mode === "always" || mode === "never") modes[card] = mode;
+  }
+  return modes;
+}
+
 /** Validates the protocol envelope before React consumes any network payload. */
 export function decodeServerMessage(value: unknown, expectedGameId: string): ServerMessage {
   if (!isRecord(value) || typeof value.type !== "string") fail("missing message type");
@@ -125,6 +281,118 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
   if (gameScoped && value.game_id !== expectedGameId) fail("unexpected game id");
 
   switch (value.type) {
+    case "planning_status":
+      if (
+        !isNonNegativeInteger(value.checkpoint_id) ||
+        ![value.available, value.can_start, value.has_draft].every((v) => typeof v === "boolean") ||
+        (value.identity !== null && !isAttempt(value.identity)) ||
+        (value.can_apply !== undefined && typeof value.can_apply !== "boolean") ||
+        (value.application != null &&
+          (!isRecord(value.application) ||
+            !isNonNegativeInteger(value.application.applied) ||
+            !isNonNegativeInteger(value.application.total) ||
+            value.application.applied > value.application.total ||
+            !["applying", "waiting_for_player", "needs_decision", "applied"].includes(
+              String(value.application.state),
+            ) ||
+            typeof value.application.message !== "string")) ||
+        (value.secondary != null && !isSecondaryDraftStatus(value.secondary))
+      )
+        fail("invalid planning status");
+      return value as unknown as ServerMessage;
+    case "planning_result":
+      if (
+        !isDraftKind(value.draft) ||
+        (value.identity !== null && !isAttempt(value.identity)) ||
+        (value.rejection !== null &&
+          ![
+            "unauthorized",
+            "wrong_game",
+            "unavailable",
+            "unknown_seat",
+            "active_player",
+            "not_started",
+            "retired",
+            "not_waiting",
+            "unknown_option",
+            "no_action_opportunity",
+            "replay_mismatch",
+          ].includes(String(value.rejection)))
+      )
+        fail("invalid planning result");
+      return value as unknown as ServerMessage;
+    case "planning_update": {
+      const e = value.envelope;
+      if (
+        !isDraftKind(value.draft) ||
+        !isRecord(e) ||
+        !isNonNegativeInteger(e.publication_id) ||
+        !isAttempt(e.identity) ||
+        (e.reset_revision !== undefined && !isNonNegativeInteger(e.reset_revision)) ||
+        (e.editing_movement !== undefined && typeof e.editing_movement !== "boolean") ||
+        (e.movement_edit_revision !== undefined &&
+          !isNonNegativeInteger(e.movement_edit_revision)) ||
+        typeof e.awaiting_answer !== "boolean" ||
+        !Array.isArray(e.recorded_request_ids) ||
+        !e.recorded_request_ids.every((id) => typeof id === "string" && id.length > 0) ||
+        (e.recorded_decisions !== undefined &&
+          (!Array.isArray(e.recorded_decisions) ||
+            !e.recorded_decisions.every(
+              (decision) =>
+                isRecord(decision) &&
+                typeof decision.player === "string" &&
+                typeof decision.prompt === "string" &&
+                typeof decision.option_id === "string" &&
+                typeof decision.kind === "string" &&
+                isRecord(decision.payload) &&
+                (decision.context === null ||
+                  (isRecord(decision.context) && typeof decision.context.subtype === "string")),
+            ))) ||
+        !Array.isArray(e.assumptions) ||
+        !e.assumptions.every((a) => typeof a === "string") ||
+        !isRecord(e.progress) ||
+        ![
+          "recorded_answers",
+          "replayed",
+          "remaining",
+          "completed_steps",
+          "nested_answers_since_checkpoint",
+        ].every((k) => isNonNegativeInteger((e.progress as Record<string, unknown>)[k]))
+      )
+        fail("invalid planning envelope");
+      const update = e.update;
+      if (update === "Preparing") return value as unknown as ServerMessage;
+      if (!isRecord(update) || Object.keys(update).length !== 1) fail("invalid planning update");
+      if ("SafeOffer" in update || "SafeStep" in update) {
+        if (!isPlanningPublication(update.SafeOffer ?? update.SafeStep))
+          fail("invalid planning publication");
+      } else if ("Stopped" in update) {
+        const stopped = update.Stopped;
+        if (
+          !isRecord(stopped) ||
+          ![
+            "Uncertainty",
+            "UnsupportedOffer",
+            "OtherPlayerRequired",
+            "UnsupportedParticipation",
+            "UnsupportedSegment",
+            "KnowledgeChanged",
+            "ReplayMismatch",
+            "StepLimit",
+            "MovementComplete",
+            "SecondaryComplete",
+          ].includes(String(stopped.reason)) ||
+          (stopped.last_safe_publication !== null &&
+            !isPlanningPublication(stopped.last_safe_publication))
+        )
+          fail("invalid planning stop");
+      } else if (
+        !("Failed" in update) ||
+        !["Preparation", "Engine", "Worker"].includes(String(update.Failed))
+      )
+        fail("invalid planning failure");
+      return value as unknown as ServerMessage;
+    }
     case "initial_snapshot":
     case "state_update":
       if (
@@ -143,6 +411,17 @@ export function decodeServerMessage(value: unknown, expectedGameId: string): Ser
             !isNonNegativeInteger(value.history.generation)))
       )
         fail("invalid history status");
+      if (value.reaction_modes !== undefined) {
+        const modes = decodeReactionModes(value.reaction_modes);
+        if (Object.keys(modes).length > 0) value.reaction_modes = modes;
+        else delete value.reaction_modes;
+      }
+      if (value.auto_resolved !== undefined) {
+        // Feedback only, so a malformed or unknown shape is dropped rather than failing the update.
+        const notes = decodeAutoResolved(value.auto_resolved);
+        if (notes.length > 0) value.auto_resolved = notes;
+        else delete value.auto_resolved;
+      }
       return value as unknown as ServerMessage;
     case "pending_choice":
       if (

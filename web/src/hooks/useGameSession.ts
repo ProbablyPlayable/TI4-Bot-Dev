@@ -19,6 +19,35 @@ export interface UseGameSessionOptions {
 }
 
 export interface UseGameSessionReturn {
+  planning: import("../protocol/planning.ts").PlanningState;
+  startPlanning: () => Promise<void>;
+  resetPlanning: (identity: import("../protocol/types.ts").AttemptIdentity) => Promise<void>;
+  editPlanningMovement: (identity: import("../protocol/types.ts").AttemptIdentity) => Promise<void>;
+  applyPlanning: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    nonce: string,
+    expectedVersion: number,
+  ) => Promise<void>;
+  submitPlanningChoice: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    optionId: string,
+  ) => Promise<void>;
+  /** The strategic action whose secondary this seat may draft, and that draft. */
+  secondaryStatus: import("../protocol/types.ts").SecondaryDraftStatus | null;
+  secondaryPlanning: import("../protocol/planning.ts").PlanningState;
+  startSecondaryPlanning: () => Promise<void>;
+  resetSecondaryPlanning: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+  ) => Promise<void>;
+  submitSecondaryPlanningChoice: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    optionId: string,
+  ) => Promise<void>;
+  /** Ready: the server submits the draft when the live window reaches this seat. */
+  setSecondaryReady: (
+    identity: import("../protocol/types.ts").AttemptIdentity,
+    ready: boolean,
+  ) => Promise<void>;
   status: ConnectionStatus;
   gameVersion: number;
   snapshot: SnapshotState | null;
@@ -27,13 +56,20 @@ export interface UseGameSessionReturn {
   lastError: string | null;
   events: GameLogEntry[];
   history: import("../protocol/types.ts").HistoryStatus;
+  batchResume?: import("../protocol/client.ts").BatchResume | null;
   submitChoice: (optionId: string) => Promise<void>;
+  /** Never (or again) offer one action card, by printed name, to this seat. */
+  setReactionMode: (card: string, mode: import("../protocol/types.ts").ReactionModeSetting) => void;
   changeHistory: (action: import("../protocol/client.ts").HistoryChange) => Promise<void>;
+  /** The game's replay JSON for copying out (any seated player). */
+  fetchReplay: () => Promise<{ text: string; filename: string }>;
   submitMovementBatch: (
     destination: string,
     steps: import("../protocol/client.ts").MovementStep[],
   ) => Promise<void>;
   submitBatch: (plan: import("../protocol/client.ts").BasketPlan) => Promise<void>;
+  resumeBatch: () => Promise<void>;
+  dismissBatchResume: () => void;
 }
 
 export function useGameSession({
@@ -61,9 +97,24 @@ export function useGameSession({
 
   return {
     ...state,
+    startPlanning: () => client.startPlanning(),
+    resetPlanning: (identity) => client.resetPlanning(identity),
+    editPlanningMovement: (identity) => client.editPlanningMovement(identity),
+    applyPlanning: (identity, nonce, expectedVersion) =>
+      client.applyPlanning(identity, nonce, expectedVersion),
+    submitPlanningChoice: (identity, optionId) => client.submitPlanningChoice(identity, optionId),
+    startSecondaryPlanning: () => client.startSecondaryPlanning(),
+    resetSecondaryPlanning: (identity) => client.resetSecondaryPlanning(identity),
+    submitSecondaryPlanningChoice: (identity, optionId) =>
+      client.submitSecondaryPlanningChoice(identity, optionId),
+    setSecondaryReady: (identity, ready) => client.setSecondaryReady(identity, ready),
     submitChoice,
+    setReactionMode: (card, mode) => client.setReactionMode(card, mode),
     changeHistory,
+    fetchReplay: () => client.fetchReplay(),
     submitMovementBatch: (destination, steps) => client.submitMovementBatch(destination, steps),
     submitBatch: (plan) => client.submitBatch(plan),
+    resumeBatch: () => client.resumeBatch(),
+    dismissBatchResume: () => client.dismissBatchResume(),
   };
 }

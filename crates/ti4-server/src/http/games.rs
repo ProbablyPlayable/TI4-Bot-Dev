@@ -3,12 +3,13 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use ti4_model::id::PlayerId;
 
+use crate::maps::MapTemplateSummary;
 use crate::protocol::server::ServerMessage;
 use crate::session::GameRegistry;
 use crate::session::batch::BatchRequest;
@@ -16,6 +17,10 @@ use crate::session::registry::{GameSummary, LobbyError, PlayerLobbyView};
 use crate::session::registry::{HistoryAction, HistoryError};
 use crate::storage::LobbySlotId;
 
+#[allow(
+    clippy::result_large_err,
+    reason = "a batch error is built once per rejected request and serialized to the client"
+)]
 pub async fn submit_batch(
     Path(game_id): Path<String>,
     headers: HeaderMap,
@@ -28,12 +33,10 @@ pub async fn submit_batch(
     let token = require_player_session(&headers).map_err(|_| {
         (
             StatusCode::FORBIDDEN,
-            Json(crate::session::registry::BatchError {
-                failed_step: 0,
-                reason: "unauthorized".into(),
-                expected: String::new(),
-                offered_summary: Vec::new(),
-            }),
+            Json(crate::session::registry::BatchError::explained(
+                "unauthorized",
+                "the x-ti4-player-session header is missing or invalid",
+            )),
         )
     })?;
     let token = token.to_owned();
@@ -42,12 +45,9 @@ pub async fn submit_batch(
         .map_err(|error| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(crate::session::registry::BatchError {
-                    failed_step: 0,
-                    reason: format!("batch worker failed: {error}"),
-                    expected: String::new(),
-                    offered_summary: Vec::new(),
-                }),
+                Json(crate::session::registry::BatchError::simple(&format!(
+                    "batch worker failed: {error}"
+                ))),
             )
         })?
         .map(Json)
@@ -74,6 +74,12 @@ pub struct CreateGameRequest {
     pub player_count: usize,
     pub seed: Option<u64>,
     pub nickname: String,
+    pub map_template: Option<String>,
+    /// `"random"` asks for the seeded random board explicitly (no template).
+    pub map: Option<String>,
+    /// Opening-state preset for smoke runs (see [`crate::preset`]); unknown names are a 400.
+    /// Like the `/api/dev/scenarios` endpoints, this is not gated.
+    pub start_preset: Option<String>,
 }
 
 /// Response after creating a game.
@@ -128,6 +134,104 @@ pub async fn list_games(State(registry): State<Arc<GameRegistry>>) -> Json<Vec<G
     Json(registry.list_games())
 }
 
+/// Handler for `GET /api/maps`.
+///
+/// With `?player_count=N` only the templates that seat N and build are listed; without it every
+/// template is, with `buildable` telling them apart.
+pub async fn list_maps(
+    Query(query): Query<MapsQuery>,
+) -> Result<Json<Vec<MapTemplateSummary>>, (StatusCode, String)> {
+    crate::maps::catalog::catalog(query.player_count)
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MapsQuery {
+    pub player_count: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MapPreviewQuery {
+    pub player_count: Option<usize>,
+    pub variant: Option<u32>,
+}
+
+/// Handler for `GET /api/maps/{alias}/preview?variant=K` (`alias` may be `random`, which needs
+/// `player_count`). A picture of the card, built with a seed the server never reveals.
+pub async fn preview_map(
+    Path(alias): Path<String>,
+    Query(query): Query<MapPreviewQuery>,
+) -> Result<Json<crate::maps::MapPreview>, (StatusCode, String)> {
+    let bad = |message: String| (StatusCode::BAD_REQUEST, message);
+    let (choice, count) = if alias == "random" {
+        let count = query
+            .player_count
+            .ok_or_else(|| bad("random needs player_count".to_owned()))?;
+        (crate::maps::MapChoice::Random, count)
+    } else {
+        let loader = crate::maps::TemplateLoader::load()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let template = loader
+            .get(&alias)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown map {alias:?}")))?;
+        (
+            crate::maps::MapChoice::Template { alias },
+            template.player_count,
+        )
+    };
+    if !(2..=MAX_PLAYERS).contains(&count) {
+        return Err(bad("player_count must be 2-8".to_owned()));
+    }
+    let seed = crate::maps::catalog::variant_seed(&choice, count, query.variant.unwrap_or(0));
+    crate::maps::catalog::preview(&choice, count, seed)
+        .map(Json)
+        .map_err(bad)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChooseMapRequest {
+    pub map: crate::maps::MapChoice,
+    /// Dev only (like `start_preset` at creation): `\"\"` clears it. Never shown to players.
+    pub start_preset: Option<String>,
+}
+
+/// Handler for `POST /api/games/{game_id}/lobby/map` (host only, before Start).
+pub async fn choose_lobby_map(
+    Path(game_id): Path<String>,
+    headers: HeaderMap,
+    State(registry): State<Arc<GameRegistry>>,
+    Json(payload): Json<ChooseMapRequest>,
+) -> Result<Json<PlayerLobbyView>, (StatusCode, String)> {
+    let token = require_player_session(&headers)?.to_owned();
+    tokio::task::spawn_blocking(move || {
+        registry.choose_player_lobby_map(
+            &game_id,
+            &token,
+            &payload.map,
+            payload.start_preset.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(lobby_error)
+}
+
+/// Handler for `GET /api/games/{game_id}/lobby/map-preview`: the board this table's choice and
+/// seat order give.
+pub async fn lobby_map_preview(
+    Path(game_id): Path<String>,
+    State(registry): State<Arc<GameRegistry>>,
+) -> Result<Json<crate::maps::MapPreview>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || registry.player_lobby_map_preview(&game_id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .map_err(lobby_error)
+}
+
 /// Handler for `POST /api/games`.
 pub async fn create_game(
     State(registry): State<Arc<GameRegistry>>,
@@ -147,13 +251,62 @@ pub async fn create_game(
         }
     };
 
+    let loader =
+        crate::maps::TemplateLoader::load().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(map) = &payload.map
+        && (map != "random" || payload.map_template.is_some())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "map must be \"random\" and cannot be combined with map_template".to_owned(),
+        ));
+    }
+    let map_template = match payload.map_template {
+        _ if payload.map.is_some() => None,
+        Some(alias) => {
+            let template = loader.get(&alias).ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown map_template {alias:?}"),
+                )
+            })?;
+            if template.player_count != payload.player_count {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "map_template {alias:?} seats {} players, not {}",
+                        template.player_count, payload.player_count
+                    ),
+                ));
+            }
+            Some(alias)
+        }
+        None => crate::maps::default_template_for(
+            ti4_content::ContentStore::embedded(),
+            &loader,
+            payload.player_count,
+            ti4_model::content_types::POK,
+        ),
+    };
+
+    if let Some(preset) = &payload.start_preset
+        && !crate::preset::is_known(preset)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown start_preset {preset:?}"),
+        ));
+    }
+
     let seed = payload.seed.unwrap_or_else(rand::random::<u64>);
     let (lobby, player, session) = registry
-        .create_player_lobby(
+        .create_player_lobby_with_options(
             game_id.clone(),
             payload.player_count,
             seed,
             &payload.nickname,
+            map_template,
+            payload.start_preset,
         )
         .map_err(lobby_error)?;
 
@@ -370,6 +523,7 @@ fn lobby_error(error: LobbyError) -> (StatusCode, String) {
         | LobbyError::TakeoverUnavailable => StatusCode::CONFLICT,
         LobbyError::InvalidPlayerId
         | LobbyError::InvalidSlotOrder
+        | LobbyError::InvalidMap(_)
         | LobbyError::InvalidNickname => StatusCode::BAD_REQUEST,
         LobbyError::Map(_) | LobbyError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -388,28 +542,86 @@ pub async fn get_map(
     Ok(Json(session.map_tiles()))
 }
 
+/// Handler for `GET /api/games/{game_id}/replay`: the game's history for copying out.
+///
+/// Any seated player of the game may fetch it. The body wraps the same JSON a `history.json`
+/// holds (`history`) with the seed and seats needed to replay it; it includes every player's
+/// decisions and the seed, so it is not a spectator view.
+pub async fn get_replay(
+    Path(game_id): Path<String>,
+    headers: HeaderMap,
+    State(registry): State<Arc<GameRegistry>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let token = require_player_session(&headers)?.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let session = registry
+            .get_game(&game_id)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Game '{game_id}' not found")))?;
+        registry
+            .authenticate_player_session(&game_id, &token)
+            .map_err(lobby_error)?;
+        let (history, seed, player_ids) = session.replay_export();
+        let map_template = registry
+            .store()
+            .and_then(|store| store.load_player_init(&game_id).ok())
+            .and_then(|init| init.map_template);
+        Ok(Json(serde_json::json!({
+            "format": "ti4-replay",
+            "version": 1,
+            "game_id": game_id,
+            "seed": seed,
+            "player_ids": player_ids,
+            "map_template": map_template,
+            "history": history,
+        })))
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("replay export failed: {error}"),
+        )
+    })?
+}
+
 /// Handler for `GET /api/games/{game_id}/snapshot`.
 pub async fn get_snapshot(
     Path(game_id): Path<String>,
     headers: HeaderMap,
     State(registry): State<Arc<GameRegistry>>,
 ) -> Result<Json<ServerMessage>, (StatusCode, String)> {
-    let session = registry
-        .get_game(&game_id)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Game '{game_id}' not found")))?;
+    // Checked where it always was (after the game lookup), so the error precedence is unchanged.
+    let credential = player_session(&headers).map(|token| token.map(str::to_owned));
+    // The registry and session locks are blocking mutexes; waiting on them on a runtime worker
+    // stalls every other request scheduled there.
+    tokio::task::spawn_blocking(move || {
+        let session = registry
+            .get_game(&game_id)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Game '{game_id}' not found")))?;
 
-    if session.error().is_some() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Game session failed closed".to_owned(),
-        ));
-    }
+        if session.error().is_some() {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "Game session failed closed: {}",
+                    session.error().unwrap_or_default()
+                ),
+            ));
+        }
 
-    Ok(Json(ServerMessage::InitialSnapshot(
-        registry
-            .player_snapshot(&game_id, player_session(&headers)?, &session)
-            .map_err(lobby_error)?,
-    )))
+        Ok(Json(ServerMessage::InitialSnapshot(
+            registry
+                .player_snapshot(&game_id, credential?.as_deref(), &session)
+                .map_err(lobby_error)?,
+        )))
+    })
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Snapshot worker failed: {error}"),
+        )
+    })?
 }
 
 #[derive(Deserialize)]
@@ -439,7 +651,20 @@ pub async fn change_history(
         ("redo_pipeline", None, None) => HistoryAction::RedoPipeline,
         ("restore", Some(event_id), None) => HistoryAction::Restore { event_id },
         ("restore_cursor", None, Some(cursor)) => HistoryAction::RestoreCursor { cursor },
-        _ => return Err((StatusCode::BAD_REQUEST, "Invalid history action".to_owned())),
+        (action, event_id, cursor) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Invalid history action '{action}' (event_id {}, cursor {}): use undo, undo_batch, undo_pipeline, redo, redo_batch or redo_pipeline without arguments, restore with event_id, or restore_cursor with cursor",
+                    if event_id.is_some() {
+                        "given"
+                    } else {
+                        "absent"
+                    },
+                    if cursor.is_some() { "given" } else { "absent" },
+                ),
+            ));
+        }
     };
     let token = token.to_owned();
     let snapshot = tokio::task::spawn_blocking(move || {
@@ -455,12 +680,71 @@ pub async fn change_history(
     .map_err(|error| {
         let status = match error {
             HistoryError::NotFound => StatusCode::NOT_FOUND,
-            HistoryError::Forbidden => StatusCode::FORBIDDEN,
-            HistoryError::InvalidTarget => StatusCode::BAD_REQUEST,
+            HistoryError::Forbidden(_) => StatusCode::FORBIDDEN,
+            HistoryError::InvalidTarget(_) => StatusCode::BAD_REQUEST,
             HistoryError::Conflict(_) => StatusCode::CONFLICT,
             HistoryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, format!("{error:?}"))
+        (status, error.message())
     })?;
     Ok(Json(ServerMessage::InitialSnapshot(snapshot)))
+}
+
+#[cfg(test)]
+mod template_request_tests {
+    use super::*;
+
+    fn request(count: usize, template: Option<&str>) -> Json<CreateGameRequest> {
+        Json(CreateGameRequest {
+            player_count: count,
+            seed: Some(1),
+            nickname: "Host".to_owned(),
+            map_template: template.map(str::to_owned),
+            map: None,
+            start_preset: None,
+        })
+    }
+
+    fn preset_request(count: usize, preset: &str) -> Json<CreateGameRequest> {
+        Json(CreateGameRequest {
+            player_count: count,
+            seed: Some(1),
+            nickname: "Host".to_owned(),
+            map_template: None,
+            map: None,
+            start_preset: Some(preset.to_owned()),
+        })
+    }
+
+    #[tokio::test]
+    async fn an_unknown_start_preset_is_a_400_and_a_known_one_is_accepted() {
+        let registry = Arc::new(GameRegistry::new());
+        let unknown = create_game(State(registry.clone()), preset_request(3, "nope")).await;
+        assert_eq!(unknown.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert!(
+            create_game(State(registry), preset_request(3, crate::preset::COMBAT))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_mismatched_template_is_a_400() {
+        let registry = Arc::new(GameRegistry::new());
+        let unknown = create_game(State(registry.clone()), request(6, Some("nope"))).await;
+        assert_eq!(unknown.unwrap_err().0, StatusCode::BAD_REQUEST);
+        let mismatch = create_game(State(registry), request(4, Some("6pStandard"))).await;
+        assert_eq!(mismatch.unwrap_err().0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_named_or_default_template_is_accepted() {
+        let registry = Arc::new(GameRegistry::new());
+        assert!(
+            create_game(State(registry.clone()), request(6, Some("6pBeMyNeighbor")))
+                .await
+                .is_ok()
+        );
+        assert!(create_game(State(registry), request(6, None)).await.is_ok());
+    }
 }

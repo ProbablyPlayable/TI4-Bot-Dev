@@ -15,24 +15,56 @@ use ti4_model::state::GameState;
 use crate::decision_context::{DecisionContext, DecisionSource};
 use crate::objectives::VICTORY_TARGET;
 
-/// Laws currently in play.
+/// `faction_marks` key holding the `turn_seq` of the action-phase turn for which every law reads as
+/// blank (Keleres, Law's Order).
+const BLANKED_TURN: &str = "keleres|laws_blank";
+
+/// Whether all laws are blank right now: Law's Order was used this turn and the turn has not ended.
+///
+/// "You may spend 1 trade good or 1 commodity to treat all laws as blank until the end of that
+/// turn." Scoped by `turn_seq` (it moves when the turn passes) and to the action phase, so the
+/// mark cannot leak into the status or agenda phase that follows the last turn.
+#[must_use]
+pub fn blanked(state: &GameState) -> bool {
+    state.phase == ti4_model::state::Phase::Action
+        && state
+            .faction_marks
+            .get(BLANKED_TURN)
+            .is_some_and(|turn| *turn == state.turn_seq.to_string())
+}
+
+/// Treat every law as blank until the end of the current turn (Law's Order).
+pub fn blank_for_turn(state: &mut GameState) {
+    state
+        .faction_marks
+        .insert(BLANKED_TURN.to_owned(), state.turn_seq.to_string());
+}
+
+/// Laws currently in play. Empty while [`blanked`].
 #[must_use]
 pub fn in_play(state: &GameState) -> Vec<String> {
+    if blanked(state) {
+        return Vec::new();
+    }
     state.laws.keys().cloned().collect()
 }
 
-/// Whether a law is in play.
+/// Whether a law is in play. Never while [`blanked`].
 #[must_use]
 pub fn active(state: &GameState, alias: &str) -> bool {
-    state.laws.contains_key(alias)
+    !blanked(state) && state.laws.contains_key(alias)
 }
 
 /// What this law was elected onto — a planet or a player (8.9 to 8.11).
 ///
 /// For a For/Against law the value is the outcome itself, which is why a caller meaning "the
-/// elected planet" must check it against the board rather than trusting it blindly.
+/// elected planet" must check it against the board rather than trusting it blindly. `None` while
+/// [`blanked`].
 #[must_use]
 pub fn elected<'a>(state: &'a GameState, alias: &str) -> Option<&'a String> {
+    if blanked(state) {
+        return None;
+    }
     state.laws.get(alias)
 }
 
@@ -47,10 +79,12 @@ pub fn repeal(state: &mut GameState, alias: &str) -> bool {
     state.laws.remove(alias);
     if alias == "censure" {
         let holder = PlayerId::new(owner);
-        if let Some(seat) = state.player_mut(&holder) {
-            seat.victory_points = (seat.victory_points - 1).clamp(0, VICTORY_TARGET);
+        if let Some(before) = state.player(&holder).map(|seat| seat.victory_points) {
+            if let Some(seat) = state.player_mut(&holder) {
+                seat.victory_points = (seat.victory_points - 1).clamp(0, VICTORY_TARGET);
+            }
+            crate::objectives::note_vp_since(state, &holder, before, "censure_repealed");
         }
-        state.note_vp(&holder, -1, "censure_repealed");
     }
     true
 }
@@ -78,7 +112,12 @@ pub fn action_card_limit(state: &GameState, base: usize) -> usize {
 /// Political Censure: its elected owner cannot play action cards.
 #[must_use]
 pub fn action_cards_forbidden(state: &GameState, player: &PlayerId) -> bool {
-    active(state, "censure") && elected(state, "censure").is_some_and(|who| who == player.as_str())
+    (active(state, "censure") && elected(state, "censure").is_some_and(|who| who == player.as_str()))
+        // Faction cards that stop a player playing action cards (Yssaril Transparasteel
+        // Plating: "During your turn of the action phase, players that have passed cannot play
+        // action cards"). The component-action gate reads this; the reaction-window gate
+        // (`reactions::playable_now`) must read the same hook, see BF-00b-economy evidence.
+        || crate::factions::hooks_economy::action_cards_forbidden(state, player)
 }
 
 /// Shared Research makes nebulae passable.
@@ -243,6 +282,7 @@ pub fn on_gain_control(state: &mut GameState, player: &PlayerId) -> i32 {
     if let Some(seat) = state.player_mut(player) {
         seat.trade_goods += 1;
     }
+    crate::supply::note_trade_goods_gained(state, player, 1, "minister_exploration");
     1
 }
 
@@ -497,10 +537,7 @@ pub fn steal_throne_card(state: &mut GameState, alias: &str, taker: &PlayerId) -
         seat.victory_points = seat.victory_points.saturating_sub(1);
     }
     state.note_vp(&owner, -1, "throne_card_taken_from");
-    if let Some(seat) = state.player_mut(taker) {
-        seat.victory_points = (seat.victory_points + 1).min(crate::objectives::VICTORY_TARGET);
-    }
-    state.note_vp(taker, 1, "throne_card_taken");
+    crate::objectives::adjust_victory_points(state, taker, 1, "throne_card_taken");
     state.laws.insert(alias.to_owned(), taker.to_string());
     true
 }
@@ -643,6 +680,9 @@ pub fn apply_to_galaxy(state: &GameState, galaxy: &mut ti4_content::galaxy::Gala
             .or_default()
             .insert(face.clone());
     }
+    // Wormholes carried by faction pieces (the Creuss flagship's delta), after the token map is
+    // rebuilt so they are not cleared with it. Empty modules add nothing.
+    crate::factions::hooks_movement::apply_extra_wormholes(state, galaxy);
 }
 
 /// Laws this engine can enact but not enforce — the honest coverage gap.
