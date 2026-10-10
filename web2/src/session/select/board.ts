@@ -188,7 +188,7 @@ export function selectBoard(
           }
         : null,
     origin: origin ?? null,
-    taskSystems: move ? move.systems : task ? Object.keys(task.values) : [],
+    taskSystems: move ? move.systems : task ? (task.highlight ?? Object.keys(task.values)) : [],
     // The board is framed again for each movement: its systems are the task.
     fitKey: movement ? `movement:${movement.facts.active}` : "local",
   };

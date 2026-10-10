@@ -68,6 +68,14 @@ it("opens the activation step: the map is the picker, the panel has the choice",
   expect(Object.keys(board.task!.values).sort()).toEqual(
     choice.options.map((option) => option.id).sort(),
   );
+  // Only the systems where the action does something stand out: 12 in reach of the ships, and
+  // home, where the space dock is. "Fit task" frames these.
+  const highlight = board.task!.highlight!;
+  expect(highlight).toHaveLength(13);
+  expect(highlight).toContain("23");
+  expect(highlight).toContain("01");
+  expect(highlight.every((id) => id in board.task!.values)).toBe(true);
+  expect(board.taskSystems).toEqual(highlight);
 });
 
 it("says how many ships are in range of the staged system", () => {

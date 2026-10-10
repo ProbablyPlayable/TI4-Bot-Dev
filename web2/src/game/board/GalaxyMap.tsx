@@ -208,6 +208,8 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
   // A task that asks for a system: a click on a system that can be chosen chooses it.
   const target = task?.target === "system" && task.interactive && tile.id in task.values;
   const chosen = target && !!task.chosen[tile.id];
+  // It can be chosen, and the task has nothing to do there: it does not stand out.
+  const plain = target && !!task.highlight && !task.highlight.includes(tile.id);
   return (
     <g
       className={cx(
@@ -218,6 +220,7 @@ function Tile({ tile, active, inspected, targeting, view, task }: TileProps) {
         (tile.anomaly === "asteroid" || tile.anomaly === "supernova") && "blocked",
         linked && "linked",
         target && "target",
+        plain && "plain",
         chosen && "chosen",
         task?.context?.includes(tile.id) && "context",
       )}

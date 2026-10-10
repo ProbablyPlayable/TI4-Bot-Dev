@@ -154,6 +154,10 @@ export interface ActivationView {
     commandToken: boolean;
     shipsInRange: number;
     originsInRange: number;
+    /** The production value of the player's units in the system. */
+    production: number;
+    /** The player's units that roll SPACE CANNON at the ships of another player in the system. */
+    cannon: number;
   } | null;
   systems: { id: SystemId; label: string }[];
   /** Recorded: the active system. */

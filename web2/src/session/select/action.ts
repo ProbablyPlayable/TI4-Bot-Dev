@@ -45,11 +45,21 @@ export function boardTask(update: SessionUpdate, local: LocalState): BoardTaskVi
   if (!choice?.options.length || !choice.options.every((option) => option.kind === "activate")) {
     return null;
   }
+  const facts = update.tactical?.kind === "activation" ? update.tactical : null;
   return {
     target: "system",
     kind: "pick",
     interactive: true,
     values: Object.fromEntries(choice.options.map((option) => [option.id, 0])),
+    // Every system of the choice can be activated. The action does something in these: ships
+    // can move there, the seat produces there, or its guns fire at the ships of another player.
+    ...(facts
+      ? {
+          highlight: facts.systems
+            .filter((reach) => reach.ships > 0 || !!reach.production || !!reach.cannon)
+            .map((reach) => reach.system),
+        }
+      : {}),
     chosen: local.staged ? { [local.staged]: true } : {},
     verb: "Activate",
     unit: "system",

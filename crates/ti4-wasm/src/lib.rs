@@ -946,6 +946,14 @@ mod tests {
         // Two carriers and a destroyer; the fighters do not move on their own.
         assert_eq!(next_to_home["ships"], 3);
         assert_eq!(next_to_home["origins"], 1);
+        // The seat produces at home only, and has no ships of another player to fire at.
+        assert!(next_to_home.get("production").is_none());
+        let producing: Vec<_> = reach
+            .iter()
+            .filter(|fact| fact.get("production").is_some())
+            .collect();
+        assert_eq!(producing.len(), 1);
+        assert!(reach.iter().all(|fact| fact.get("cannon").is_none()));
 
         let movement = &seen[4]["tactical"];
         assert_eq!(movement["kind"], "movement");

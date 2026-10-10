@@ -34,6 +34,10 @@ function Chosen({ chosen }: { chosen: NonNullable<ActivationView["chosen"]> }) {
           }
         />
       )}
+      {chosen.production > 0 && <ListRow icon="dock" title={`Production ${chosen.production}`} />}
+      {chosen.cannon > 0 && (
+        <ListRow icon="pds" title={`Space cannon · ${plural(chosen.cannon, "unit")}`} />
+      )}
     </>
   );
 }

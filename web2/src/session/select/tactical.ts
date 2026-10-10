@@ -67,6 +67,8 @@ function activation(
             commandToken: false,
             shipsInRange: reach.ships,
             originsInRange: reach.origins,
+            production: reach.production ?? 0,
+            cannon: reach.cannon ?? 0,
           }
         : null,
     },

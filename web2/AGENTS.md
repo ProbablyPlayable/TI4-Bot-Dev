@@ -148,6 +148,7 @@ All eight cards use one frame: one list of seats. There are no tabs, no seat col
 
 - Payment and planet choices are made on the map only, and the controls of a payment are there too. The footer of the panel names what pays.
 - Planets that the open task can use must stand out. The other board content is dimmed during the task.
+- The activation has three levels (owner, 2026-10-10). A system stands out when the action does something there: ships of the player can move to it, the player has a production value there, or the player's SPACE CANNON fires at the ships of another player there. A system that cannot be activated (the player's command token) is dimmed. Every other system is neither: a click still chooses it. The facts come from the engine (`BoardTaskView.highlight`).
 - System names are flavor. The map does not show them. The inspector shows the name when the player clicks a system.
 - A system can have up to three planets. The tile layout must support this.
 - A planet that can pay shows resources and influence (`res/inf`). The value that pays is large. The player must see what the payment gives up.

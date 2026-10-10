@@ -102,6 +102,8 @@ function activation(state: State): ActivationView {
       commandToken: !!system.token,
       shipsInRange: range.ships,
       originsInRange: range.systems,
+      production: 0,
+      cannon: 0,
     },
     active: null,
   };

@@ -166,8 +166,9 @@
   opacity: 0.28;
 }
 
-/* A system that the open task can use, and the chosen one. The other systems are dimmed. */
-.galaxy .system.target > .hex {
+/* A system that the open task can use, and the chosen one. A system that cannot be chosen is
+   dimmed. A system that can be chosen and where the task does nothing (.plain) is as always. */
+.galaxy .system.target:not(.plain) > .hex {
   stroke: var(--color-text);
   stroke-width: 2.4;
   filter: drop-shadow(0 0 5px var(--color-text));

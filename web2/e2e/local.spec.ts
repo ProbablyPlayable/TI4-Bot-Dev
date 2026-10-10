@@ -86,6 +86,14 @@ test("a tactical action: the system and the movement are staged on the map", asy
   await expect(send(page)).toBeDisabled();
   await expect(panel(page).getByRole("button", { name: /^Activate \d/ })).toHaveCount(0);
   const system = (id: string) => page.locator("g.system").filter({ hasText: `#${id}` });
+  // Every system can be activated. Only those where the action does something stand out: the
+  // 12 that the ships reach, and home with its space dock.
+  await expect(page.locator("g.system.target")).toHaveCount(54);
+  await expect(page.locator("g.system.target:not(.plain)")).toHaveCount(13);
+  await expect(system("01")).not.toHaveClass(/plain/);
+  await page.screenshot({ path: "shots/local/activation-open.png", animations: "disabled" });
+  await system("01").click();
+  await expect(panel(page).getByText("Production 6")).toBeVisible();
   await system("23").click();
   await expect(page.locator("g.system.chosen")).toHaveCount(1);
   await expect(panel(page).getByText("3 ships in range")).toBeVisible();

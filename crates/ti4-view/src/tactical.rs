@@ -33,6 +33,18 @@ pub struct ReachFact {
     pub ships: usize,
     /// The number of systems that these ships are in.
     pub origins: usize,
+    /// The production value of the units of the seat in the system: with more than 0 the action
+    /// has a production step there.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub production: i64,
+    /// How many guns of the seat roll SPACE CANNON at the activation: another player has ships in
+    /// the system, and the guns are there or reach it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cannon: usize,
+}
+
+fn is_zero<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// How a ship gets to the active system.
@@ -178,6 +190,10 @@ fn activation(
                 system: option.id.clone(),
                 ships: ships.len(),
                 origins: origins.len(),
+                production: ti4_engine::production::capacity(
+                    state, content, sources, player, &system,
+                ),
+                cannon: cannon(state, content, sources, galaxy, player, &system),
             }
         })
         .collect();
@@ -185,6 +201,37 @@ fn activation(
         tactic_tokens: state.player(player).map_or(0, |seat| seat.tactic_tokens),
         systems,
     }
+}
+
+/// The guns of `player` that roll in the space cannon offense of `system`, if the seat activates it.
+fn cannon(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    galaxy: &Galaxy,
+    player: &PlayerId,
+    system: &SystemId,
+) -> usize {
+    let types = catalogue(content, sources);
+    let guns = ti4_engine::combat::space_cannon_guns(
+        state,
+        content,
+        sources,
+        system,
+        player,
+        Some(galaxy),
+    );
+    let units = guns.units.iter().filter(|unit| {
+        &unit.owner == player
+            && types.get(unit.type_id.as_str()).is_some_and(|kind| {
+                kind.space_cannon_hits_on().is_some() && kind.space_cannon_dice() > 0
+            })
+    });
+    let attachments = guns
+        .attachments
+        .iter()
+        .filter(|(owner, _, _, dice)| owner == player && *dice > 0);
+    units.count() + attachments.count()
 }
 
 /// The key of a pool: where the units are and what makes two of them the same for the game.
@@ -505,6 +552,76 @@ mod tests {
             let origins: BTreeSet<_> = moving.iter().map(|ship| &ship.origin).collect();
             assert_eq!(origins.len(), reach.origins, "into {}", reach.system);
         }
+    }
+
+    fn reach(state: &GameState, galaxy: &Galaxy, system: &str) -> ReachFact {
+        let content = ContentStore::embedded();
+        let choice =
+            activation_options_with(state, content, POK, galaxy, &seat()).expect("offered");
+        let Some(TacticalFacts::Activation(facts)) =
+            project_tactical_facts(state, content, POK, galaxy, &choice)
+        else {
+            panic!("no activation facts");
+        };
+        facts
+            .systems
+            .into_iter()
+            .find(|reach| reach.system == system)
+            .expect("the system can be activated")
+    }
+
+    #[test]
+    fn activation_says_where_the_seat_produces() {
+        let (state, galaxy) = game();
+        let home = home(&state);
+        assert!(reach(&state, &galaxy, home.as_str()).production > 0);
+        let empty = galaxy
+            .system_ids()
+            .into_iter()
+            .find(|id| {
+                !state
+                    .systems_with_units_of(&seat())
+                    .contains(&&SystemId::new(*id))
+            })
+            .expect("a system without units of the seat");
+        assert_eq!(reach(&state, &galaxy, empty).production, 0);
+    }
+
+    #[test]
+    fn activation_counts_the_guns_that_fire_at_the_ships_of_another_player() {
+        let (mut state, galaxy) = game();
+        let content = ContentStore::embedded();
+        let home = home(&state);
+        let next = SystemId::new(
+            galaxy
+                .adjacent(home.as_str())
+                .into_iter()
+                .find(|id| !ti4_content::galaxy::is_home_system(content, id, POK))
+                .expect("a system next to home"),
+        );
+        let put = |state: &mut GameState, system: &SystemId, kind: &str, owner: &str| {
+            state
+                .system_mut(system)
+                .units
+                .push(Unit::new(UnitTypeId::new(kind), PlayerId::new(owner)));
+        };
+        let guns =
+            |state: &GameState, system: &SystemId| reach(state, &galaxy, system.as_str()).cannon;
+        let before = guns(&state, &home);
+        assert_eq!(before, 0, "no ships to fire at");
+
+        // A gun in the system fires only when another player has ships there.
+        put(&mut state, &next, "pds", "a");
+        assert_eq!(guns(&state, &next), 0);
+        put(&mut state, &next, "cruiser", "b");
+        assert_eq!(guns(&state, &next), 1);
+
+        // A gun with the upgrade reaches the systems next to it.
+        put(&mut state, &home, "cruiser", "b");
+        let near = guns(&state, &home);
+        put(&mut state, &next, "pds2", "a");
+        assert_eq!(guns(&state, &home), near + 1);
+        assert_eq!(guns(&state, &next), 2);
     }
 
     #[test]

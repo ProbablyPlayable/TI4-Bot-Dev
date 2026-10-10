@@ -198,7 +198,15 @@ export interface CargoPool {
 export interface ActivationFacts {
   kind: "activation";
   tactic_tokens: number;
-  systems: { system: string; ships: number; origins: number }[];
+  systems: {
+    system: string;
+    ships: number;
+    origins: number;
+    /** The production value of the seat in the system, when it is more than 0. */
+    production?: number;
+    /** The guns of the seat that roll SPACE CANNON at the activation, when there are any. */
+    cannon?: number;
+  }[];
 }
 
 /** `ti4_view::tactical::MovementFacts` */

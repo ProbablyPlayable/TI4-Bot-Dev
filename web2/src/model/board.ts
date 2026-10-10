@@ -72,6 +72,11 @@ export interface BoardTaskView {
   chosen: Record<PlanetId | SystemId, boolean>;
   verb: string;
   unit: string;
+  /**
+   * The systems of `values` where the choice does something. When it is set, the other systems
+   * of `values` can be chosen and do not stand out.
+   */
+  highlight?: SystemId[];
   /** Systems that cannot be chosen and belong to the choice: they are not dimmed. */
   context?: SystemId[];
   /** A payment that is open: the board has its state and its controls, where the player chooses. */
