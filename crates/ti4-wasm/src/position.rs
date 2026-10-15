@@ -8,6 +8,14 @@
 //! it, not the play loop, so `save_state` reads it while the game is parked and does not touch
 //! the game.
 //!
+//! A save writes the held position as JSON text ([`Written`]) only when it is
+//! [`POSITION_EVERY`] decisions newer than the text it wrote last; else it writes that text again.
+//!
+//! A resume reads the position ([`read`]) when it is of this engine and [`Position::fits`] the
+//! save: the play loop starts from it and replays only the decisions after it. A new run of a
+//! history change gets the held position the same way (`Restart::position`). Anything else is
+//! ignored, and the game replays from the seed.
+//!
 //! An MLP seat carries its power map once it has read one. That map is refreshed only where the
 //! board changed, and while a tactical action is open the value from before it is returned, so a
 //! seat with a new pipeline would read another value and could decide differently. The carry
@@ -22,6 +30,11 @@ use ti4_host::protocol::server::GameEvent;
 use ti4_host::step_snapshot::StoredPosition;
 use ti4_model::id::PlayerId;
 use ti4_model::state::Phase;
+
+/// How many decisions the held position is ahead of the text that a save writes before the save
+/// writes it again. Writing a position late in a game costs tens of ms (it is about 2 MB of
+/// JSON), so not every save writes a new one; a resume replays at most this many decisions more.
+pub const POSITION_EVERY: usize = 64;
 
 /// The position of a save (`HostSave::position`). A resume reads it only with the same engine:
 /// `build` and `content_digest` as the save's `engine`.
@@ -53,7 +66,7 @@ pub struct SavedPosition {
 /// | `HostSession`: `decision_log` | stored (`records`) |
 /// | `events` | stored |
 /// | `event_counter`, `rolls_seen`, `prev_phase`, `prev_round` | stored |
-/// | `answers` | rebuilt from the save: its first `answers` |
+/// | `answers` | rebuilt: the decisions of the undo entries ([`Position::answers`]) |
 /// | `undo` (`UndoTrack`, local rules) | stored: its entries; `since` from the save's last switch |
 /// | `viewer` | stored |
 /// | `identity`, `switches`, `version`, `generation`, `redo`, `undone`, `staged`, the Never cards | from the save |
@@ -168,4 +181,122 @@ impl Held {
             play: self.play.clone(),
         }
     }
+}
+
+impl Held {
+    /// The position as the session holds it, from a stored one.
+    #[must_use]
+    pub fn of(position: &Position) -> Self {
+        let session = &position.session;
+        Self {
+            game: position.game.game.clone(),
+            log_len: position.game.log_len,
+            events: session.events.len(),
+            answers: session.answers,
+            undo: session.undo.len(),
+            viewer: session.viewer.clone(),
+            event_counter: session.event_counter,
+            rolls_seen: session.rolls_seen,
+            prev_phase: session.prev_phase,
+            prev_round: session.prev_round,
+            play: position.play.clone(),
+        }
+    }
+}
+
+/// The text of a position that a save wrote, with the lengths of what the session held there: a
+/// save writes it again until the held position is [`POSITION_EVERY`] decisions newer.
+#[derive(Debug, Clone)]
+pub struct Written {
+    pub saved: SavedPosition,
+    pub log_len: usize,
+    pub events: usize,
+    pub answers: usize,
+}
+
+impl Written {
+    #[must_use]
+    pub fn new(held: &Held, saved: SavedPosition) -> Self {
+        Self {
+            saved,
+            log_len: held.log_len,
+            events: held.events,
+            answers: held.answers,
+        }
+    }
+
+    /// Whether the session still has the prefixes the position was taken with
+    /// ([`Held::kept_by`]).
+    #[must_use]
+    pub const fn kept_by(&self, decisions: usize, events: usize, answers: usize) -> bool {
+        self.log_len <= decisions && self.events <= events && self.answers <= answers
+    }
+}
+
+impl Position {
+    /// Whether this is the run after its decisions for a save that gives `log` again (every
+    /// decision, of every seat) or, with no log, the person's `answers`, with `switches` changes
+    /// of the seats. The decisions of the position must be the first ones of `log`; with
+    /// answers, the person's answers among them must be the first ones of `answers` (the other
+    /// seats decide the same again from the seed). The stored records must have the stored hash,
+    /// and the counters must agree with them.
+    #[must_use]
+    pub fn fits(&self, log: &[String], answers: &[String], switches: usize) -> bool {
+        let len = self.game.log_len;
+        let session = &self.session;
+        let counted = self.records.len() == len
+            && self.play.decided == len as u64
+            && session.undo.len() == session.answers
+            && self.play.switches_asked.len() <= switches
+            && session.undo.iter().all(|entry| entry.decision < len);
+        let prefix = if log.is_empty() {
+            session.answers <= answers.len()
+                && session
+                    .undo
+                    .iter()
+                    .zip(answers)
+                    .all(|(entry, answer)| self.records[entry.decision].chosen == *answer)
+        } else {
+            len <= log.len()
+                && self
+                    .records
+                    .iter()
+                    .zip(log)
+                    .all(|(record, id)| record.chosen == *id)
+        };
+        counted && prefix && self.game.fits(&self.records)
+    }
+
+    /// The person's answers among the decisions of the position, in order.
+    #[must_use]
+    pub fn answers(&self) -> Vec<String> {
+        self.session
+            .undo
+            .iter()
+            .map(|entry| self.records[entry.decision].chosen.clone())
+            .collect()
+    }
+}
+
+/// The position of a save (`Resume::position`, as the page sent it) when a resume can start from
+/// it: it reads as a [`SavedPosition`] of the engine `engine` (`build`, `content_digest`), its
+/// `data` reads as a [`Position`] of `log_len` decisions, and it [`fits`](Position::fits) the save.
+/// `None` otherwise: the game replays from the seed.
+#[must_use]
+pub fn read(
+    value: serde_json::Value,
+    engine: &serde_json::Value,
+    log: &[String],
+    answers: &[String],
+    switches: usize,
+) -> Option<(Position, SavedPosition)> {
+    let saved: SavedPosition = serde_json::from_value(value).ok()?;
+    let same =
+        |key: &str, ours: &str| engine.get(key).and_then(serde_json::Value::as_str) == Some(ours);
+    if !same("build", &saved.build) || !same("content_digest", &saved.content_digest) {
+        return None;
+    }
+    let position: Position = serde_json::from_str(&saved.data).ok()?;
+    (position.game.log_len == saved.log_len && position.fits(log, answers, switches))
+        .then_some((position, saved))
 }

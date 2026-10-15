@@ -604,7 +604,8 @@ decision log. The apps keep it in the save store of `web-shared/src/storage/` (I
   saved, so the first choice after the replay has the same number, and an undo goes back into
   the saved decisions. A seat that draws from the random stream moves the stream, so the seats
   decide the same after the replay. `progress` envelopes say how far it is (every 20
-  decisions). A save of another format is not read.
+  decisions). A save of another format is not read. A save with a stored position that fits
+  starts from it and plays only the decisions after it ("The stored position").
 - A decision of the log that the game does not offer ends the run: the `end` envelope has
   `diverged`, which names its number, its id, the prompt and the ids that are offered.
 - **Undo.** One undo takes back one answer of the page, or a movement, the landings or a
@@ -614,9 +615,9 @@ decision log. The apps keep it in the save store of `web-shared/src/storage/` (I
   random seats' stream) after each step that asked the page, the last 32 of them; when they
   reach back far enough, the run goes back one answer at a time (each without asking the page)
   and opens the choice again. Else, and when the game is over, the session replies `restart`
-  with the log cut at the first answer that it takes back: the page plays the game again from
-  its seed with that log, in a new instance. The first snapshot after it says the steps that
-  were taken back (`undone`).
+  with the log cut at the first answer that it takes back: the page plays the game again with
+  that log, in a new instance, from the stored position when one fits, else from its seed. The
+  first snapshot after it says the steps that were taken back (`undone`).
 - A saved game of another engine file is not replayed before the player says so: another
   engine may play the same answers differently, and not every difference gives an illegal id.
 
@@ -647,8 +648,9 @@ it is faster than the replays of this table.
 | Writing the save, 50000 answers (589 KiB) | 6.6 ms |
 
 - Writing the whole save after each answer is not a bottleneck. No game comes near 5000 answers.
-- The replay is the bottleneck: it costs all the engine time of the game so far. The page
-  shows how far it is. Only a reload pays it; an undo comes from a checkpoint.
+- The replay of the whole game cost all the engine time of the game so far. A reload now
+  starts from the stored position and replays only the decisions after it ("The stored
+  position"); an undo comes from a checkpoint.
 - A checkpoint after every step would make the game a third slower (19.7 s in place of
   14.7 s). After the steps that asked the page it costs nothing that can be measured, and an
   undo then costs what the wait for that choice cost.
@@ -694,8 +696,8 @@ with a copy of the random seats' stream:
   resolver's applied events 69 KiB and its log 45 KiB, the game's events 27 KiB. The
   logs grow with the game.
 - A fork lives in memory only. Of the window types only `DiplomacyWindow` can be serialized
-  today, so a stored checkpoint is a quiet game. The save keeps the last one ("The stored
-  position"). Not done: a reload does not read it yet and pays the replay once.
+  today, so a stored checkpoint is a quiet game. The save keeps the last one, and a reload
+  starts from it ("The stored position").
 
 ### The stored position
 
@@ -707,8 +709,7 @@ hosted game and whether it is stored, rebuilt from the save, or empty at such a 
 
 - It is taken where no window is open, the game is not over, the session waits for nothing and
   does not replay a save or the answers after an undo, and every bot seat carries nothing.
-- An undo to a checkpoint before it drops it. A new run (a resume, a redo, an undo past the
-  checkpoints) starts with none.
+- An undo to a checkpoint before it drops it.
 - An MLP seat carries its power map from its first decision on. The map is refreshed only where
   the board changed, and while a tactical action is open the value from before it is returned,
   so a new pipeline would read another value. A table with an MLP seat has no position after
@@ -718,16 +719,87 @@ hosted game and whether it is stored, rebuilt from the save, or empty at such a 
 - Taking it costs nothing that can be measured: a game of eight seats to 120 answers (seed 3,
   1862 decisions, a debug build natively) took 11.17 s and 11.40 s without it, 11.32 s and
   11.44 s with it.
-- It is large. In that game it is 1.78 MB of JSON: the session's events 656 KB, the decisions
-  611 KB (their contexts most of it), the resolver 368 KB, the engine's events 59 KB and the
-  state 55 KB. Writing the save took 124 to 198 ms in place of 26 ms in the debug build.
+
+**The save.** A save writes the text of the held position once and then writes that text again
+(`position::Written`), until the held position is `POSITION_EVERY` (64) decisions newer. The
+saved position is then at most 64 decisions older than the held one, and a reload replays at most
+that many decisions more. An undo to a checkpoint before the written position drops it too.
+
+**The resume.** `host_api::prepare` reads `resume.position` (`position::read`) when it reads as a
+`SavedPosition`, has the `build` and the `content_digest` of this engine, its data reads as a
+`Position`, and the position fits the save (`Position::fits`):
+
+- with a log (a save, the `restart` of an undo): the ids of its decisions are the first ids of
+  the log; without one (the `restart` of a redo or a rewind): the person's answers among its
+  decisions are the first answers;
+- its records have its stored hash, and its counters agree with them.
+
+Anything else is ignored and the game replays from the seed. From the position:
+
+- The engine is `StoredPosition::restore` with the stored records as its log; the table keeps
+  its counters.
+- The session gets the decisions, the events (with the save's time and version of each, as a
+  replay gives them), the counters, the viewer, and the answers and the undo track rebuilt from
+  the stored undo entries (`HostSession::restore_position`).
+- The play loop gets `asked`, `decided`, the viewer and when each switch came into force. The
+  random seats' stream is put at its stored position, and the bots are new (`Bot::new`); none
+  carried anything there.
+- Only the decisions after the position are replayed, by the same path as a full replay
+  (`saved`), and `progress` counts those. The `decisions_hash` check at the first question is
+  the same.
+- The checkpoints begin at the position. An undo of an answer before it is a `restart`, as an
+  undo past the 32 checkpoints is.
+- The session holds the position it started from, so a save right after the reload writes the
+  same text.
+
+A `restart` (an undo past the checkpoints, a redo, a rewind) carries `position`: the held
+position, else the written one, when it was taken before the first decision or answer that the
+new run changes. The new run reads it as a resume does.
+
+The tests in `host_history.rs` resume each save with and without its position and compare the
+first snapshot (state, events with their times, pending choice, history) and the decisions of
+the next answers: random seats, a table with rule-bot seats, a switch of the seats before the
+position, an undo past the position after a reload, a rewind, a finished game, and a position of
+another build, with a changed decision or that does not read (replayed from the seed).
+
+**Measurements.** `examples/replay_save.rs --new 3 8 ANSWERS FILE`, `--release`, natively: a
+new local game of eight seats, seed 3, seat `a` answers option `7n mod options` at its n-th
+question, a save after every question as web2 makes it; the last save is then resumed with and
+without its position.
+
+| | 120 questions | 290 questions |
+| --- | ---: | ---: |
+| Decisions | 993 | 2312 |
+| The position (its `data`) | 0.90 MB | 2.04 MB |
+| The save with it | 1.07 MB | 2.43 MB |
+| Resume from the position | 0.033 s (3 replayed) | 0.080 s (36 replayed) |
+| Resume from the seed | 0.425 s | 1.486 s |
+
+save_state in the game of 290 questions (median of each kind of save):
+
+| | Median | 90% |
+| --- | ---: | ---: |
+| No position in the save | 4.5 ms | 5.6 ms |
+| The written text again (264 of 291 saves) | 7.8 ms | 10.9 ms |
+| The position written anew (27 of 291 saves) | 10.4 ms | 16.8 ms |
+| Written anew at every save | 11.6 ms | 17.6 ms |
+
+- Most of a save without a position is the hash of the decisions. The text again costs the copy
+  of the 2 MB string into the save and the envelope.
+- The whole game with its saves took 3.48 s without a position, 4.28 s with it, and 5.29 s
+  when every save writes it anew.
+- The position is mostly the session's events, the decisions with their contexts and the
+  resolver. The decisions are read again by the events and the updates (`journal::build_event`,
+  `decision_grouping`) and hashed whole by the replay check, so they are stored whole.
 
 Limits:
 
 - The random seats play in the Worker between two choices. The page responds in that time, but
   its next question waits for them (see the table).
-- A reload late in a game takes as long as the game took the engine so far. So does an undo
-  of an answer older than the 32 checkpoints, or after the game is over.
+- A save without a position (another engine, a table with an MLP seat), or whose position
+  does not fit, replays the whole game on reload: as long as the game took the engine so far.
+  So does an undo of an answer older than the 32 checkpoints and older than every position the
+  session holds, or after the game is over.
 - With `humans` naming more than one seat, the page shows the hand of the asked seat at once.
   There is no hand-over screen.
 - The view has ids, not names. web2 shows technologies by id and has a small table for the
@@ -758,8 +830,9 @@ content does not have.
   and the lobby.
 - The view of a seat is as old as the last finished step, apart from the combat and invasion
   boundary, which is current. The server has the same limit.
-- The UI queries are the `tactical` field of the update and the draft. Undo and resume are replays from the seed; a stored
-  position that can be resumed would need the engine to stop at step boundaries only.
+- The UI queries are the `tactical` field of the update and the draft. Undo and resume are
+  replays, from the last quiet step that the save or the session holds ("The stored position")
+  or from the seed.
 
 ## The hosted game (`web/` offline play, `web2/` local play)
 
@@ -815,7 +888,7 @@ stored in the save, so a save is self-contained.
   "progress": {"done","total"},        // progress: a saved game is being played again
   "waiting": "c",                      // ask: the game waits before a decision of this seat
   "resume": -1 | -2 | -3 | -4 | <option index>,  // command: what the parked game does now
-  "restart": {"answers","redo","generation","version","log"?,"switches"?,"undone"?,"staged"?},  // play again with these
+  "restart": {"answers","redo","generation","version","log"?,"switches"?,"undone"?,"staged"?,"position"?},  // play again with these
   "batch": {...},                      // how a submit_batch ended (ask or command)
   "save": {...},                       // command save_state
   "resume_check": {"ok",...},          // first ask after a replayed save
@@ -919,12 +992,12 @@ A page that does not ask for it (`web/`) is sent no `seat_staged`.
 | `redo`, `never`, `staged`, `event_times`, `event_versions`, `version`, `generation`, `decisions_hash` | What the run goes on with: the redo list, the Never cards, the staged work of each seat (see "Staged work"), the time and version of each event, the counters, and the hash that the replay is checked against. |
 | `finished`, `round`, `phase` | Where the game is. |
 | `engine` | `{build, content_digest}`. |
-| `position`? | The game at its last quiet step: `{build, content_digest, log_len, data}` ("The stored position"). A cache: a resume does not read it yet. |
+| `position`? | The game at a quiet step: `{build, content_digest, log_len, data}` ("The stored position"). A cache: a resume starts from it when it fits, else it is ignored. |
 
 Resume: `ti4_host_start({"resume": save})`; the game is `save.game` (a request that names its own
-game, as web2's does, plays that one). The game plays the `decisions` again without asking (a few
-hundred ms for 40 answers, seconds for a late game), reporting `progress`; no seat decides one of
-them again. The first `ask` then has `resume_check` (`ok` is whether the decisions are the saved
+game, as web2's does, plays that one). The game plays the `decisions` again without asking,
+from the stored position when it fits (under 0.1 s natively late in a game), else from the seed
+(seconds for a late game), reporting `progress`; no seat decides one of them again. The first `ask` then has `resume_check` (`ok` is whether the decisions are the saved
 ones: false means the engine changed) and an `initial_snapshot` with the full event log, times of
 day included. The page adds the hash of the wasm file to what it stores.
 

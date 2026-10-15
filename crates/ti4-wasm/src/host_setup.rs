@@ -136,6 +136,11 @@ pub struct Resume {
     /// What each seat has staged and not sent (`ti4_host::staged`).
     #[serde(default)]
     pub staged: std::collections::BTreeMap<ti4_model::id::PlayerId, ti4_host::staged::SeatStaged>,
+    /// The game at a quiet step of the save (`crate::position::SavedPosition`). Read as a value:
+    /// a position that does not read, is of another engine or does not fit is ignored
+    /// (`crate::position::read`), and the game replays from the seed.
+    #[serde(default)]
+    pub position: Option<serde_json::Value>,
 }
 
 /// The game of a request or of a save: one of `setup`, `table` and `local`.

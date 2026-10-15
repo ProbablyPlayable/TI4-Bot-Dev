@@ -110,9 +110,10 @@ fn slow_a_save_plays_again_to_the_same_question() {
         )
     };
 
+    // From the seed: the save without its position replays every decision.
     let second = page(vec![Act::Leave]);
     install(&second, seed, "a");
-    let end = crate::common::resume(&save);
+    let end = crate::common::resume(&without_position(&save));
     assert_eq!(end["end"]["left"], true);
     let second = second.lock().unwrap();
     // It was told how far it got, and checked that the game came back to the saved position.
@@ -414,7 +415,10 @@ impl ti4_engine::choice::Decider for Tail {
             assert_eq!(drawn.id, wanted, "the stream draws the saved decision");
             *self.drawn.lock().unwrap() += 1;
         }
-        Ok(choice.option(&wanted).expect("the saved decision is offered").clone())
+        Ok(choice
+            .option(&wanted)
+            .expect("the saved decision is offered")
+            .clone())
     }
 }
 
@@ -424,7 +428,11 @@ impl ti4_engine::choice::Decider for Tail {
 fn played_from_position(
     save: &Value,
     position: &ti4_wasm::position::Position,
-) -> (ti4_engine::game::Game<'static>, Option<ti4_model::state::GameState>, usize) {
+) -> (
+    ti4_engine::game::Game<'static>,
+    Option<ti4_model::state::GameState>,
+    usize,
+) {
     let start: ti4_wasm::host_setup::Start =
         serde_json::from_value(json!({ "resume": save })).unwrap();
     let built = start.build().unwrap();
@@ -532,7 +540,13 @@ fn a_late_save_keeps_a_position_that_plays_on_to_its_question() {
         // Restored, the game plays the rest of the log, the random seats drawing from the
         // stored stream, and stops at the question of the save, on the position it was shown.
         let (game, offered, random) = played_from_position(save, &position);
-        let replayed: Vec<&str> = game.table.log.records.iter().map(|r| r.chosen.as_str()).collect();
+        let replayed: Vec<&str> = game
+            .table
+            .log
+            .records
+            .iter()
+            .map(|r| r.chosen.as_str())
+            .collect();
         assert_eq!(replayed, decisions);
         assert_eq!(
             serde_json::to_value(offered.expect("the question is offered")).unwrap(),
@@ -559,8 +573,434 @@ fn a_save_of_a_table_with_an_mlp_seat_has_no_position() {
         "local": { "seed": 3, "players": 4, "humans": 1, "bots": [null, "mlp:test", "random"] },
     });
     let len = host_api::put_input(&request.to_string());
-    assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0, "{}", host_api::out_text());
+    assert!(
+        ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0,
+        "{}",
+        host_api::out_text()
+    );
     let save = first.lock().unwrap().replies.last().unwrap()["save"].clone();
     assert!(save["decisions"].as_array().unwrap().len() > 20);
     assert!(save.get("position").is_none(), "{}", save["position"]);
+}
+
+/// Start the game of `request` (with the page as `viewer`, answering by the rule bot of its
+/// seat), run `acts`, save and leave; returns the save.
+fn saved_after(request: &Value, seed: u64, viewer: &str, mut acts: Vec<Act>) -> Value {
+    acts.push(Act::Cmd(json!({ "type": "save_state" })));
+    acts.push(Act::Leave);
+    let first = page(acts);
+    install(&first, seed, viewer);
+    let len = host_api::put_input(&request.to_string());
+    assert!(
+        ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0,
+        "{}",
+        host_api::out_text()
+    );
+    let first = first.lock().unwrap();
+    first.replies.last().unwrap()["save"].clone()
+}
+
+/// What a run of a save showed and did.
+#[derive(Clone)]
+struct Resumed {
+    /// The first message of the run: an `initial_snapshot`, or the `end` envelope of a game that
+    /// was over.
+    first: Value,
+    /// The `resume_check` of the first ask.
+    check: Value,
+    /// The answers of the page after the snapshot.
+    answers: Vec<String>,
+    /// The save at the end of the run.
+    save: Value,
+    /// The decisions of the stored position the run started from.
+    from: Option<usize>,
+    /// Progress envelopes: `(done, total)`.
+    progress: Vec<(u64, u64)>,
+}
+
+/// Resume `resume` (a save, or a restart with `game`), answer `more` questions, save and leave.
+fn resumed(request: &Value, seed: u64, viewer: &str, more: usize) -> Resumed {
+    let second = page(vec![
+        Act::Answer(more),
+        Act::Cmd(json!({ "type": "save_state" })),
+        Act::Leave,
+    ]);
+    install(&second, seed, viewer);
+    let len = host_api::put_input(&request.to_string());
+    let status = ti4_wasm::ti4_host_start(u32::try_from(len).unwrap());
+    let end: Value = serde_json::from_str(&host_api::out_text()).unwrap();
+    assert!(status >= 0, "{end}");
+    let from = host_api::restored_from();
+    let second = second.lock().unwrap();
+    let save = second
+        .replies
+        .iter()
+        .rev()
+        .find(|reply| reply["save"].is_object())
+        .map_or_else(
+            || send(&json!({ "type": "save_state" }))["save"].clone(),
+            |reply| reply["save"].clone(),
+        );
+    Resumed {
+        first: second.messages.first().cloned().unwrap_or(end),
+        check: second
+            .asks
+            .first()
+            .map_or(Value::Null, |ask| ask["resume_check"].clone()),
+        answers: second.answers.clone(),
+        save,
+        from,
+        progress: second.progress.clone(),
+    }
+}
+
+/// `save` without its position.
+fn without_position(save: &Value) -> Value {
+    let mut save = save.clone();
+    save.as_object_mut().unwrap().remove("position");
+    save
+}
+
+fn position_of(save: &Value) -> ti4_wasm::position::Position {
+    serde_json::from_str(save["position"]["data"].as_str().expect("a position")).unwrap()
+}
+
+/// The two runs are the same game: the same first snapshot (state, events with their times,
+/// pending choice, history), the same check, and the same decisions after it.
+fn same_runs(with: &Resumed, without: &Resumed) {
+    same_runs_timed(with, without, true);
+}
+
+/// [`same_runs`]; without `timed` the times of day of the events are not compared (a new run
+/// of a history change makes its events again, at the time it runs).
+fn same_runs_timed(with: &Resumed, without: &Resumed, timed: bool) {
+    let untimed = |first: &Value| {
+        let mut first = first.clone();
+        if !timed && let Some(events) = first["events"].as_array_mut() {
+            for event in events {
+                event.as_object_mut().unwrap().remove("timestamp");
+            }
+        }
+        first
+    };
+    let (with_first, without_first) = (untimed(&with.first), untimed(&without.first));
+    let (with, without) = (
+        &Resumed {
+            first: with_first,
+            ..with.clone()
+        },
+        &Resumed {
+            first: without_first,
+            ..without.clone()
+        },
+    );
+    assert_eq!(without.from, None);
+    if !with.check.is_null() {
+        assert_eq!(with.check["ok"], true, "{}", with.check);
+    }
+    assert_eq!(with.check, without.check);
+    assert_eq!(with.first["type"], without.first["type"]);
+    for key in [
+        "state",
+        "pending_choice",
+        "history",
+        "events",
+        "game_version",
+        "view",
+    ] {
+        assert_eq!(
+            with.first[key], without.first[key],
+            "{key} of the first message"
+        );
+    }
+    assert_eq!(with.first, without.first);
+    assert_eq!(with.answers, without.answers);
+    for key in [
+        "decisions",
+        "decisions_hash",
+        "answers",
+        "redo",
+        "switches",
+        "version",
+        "generation",
+        "finished",
+    ] {
+        assert_eq!(with.save[key], without.save[key], "{key} of the save after");
+    }
+}
+
+/// Resume `save` with and without its position, play `more` answers on, and check that both are
+/// the same game. Returns the run with the position.
+fn resumes_the_same(save: &Value, seed: u64, viewer: &str, more: usize) -> Resumed {
+    let position = position_of(save);
+    let with = resumed(&json!({ "resume": save }), seed, viewer, more);
+    let without = resumed(
+        &json!({ "resume": without_position(save) }),
+        seed,
+        viewer,
+        more,
+    );
+    assert_eq!(
+        with.from,
+        Some(position.game.log_len),
+        "the run starts from the position"
+    );
+    same_runs(&with, &without);
+    // The progress counts only the decisions after the position.
+    let decisions = save["decisions"].as_array().unwrap().len();
+    if let Some((_, total)) = with.progress.last() {
+        assert_eq!(*total as usize, decisions - position.game.log_len);
+    }
+    with
+}
+
+/// A late save of random seats resumes from its position to the same question as from its seed,
+/// and plays on the same.
+#[test]
+fn a_resume_from_the_position_is_the_resume_from_the_seed() {
+    let _serial = crate::common::serial();
+    let seed = 5;
+    let request = json!({ "local": { "seed": seed, "players": 6, "humans": 1 } });
+    let save = saved_after(&request, seed, "a", vec![Act::Answer(45)]);
+    assert!(save["position"].is_object(), "a late save has a position");
+    resumes_the_same(&save, seed, "a", 8);
+    // A save right after the reload keeps the position it started from.
+    let right_after = resumed(&json!({ "resume": save }), seed, "a", 0);
+    assert_eq!(right_after.save["position"], save["position"]);
+}
+
+/// A table with rule-bot seats and a random seat.
+#[test]
+fn a_table_resumes_from_its_position_the_same() {
+    let _serial = crate::common::serial();
+    let seed = 7;
+    let request = json!({ "table": {
+        "setup": { "player_count": 4, "seed": seed },
+        "seats": [{ "kind": "human" }, { "kind": "smart" }, { "kind": "smart" }, { "kind": "random" }],
+    }});
+    let save = saved_after(&request, seed, "a", vec![Act::Answer(35)]);
+    assert!(save["position"].is_object(), "a late save has a position");
+    resumes_the_same(&save, seed, "a", 8);
+}
+
+/// The page changed its seats before the position: the switch is in force from the position on,
+/// with the number of the question it came into force at.
+#[test]
+fn a_switch_of_the_seats_before_the_position_resumes_the_same() {
+    let _serial = crate::common::serial();
+    let seed = 9;
+    let request = json!({ "local": { "seed": seed, "players": 4, "humans": 1 } });
+    let save = saved_after(
+        &request,
+        seed,
+        "a",
+        vec![
+            Act::Answer(10),
+            Act::Cmd(json!({ "type": "switch_seat", "seat": "c" })),
+            Act::Answer(30),
+        ],
+    );
+    let switches = save["switches"].as_array().unwrap();
+    assert_eq!(switches.len(), 1);
+    let position = position_of(&save);
+    assert!(position.game.log_len as u64 > switches[0]["decision"].as_u64().unwrap());
+    assert_eq!(position.play.switches_asked.len(), 1);
+    resumes_the_same(&save, seed, "a", 8);
+}
+
+/// A position of another build, or one whose decisions are not the save's, is not read: the game
+/// replays from the seed, to the same question.
+#[test]
+fn a_position_of_another_build_or_other_decisions_is_not_read() {
+    let _serial = crate::common::serial();
+    let seed = 5;
+    let request = json!({ "local": { "seed": seed, "players": 4, "humans": 1 } });
+    let save = saved_after(&request, seed, "a", vec![Act::Answer(30)]);
+    let without = resumed(&json!({ "resume": without_position(&save) }), seed, "a", 3);
+
+    let mut other_build = save.clone();
+    other_build["position"]["build"] = json!("0.0.0-other");
+    let run = resumed(&json!({ "resume": other_build }), seed, "a", 3);
+    assert_eq!(run.from, None);
+    same_runs(&run, &without);
+
+    // One decision of the position is not the save's.
+    let mut position = position_of(&save);
+    let at = position.game.log_len / 2;
+    let other = position.records[at]
+        .offered
+        .iter()
+        .find(|id| **id != position.records[at].chosen)
+        .cloned()
+        .unwrap_or_else(|| "another".to_owned());
+    position.records[at].chosen = other;
+    let mut changed = save.clone();
+    changed["position"]["data"] = json!(serde_json::to_string(&position).unwrap());
+    let run = resumed(&json!({ "resume": changed }), seed, "a", 3);
+    assert_eq!(run.from, None);
+    same_runs(&run, &without);
+
+    // A position that does not read is dropped too.
+    let mut broken = save.clone();
+    broken["position"] = json!({ "build": 3 });
+    let run = resumed(&json!({ "resume": broken }), seed, "a", 3);
+    assert_eq!(run.from, None);
+    same_runs(&run, &without);
+}
+
+/// After a reload from a position the checkpoints begin there. Undoing answers back past the
+/// position plays the game again (a restart with the log cut there, and no position that fits
+/// it); the game is the same as after the reload from the seed, where the checkpoints reach.
+#[test]
+fn an_undo_past_the_position_after_a_reload_plays_the_same() {
+    let _serial = crate::common::serial();
+    let seed = 5;
+    let request = json!({ "local": { "seed": seed, "players": 4, "humans": 1 } });
+    let save = saved_after(&request, seed, "a", vec![Act::Answer(30)]);
+    let position = position_of(&save);
+    let answers = save["answers"].as_array().unwrap().len();
+    // One undo more than the answers after the position.
+    let undos = answers - position.session.answers + 1;
+    // Each undo is a command at the question it takes back from.
+    // Returns the restart, the question after the undos and the save after four more answers.
+    let run = |resume: &Value| -> (Option<Value>, Value, Value) {
+        let mut acts = Vec::new();
+        for _ in 0..undos {
+            acts.push(Act::Probe(Box::new(|page| {
+                let (_, version, _, _) = pending(&page.messages).unwrap();
+                page.script.push_front(Act::Cmd(json!({
+                    "type": "undo", "protocol_version": 4, "game_id": GAME,
+                    "expected_version": version,
+                })));
+            })));
+        }
+        let undone: Arc<Mutex<Value>> = Arc::default();
+        let seen = undone.clone();
+        acts.push(Act::Probe(Box::new(move |page| {
+            *seen.lock().unwrap() = last_question(&page.messages).clone();
+        })));
+        acts.push(Act::Answer(4));
+        acts.push(Act::Cmd(json!({ "type": "save_state" })));
+        acts.push(Act::Leave);
+        let page = page(acts);
+        install(&page, seed, "a");
+        let len = host_api::put_input(&json!({ "resume": resume }).to_string());
+        assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0);
+        let page = page.lock().unwrap();
+        let restart = page
+            .replies
+            .iter()
+            .find(|reply| reply["restart"].is_object())
+            .map(|reply| reply["restart"].clone());
+        let save = page
+            .replies
+            .iter()
+            .rev()
+            .find(|reply| reply["save"].is_object())
+            .map_or(Value::Null, |reply| reply["save"].clone());
+        let undone = undone.lock().unwrap().clone();
+        (restart, undone, save)
+    };
+    // From the seed: every undo comes from a checkpoint.
+    let (restart, undone, plain) = run(&without_position(&save));
+    assert_eq!(restart, None, "the checkpoints of the full replay reach");
+    // From the position: the last undo goes back past it and restarts.
+    let (restart, _, _) = run(&save);
+    let restart = restart.expect("an undo past the position restarts the game");
+    assert!(
+        restart.get("position").is_none(),
+        "the held position is after the answer that is taken back"
+    );
+    let log = restart["log"].as_array().unwrap().len();
+    assert!(
+        log < position.game.log_len,
+        "{log} {}",
+        position.game.log_len
+    );
+    let again = page(vec![
+        Act::Answer(4),
+        Act::Cmd(json!({ "type": "save_state" })),
+        Act::Leave,
+    ]);
+    install(&again, seed, "a");
+    let len =
+        host_api::put_input(&json!({ "local": request["local"], "resume": restart }).to_string());
+    assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0);
+    assert_eq!(host_api::restored_from(), None);
+    let again = again.lock().unwrap();
+    let snapshot = &again.messages[0];
+    assert_eq!(snapshot["type"], "initial_snapshot");
+    assert_eq!(snapshot["state"], undone["state"]);
+    assert_eq!(snapshot["pending_choice"], undone["pending_choice"]);
+    let save = &again.replies.last().unwrap()["save"];
+    assert_eq!(save["decisions"], plain["decisions"]);
+    assert_eq!(save["decisions_hash"], plain["decisions_hash"]);
+}
+
+/// A rewind and a redo restart the game from the held position when it is before the first
+/// answer they change, and play the same as from the seed.
+#[test]
+fn a_rewind_restarts_from_the_held_position() {
+    let _serial = crate::common::serial();
+    let seed = 5;
+    let request = json!({ "local": { "seed": seed, "players": 4, "humans": 1 } });
+    // A save at the 40th question, and at the 50th a rewind to the cursor of the 45th: the
+    // position of the save is before it.
+    let first = page(vec![
+        Act::Answer(40),
+        Act::Cmd(json!({ "type": "save_state" })),
+        Act::Answer(10),
+        Act::Probe(Box::new(|page| {
+            let back = pending(page.asks[45]["messages"].as_array().unwrap()).unwrap();
+            page.script.push_front(Act::Cmd(json!({
+                "type": "history", "action": { "restore_cursor": { "cursor": back.3 } },
+            })));
+        })),
+    ]);
+    install(&first, seed, "a");
+    let len = host_api::put_input(&request.to_string());
+    assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0);
+    let restart = first.lock().unwrap().replies.last().unwrap()["restart"].clone();
+    assert!(
+        restart["position"].is_object(),
+        "the written position is before the cursor"
+    );
+    let with = resumed(
+        &json!({ "local": request["local"], "resume": restart }),
+        seed,
+        "a",
+        6,
+    );
+    let position: ti4_wasm::position::Position =
+        serde_json::from_str(restart["position"]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(with.from, Some(position.game.log_len));
+    let without = resumed(
+        &json!({ "local": request["local"], "resume": without_position(&restart) }),
+        seed,
+        "a",
+        6,
+    );
+    same_runs_timed(&with, &without, false);
+}
+
+/// A finished game resumes from its position to the same end.
+#[test]
+fn slow_a_finished_game_resumes_from_its_position_to_the_same_end() {
+    let _serial = crate::common::serial();
+    let seed = 3;
+    let request = json!({ "local": { "seed": seed, "players": 3, "humans": 1 } });
+    let first = page(vec![]);
+    install(&first, seed, "a");
+    let len = host_api::put_input(&request.to_string());
+    assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0);
+    let end: Value = serde_json::from_str(&host_api::out_text()).unwrap();
+    assert_eq!(end["end"]["finished"], true, "{end}");
+    let save = send(&json!({ "type": "save_state" }))["save"].clone();
+    assert_eq!(save["finished"], true);
+    assert!(save["position"].is_object());
+    let with = resumed(&json!({ "resume": save }), seed, "a", 0);
+    let without = resumed(&json!({ "resume": without_position(&save) }), seed, "a", 0);
+    assert_eq!(with.from, Some(position_of(&save).game.log_len));
+    same_runs(&with, &without);
+    assert_eq!(with.save["finished"], true);
 }

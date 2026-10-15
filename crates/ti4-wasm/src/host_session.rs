@@ -85,7 +85,7 @@ use ti4_host::view::scenario::{Opening, OpeningRun};
 use ti4_model::id::{PlayerId, StrategyCardId};
 use ti4_model::state::{GameState, Phase, ReactionMode};
 
-use crate::position::{Held, PlayPart, SavedPosition};
+use crate::position::{Held, POSITION_EVERY, PlayPart, SavedPosition, Written};
 
 /// The most checkpoints (and so session marks) kept; see `CHECKPOINT_LIMIT` in `lib.rs`.
 pub const MARK_LIMIT: usize = 32;
@@ -164,6 +164,10 @@ pub struct Restart {
     /// What each seat has staged: a history change keeps it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub staged: BTreeMap<PlayerId, SeatStaged>,
+    /// The position the new run starts from, when the session holds one before the first
+    /// decision that changes (`crate::position`). Without it the new run replays from the seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<SavedPosition>,
 }
 
 /// The result of a command, besides the messages (those are in [`HostSession::drain`]).
@@ -362,6 +366,9 @@ pub struct HostSession {
     batch_result: Option<serde_json::Value>,
     /// The game at the last quiet step, which the save keeps ([`HostSession::hold`]).
     held: Option<Held>,
+    /// The text of a position that a save wrote, written again until `held` is
+    /// [`POSITION_EVERY`] decisions newer.
+    written: Option<Written>,
     // Replay of a save.
     /// The person's answers that are replayed from a save: no redo bookkeeping, no notes.
     quiet: usize,
@@ -445,6 +452,7 @@ impl HostSession {
             batch: None,
             batch_result: None,
             held: None,
+            written: None,
             quiet: if resume.log.is_empty() {
                 resume.answers.len()
             } else {
@@ -1139,12 +1147,11 @@ impl HostSession {
     /// this step is too early to be worth its size.
     pub fn release(&mut self) {
         self.held = None;
+        self.written = None;
     }
 
-    /// The held position, as a save writes it: `engine` names the engine (`build`,
-    /// `content_digest`).
-    fn saved_position(&self, engine: &serde_json::Value) -> Option<SavedPosition> {
-        let held = self.held.as_ref()?;
+    /// `held` as a save writes it: `engine` names the engine (`build`, `content_digest`).
+    fn write_held(&self, held: &Held, engine: &serde_json::Value) -> Option<SavedPosition> {
         let text = |key: &str| engine.get(key)?.as_str().map(str::to_owned);
         let position = held.write(&self.decision_log, &self.events, self.undo.entries());
         Some(SavedPosition {
@@ -1153,6 +1160,93 @@ impl HostSession {
             log_len: held.log_len,
             data: serde_json::to_string(&position).expect("a position is JSON"),
         })
+    }
+
+    /// The position that a save writes: the text written last, written anew from the held
+    /// position when there is none or the held one is [`POSITION_EVERY`] decisions newer.
+    fn saved_position(&mut self, engine: &serde_json::Value) -> Option<SavedPosition> {
+        if let Some(held) = &self.held
+            && self
+                .written
+                .as_ref()
+                .is_none_or(|written| held.log_len >= written.log_len + POSITION_EVERY)
+        {
+            let saved = self.write_held(held, engine)?;
+            self.written = Some(Written::new(held, saved));
+        }
+        self.written.as_ref().map(|written| written.saved.clone())
+    }
+
+    /// The position that a new run starts from: the held one, else the one written last, when
+    /// it was taken after at most `decisions` decisions of the log that the run gives again, or
+    /// with no log, after at most `answers` of the person's answers. The run gives those again
+    /// as they are here, so the position fits it (the new run checks: `crate::position::read`).
+    fn restart_position(&self, decisions: Option<usize>, answers: usize) -> Option<SavedPosition> {
+        let fits = |log_len: usize, given: usize| {
+            decisions.map_or(given <= answers, |decisions| log_len <= decisions)
+        };
+        let written = self
+            .written
+            .as_ref()
+            .filter(|written| fits(written.log_len, written.answers));
+        match &self.held {
+            Some(held) if fits(held.log_len, held.answers) => {
+                match written.filter(|written| written.log_len == held.log_len) {
+                    Some(written) => Some(written.saved.clone()),
+                    None => self.write_held(held, &crate::host_api::engine_info()),
+                }
+            }
+            _ => written.map(|written| written.saved.clone()),
+        }
+    }
+
+    /// The session of a resume that starts from `position` (`crate::position::read`), taken
+    /// after its decisions; `state` is the restored game's. The session holds it, and a save
+    /// writes `saved` again until a newer position is held.
+    pub fn restore_position(
+        &mut self,
+        position: &crate::position::Position,
+        saved: SavedPosition,
+        state: &GameState,
+    ) {
+        let session = &position.session;
+        self.answers = position.answers();
+        self.decision_log.clone_from(&position.records);
+        self.events.clone_from(&session.events);
+        // Each event gets the time and version that the replay would give it: the save's, else
+        // (a new run of a history change, whose events are made again) now and this version.
+        for (index, event) in self.events.iter_mut().enumerate() {
+            match self.saved_events.get(index) {
+                Some((time, version)) => {
+                    event.timestamp.clone_from(time);
+                    event.version = version.or(Some(self.version));
+                }
+                None => {
+                    event.timestamp = self.clock.utc_time_string();
+                    event.version = Some(self.version);
+                }
+            }
+        }
+        self.event_counter = session.event_counter;
+        self.rolls_seen = session.rolls_seen;
+        self.prev_phase = session.prev_phase;
+        self.prev_round = session.prev_round;
+        self.viewer.clone_from(&session.viewer);
+        // The track as a replay of these answers makes it, under the local rules.
+        let mut undo = UndoTrack::new(UndoRules::Local);
+        if let Some(switch) = self.switches.last() {
+            undo.seats_changed(usize::try_from(switch.decision).unwrap_or(usize::MAX));
+        }
+        for entry in &session.undo {
+            undo.push(entry.clone(), true);
+        }
+        self.undo = undo;
+        // A resume of answers replays only the ones after the position.
+        self.quiet = self.quiet.saturating_sub(session.answers);
+        self.state.clone_from(state);
+        let held = Held::of(position);
+        self.written = Some(Written::new(&held, saved));
+        self.held = Some(held);
     }
 
     /// The play loop went back to the checkpoint of `asked`: the session goes back with it, and
@@ -1173,6 +1267,13 @@ impl HostSession {
             .is_some_and(|held| !held.kept_by(mark.decisions, mark.events, mark.answers))
         {
             self.held = None;
+        }
+        if self
+            .written
+            .as_ref()
+            .is_some_and(|written| !written.kept_by(mark.decisions, mark.events, mark.answers))
+        {
+            self.written = None;
         }
         let undone_answers: Vec<String> = self.answers.split_off(mark.answers);
         let undone_steps = self.undo.take_back(mark.answers);
@@ -1531,6 +1632,7 @@ impl HostSession {
             switches: self.switches.clone(),
             undone: steps,
             staged: self.staged.clone(),
+            position: self.restart_position(Some(first.decision), keep),
         });
         handled.resume = Some(Resume::Leave);
     }
@@ -1598,6 +1700,7 @@ impl HostSession {
                     } else {
                         let mut answers = self.answers.clone();
                         answers.push(self.redo[0].clone());
+                        let position = self.restart_position(None, answers.len());
                         handled.restart = Some(Restart {
                             answers,
                             redo: self.redo[1..].to_vec(),
@@ -1607,6 +1710,7 @@ impl HostSession {
                             switches: self.switches.clone(),
                             undone: Vec::new(),
                             staged: self.staged.clone(),
+                            position,
                         });
                         handled.resume = Some(Resume::Leave);
                     }
@@ -1656,6 +1760,7 @@ impl HostSession {
             switches: self.switches.clone(),
             undone: Vec::new(),
             staged: self.staged.clone(),
+            position: self.restart_position(None, keep),
         });
         handled.resume = Some(Resume::Leave);
     }
@@ -1935,7 +2040,8 @@ impl HostSession {
 
     /// The save of the game as it stands ([`HostSave`]), as JSON.
     #[must_use]
-    pub fn save_state(&self, extra: serde_json::Value) -> serde_json::Value {
+    pub fn save_state(&mut self, extra: serde_json::Value) -> serde_json::Value {
+        let position = self.saved_position(&extra);
         let save = HostSave {
             format: crate::host_setup::SAVE_FORMAT,
             seed: self.identity.seed,
@@ -1973,7 +2079,7 @@ impl HostSession {
             finished: self.finished,
             round: self.state.round,
             phase: self.state.phase,
-            position: self.saved_position(&extra),
+            position,
             engine: extra,
         };
         serde_json::to_value(save).expect("a save is JSON")

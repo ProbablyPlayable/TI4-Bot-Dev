@@ -257,6 +257,9 @@ struct Host {
     /// How many decisions of the game have their answer in a saved game (`Resume::log`): the
     /// first ones, of every seat. Each of them is given again ([`saved`]).
     saved: u64,
+    /// The decision the replay of the saved game starts at: 0, or the decisions of the stored
+    /// position that the run starts from. The progress counts from it.
+    replay_from: u64,
     /// How many of the answers in `script` are those of a saved game that is played again (the
     /// rest are answers after an undo). They are kept for a later undo, and their progress is
     /// told to the host.
@@ -372,6 +375,7 @@ static HOST: Mutex<Host> = Mutex::new(Host {
     switches: Vec::new(),
     switched: false,
     saved: 0,
+    replay_from: 0,
     preload_left: 0,
     undo_to: None,
     rollback: false,
@@ -675,7 +679,7 @@ fn saved(
         prompt: choice.prompt.clone(),
         reason: reason.to_owned(),
     };
-    let (index, total) = {
+    let (index, total, from) = {
         let host = host();
         if host.left {
             return Err(failed(LEFT));
@@ -683,7 +687,7 @@ fn saved(
         if host.undo {
             return Err(failed(TAKEN_BACK));
         }
-        (host.decided, host.saved)
+        (host.decided, host.saved, host.replay_from)
     };
     let wanted = host_api::saved_decision(index).ok_or_else(|| failed(LEFT))?;
     let Some(option) = choice.option(&wanted).cloned() else {
@@ -700,9 +704,10 @@ fn saved(
         host().left = true;
         return Err(failed(&text));
     };
-    let done = index + 1;
-    if done < total && done.is_multiple_of(PROGRESS_EVERY) {
-        host_api::write_progress(done, total);
+    // The progress counts the decisions that this run replays.
+    let (done, replayed) = (index + 1 - from, total - from);
+    if done < replayed && done.is_multiple_of(PROGRESS_EVERY) {
+        host_api::write_progress(done, replayed);
         if host_ask() == LEAVE {
             host().left = true;
             return Err(failed(LEFT));
@@ -1092,7 +1097,16 @@ fn play_hosted(request_len: usize) -> Result<usize, Failure> {
         .collect::<Result<Vec<_>, Failure>>()?;
     *BOTS.lock().expect("bots lock") = bots;
     set_stepping(prepared.stepping);
-    *RANDOM.lock().expect("random lock") = Some(SeededRandom::new(prepared.seed));
+    let mut random = SeededRandom::new(prepared.seed);
+    if let Some(position) = prepared
+        .restored
+        .as_ref()
+        .and_then(|restored| restored.play.random)
+    {
+        random.set_position(position);
+    }
+    *RANDOM.lock().expect("random lock") = Some(random);
+    let opening_round = prepared.game.state.round;
     {
         let mut host = host();
         *host = Host {
@@ -1121,23 +1135,43 @@ fn play_hosted(request_len: usize) -> Result<usize, Failure> {
             script: prepared.answers,
             ..Host::default()
         };
-        if host.preload_left == 0 && host.saved == 0 {
+        // From a stored position the play loop goes on as it was there. The bots of the seats
+        // are new: no bot carried anything there.
+        if let Some(restored) = &prepared.restored {
+            let play = &restored.play;
+            host.asked = play.asked;
+            host.decided = play.decided;
+            host.replay_from = play.decided;
+            host.viewer.clone_from(&play.viewer);
+            for (switch, asked) in host.switches.iter_mut().zip(&play.switches_asked) {
+                switch.asked = *asked;
+            }
+        }
+        if host.preload_left == 0 && host.decided >= host.saved {
             drop(host);
             host_api::replay_finished();
         }
     }
-    drive(prepared.game)
+    match prepared.restored {
+        Some(restored) => drive(restored.game, opening_round, true),
+        None => drive(prepared.game, opening_round, false),
+    }
 }
 
-/// The play loop. `game` is a new game; the seats of the mask of [`HOST`] are answered by the
-/// host, and the session of [`host_api`] follows the game.
-fn drive(mut game: Game<'static>) -> Result<usize, Failure> {
+/// The play loop. `game` is a new game, or with `restored` the game at the stored position of a
+/// save (its table keeps its log and counters); `opening_round` is the round the game began in.
+/// The seats of the mask of [`HOST`] are answered by the host, and the session of [`host_api`]
+/// follows the game.
+fn drive(mut game: Game<'static>, opening_round: u32, restored: bool) -> Result<usize, Failure> {
     let content = ContentStore::embedded();
-    game.table = host_table();
+    let table = std::mem::replace(&mut game.table, host_table());
+    if restored {
+        game.table.restore_state(table.state());
+    }
     watch_secondary(&mut game);
     CHECKPOINTS.with_borrow_mut(VecDeque::clear);
     *LATEST.lock().expect("latest lock") = Some(latest_of(&game, content));
-    let target = game.state.round.saturating_add(round_limit());
+    let target = opening_round.saturating_add(round_limit());
     let mut stopped = None;
     // A checkpoint is made after each step that asked the host ([`CHECKPOINTS`]). A copy after
     // every step would cost a third of the run. With these, an undo plays the steps of the

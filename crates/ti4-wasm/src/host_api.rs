@@ -449,6 +449,26 @@ pub struct Prepared {
     pub answers: VecDeque<String>,
     /// How many decisions of the game the save gives again, of every seat ([`saved_decision`]).
     pub saved: u64,
+    /// The game at the stored position of the save, when the run starts from it: `game` is then
+    /// the game at its start, which the bots are made from.
+    pub restored: Option<Restored>,
+}
+
+/// A run that starts from the stored position of its save (`crate::position`).
+pub struct Restored {
+    pub game: Game<'static>,
+    /// What the play loop held there.
+    pub play: crate::position::PlayPart,
+}
+
+/// The number of decisions of the position that the last run started from; `None` when it
+/// replayed from the seed. For the tests and the timing example.
+static RESTORED: Mutex<Option<usize>> = Mutex::new(None);
+
+/// How many decisions the stored position that the last run of `ti4_host_start` started from
+/// was taken after; `None` when that run played the game from its seed.
+pub fn restored_from() -> Option<usize> {
+    *RESTORED.lock().expect("restored lock")
 }
 
 /// Read the request of `ti4_host_start` and make the session and the game.
@@ -468,6 +488,16 @@ pub fn prepare(len: usize) -> Result<Prepared, String> {
     let start: Start = serde_json::from_value(start).map_err(|error| format!("start: {error}"))?;
     let built = start.build()?;
     let mut resume: SavedGame = start.resume.unwrap_or_default();
+    // A position that does not read, is of another engine or does not fit is ignored.
+    let position = resume.position.take().and_then(|value| {
+        crate::position::read(
+            value,
+            &engine_info(),
+            &resume.log,
+            &resume.answers,
+            resume.switches.len(),
+        )
+    });
     if !resume.log.is_empty() {
         // Every decision is given again: the answers are among them.
         resume.answers.clear();
@@ -486,6 +516,7 @@ pub fn prepare(len: usize) -> Result<Prepared, String> {
     let tiles = built.galaxy.as_ref().map_or_else(Vec::new, |galaxy| {
         ti4_host::map::build_board_tiles(ti4_content::ContentStore::embedded(), galaxy)
     });
+    let galaxy = built.galaxy.clone();
     let never = crate::NEVER.clone();
     let modes: Vec<(String, ReactionMode)> = start
         .modes
@@ -527,11 +558,40 @@ pub fn prepare(len: usize) -> Result<Prepared, String> {
     if start.staged {
         session.share_staged();
     }
+    // From the position, the decisions after it are replayed: of the log, or the person's
+    // answers after the ones it was taken after.
+    let restored = position.map(|(position, saved)| {
+        let game = position.game.clone().restore(
+            &position.records,
+            ti4_content::ContentStore::embedded(),
+            ti4_engine::choice::Table::new(),
+            galaxy,
+        );
+        session.restore_position(&position, saved, &game.state);
+        if resume.log.is_empty() {
+            resume.answers.drain(..position.session.answers);
+        }
+        Restored {
+            game,
+            play: position.play,
+        }
+    });
+    *RESTORED.lock().expect("restored lock") = restored
+        .as_ref()
+        .map(|restored| usize::try_from(restored.play.decided).unwrap_or(usize::MAX));
     *session_lock() = Some(session);
     let replayed = resume.answers.len().max(resume.log.len());
+    let tail = restored.as_ref().map_or(replayed, |restored| {
+        resume.answers.len().max(
+            resume
+                .log
+                .len()
+                .saturating_sub(usize::try_from(restored.play.decided).unwrap_or(usize::MAX)),
+        )
+    });
     let decisions = resume.decisions_hash.as_ref().map(|_| resume.log.len());
     *REPLAY.lock().expect("replay lock") = Some(Replay {
-        total: replayed as u64,
+        total: tail as u64,
         log: std::mem::take(&mut resume.log),
         decisions,
         hash: resume.decisions_hash.clone(),
@@ -557,6 +617,7 @@ pub fn prepare(len: usize) -> Result<Prepared, String> {
         switches: resume.switches.clone(),
         answers: resume.answers.into(),
         saved,
+        restored,
     })
 }
 
@@ -860,7 +921,8 @@ fn run_draft(
     session.push_message(message);
 }
 
-fn engine_info() -> serde_json::Value {
+/// The engine of this file: its build and the digest of its content, as a save names it.
+pub(crate) fn engine_info() -> serde_json::Value {
     serde_json::json!({
         "build": env!("CARGO_PKG_VERSION"),
         "content_digest": ti4_content::provenance::embedded_digest().corpus,
