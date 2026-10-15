@@ -667,26 +667,34 @@ it is faster than the replays of this table.
 ### What a checkpoint is
 
 `Game::fork` in the engine copies a game at a step boundary: the state, the open windows, the
-dice streams, the counters and the resolver. The drafts of both hosts use it. The
-test `a_fork_at_a_step_boundary_plays_the_same_game` checks it as a checkpoint for local play,
+dice streams, the counters and the resolver. The drafts of both hosts use it. Where no window
+is open, `Game::quiet` takes the same game as data (`QuietGame`, serde): the state, the stream
+positions, the dice, the counters and the plain part of the resolver. `QuietGame::restore`
+makes the game again, with the abilities armed from the state. The
+test `a_fork_at_a_step_boundary_plays_the_same_game` checks both as a checkpoint for local play,
 on eight seats, seeds 3 and 11, 700 steps each, a copy every 7 steps, each played 30 steps on
 with a copy of the random seats' stream:
 
 | A copy of the game | Plays the same game |
 | --- | ---: |
 | `Game::fork` | 192 of 192 |
-| Made again from the `GameState` alone, at any step boundary | 54 of 192 |
-| the same, only where no window is open | 54 of 61 |
+| `Game::quiet`, written as JSON and read back, where no window is open | 54 of 54 |
+| Made again from the `GameState` alone, at any step boundary | 39 of 192 |
+| the same, only where no window is open | 39 of 54 |
 
-- A window is open at 72% of the step boundaries (no window at 390 of 1400): mostly a trade,
+- "The same game" for a fork and a quiet game: the same decisions, state, stream positions,
+  dice, events, timing log and offer. For the state alone: the same decisions and state.
+- A window is open at 74% of the step boundaries (no window at 370 of 1400): mostly a trade,
   the end of a turn, a strategy secondary or a tactical action.
 - The state alone is not a checkpoint, also where no window is open: the dice streams start
   again. This is what the server's `snapshot.json` holds, so it can check a replay but not
   replace one.
-- One fork takes 2.6 ms in a debug build. The state is 37 KiB as JSON.
-- A fork lives in memory only. A checkpoint that outlasts a reload, or the server process,
-  needs the same parts stored: of the window types only `DiplomacyWindow` can be serialized
-  today. Not done: a reload pays the replay once.
+- One fork takes 0.4 ms in a debug build. The state is up to 38 KiB as JSON.
+- A quiet game at step 644 (867 decisions) is 184 KiB as JSON: the state 38 KiB, the
+  resolver's applied events 69 KiB and its log 45 KiB, the game's events 27 KiB. The
+  logs grow with the game.
+- A fork lives in memory only. Of the window types only `DiplomacyWindow` can be serialized
+  today, so a stored checkpoint is a quiet game. Not done: a reload pays the replay once.
 
 Limits:
 

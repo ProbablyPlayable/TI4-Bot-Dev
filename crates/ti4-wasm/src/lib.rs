@@ -1897,7 +1897,8 @@ mod tests {
 
     /// `Game::fork` at a step boundary, with a copy of the random seats' stream, is a full
     /// checkpoint: played on, it makes the decisions of the game it was taken from and reaches
-    /// the same state. A game made again from the state alone does not.
+    /// the same state. So is `Game::quiet` where no window is open, written as JSON and read
+    /// back. A game made again from the state alone is not.
     ///
     /// Prints how often a window is open at a step boundary and what a fork costs:
     /// `cargo test -p ti4-wasm fork -- --nocapture`. The numbers in the README are from seeds 3
@@ -1907,20 +1908,37 @@ mod tests {
         use std::sync::Arc;
         use std::time::{Duration, Instant};
         use ti4_engine::choice::{SeededRandom, Table};
+        use ti4_engine::game::QuietGame;
 
         const STEPS: usize = 300;
         const EVERY: usize = 10;
         const AHEAD: usize = 20;
+        /// What the game is at one step boundary.
+        #[derive(PartialEq)]
+        struct Mark {
+            state: String,
+            rng: ti4_engine::rng::RngPositions,
+            rolls: Vec<ti4_engine::dice::Roll>,
+            events: Vec<String>,
+            timing: Vec<String>,
+            offer: Option<Choice>,
+        }
         /// A copy of the game at one step, played `AHEAD` steps on.
         struct Probe {
             step: usize,
             from: usize,
             decisions: Vec<ti4_engine::choice::DecisionRecord>,
-            state: String,
+            end: Mark,
         }
         let content = ContentStore::embedded();
-        let state_of =
-            |game: &Game<'_>| serde_json::to_string(&game.state).expect("a state serializes");
+        let mark_of = |game: &Game<'_>| Mark {
+            state: serde_json::to_string(&game.state).expect("a state serializes"),
+            rng: game.rng_positions(),
+            rolls: game.rolls().to_vec(),
+            events: game.events.clone(),
+            timing: game.timing.log().to_vec(),
+            offer: game.legal_options(),
+        };
         let ahead = |mut copy: Game<'static>, step: usize, from: usize| {
             for _ in 0..AHEAD {
                 if copy.state.finished || copy.step().error.is_some() {
@@ -1931,7 +1949,7 @@ mod tests {
                 step,
                 from,
                 decisions: copy.table.log.records.clone(),
-                state: state_of(&copy),
+                end: mark_of(&copy),
             }
         };
 
@@ -1944,15 +1962,15 @@ mod tests {
                 Table::with_default(Box::new(Shared(Arc::new(Mutex::new(copy)))))
             };
 
-            let (mut forks, mut remade) = (Vec::new(), Vec::new());
+            let (mut forks, mut remade, mut stored) = (Vec::new(), Vec::new(), Vec::new());
             let (mut quiet, mut open) = (0, std::collections::BTreeMap::new());
-            let (mut fork_time, mut largest) = (Duration::ZERO, 0);
-            let mut states = Vec::new();
+            let (mut fork_time, mut largest, mut largest_stored) = (Duration::ZERO, 0, 0);
+            let mut marks = Vec::new();
             for step in 0..STEPS {
                 if game.state.finished {
                     break;
                 }
-                states.push(state_of(&game));
+                marks.push(mark_of(&game));
                 let windows = game.open_windows();
                 if windows.is_empty() {
                     quiet += 1;
@@ -1966,7 +1984,7 @@ mod tests {
                     let start = Instant::now();
                     let mut fork = game.fork();
                     fork_time += start.elapsed();
-                    largest = largest.max(states[step].len());
+                    largest = largest.max(marks[step].state.len());
                     fork.table = table();
                     forks.push(ahead(fork, step, from));
                     // What the server's snapshot holds: the state, and nothing else of the game.
@@ -1974,39 +1992,66 @@ mod tests {
                         .with_sources(POK)
                         .with_galaxy(game.galaxy().unwrap().clone());
                     remade.push((ahead(again, step, from), windows.is_empty()));
+                    // A quiet game, as the text a save would hold.
+                    let quiet_game = game.quiet();
+                    assert_eq!(quiet_game.is_some(), windows.is_empty(), "step {step}");
+                    if let Some(quiet_game) = quiet_game {
+                        let json = serde_json::to_string(&quiet_game).unwrap();
+                        largest_stored = largest_stored.max(json.len());
+                        let read: QuietGame = serde_json::from_str(&json).unwrap();
+                        let restored =
+                            read.restore(content, table(), Some(game.galaxy().unwrap().clone()));
+                        stored.push(ahead(restored, step, from));
+                    }
                 }
                 assert!(game.step().error.is_none());
             }
-            states.push(state_of(&game));
+            marks.push(mark_of(&game));
 
             let log = &game.table.log.records;
-            let same = |probe: &Probe| {
+            // The decisions and the state; a full checkpoint also has the same streams, dice,
+            // events and offer.
+            let alike = |probe: &Probe| {
                 let end = probe.from + probe.decisions.len();
                 log.get(probe.from..end) == Some(&probe.decisions[..])
-                    && states.get(probe.step + AHEAD) == Some(&probe.state)
+                    && marks.get(probe.step + AHEAD).map(|mark| &mark.state)
+                        == Some(&probe.end.state)
             };
-            let wrong: Vec<usize> = forks
-                .iter()
-                .filter(|probe| !same(probe))
-                .map(|probe| probe.step)
-                .collect();
+            let same =
+                |probe: &Probe| alike(probe) && marks.get(probe.step + AHEAD) == Some(&probe.end);
+            let wrong = |probes: &[Probe]| -> Vec<usize> {
+                probes
+                    .iter()
+                    .filter(|probe| !same(probe))
+                    .map(|probe| probe.step)
+                    .collect()
+            };
+            let (wrong_forks, wrong_stored) = (wrong(&forks), wrong(&stored));
             let count = |quiet_only: bool| {
                 let of: Vec<_> = remade
                     .iter()
                     .filter(|(_, quiet)| *quiet || !quiet_only)
                     .collect();
-                (of.iter().filter(|(probe, _)| same(probe)).count(), of.len())
+                (
+                    of.iter().filter(|(probe, _)| alike(probe)).count(),
+                    of.len(),
+                )
             };
             println!(
                 "seed {seed}: {} steps, {} decisions; no window open at {quiet} boundaries; open: {open:?}",
-                states.len() - 1,
+                marks.len() - 1,
                 log.len()
             );
             println!(
                 "  forks: {} of {} play the same game; one fork takes {:?}; the state is up to {largest} bytes of JSON",
-                forks.len() - wrong.len(),
+                forks.len() - wrong_forks.len(),
                 forks.len(),
                 fork_time / u32::try_from(forks.len()).unwrap()
+            );
+            println!(
+                "  quiet games read back from JSON: {} of {} play the same game; up to {largest_stored} bytes",
+                stored.len() - wrong_stored.len(),
+                stored.len()
             );
             println!(
                 "  made again from the state alone: {:?} the same; at boundaries with no window open: {:?}",
@@ -2014,8 +2059,13 @@ mod tests {
                 count(true)
             );
             assert!(
-                wrong.is_empty(),
-                "forks at steps {wrong:?} played another game"
+                wrong_forks.is_empty(),
+                "forks at steps {wrong_forks:?} played another game"
+            );
+            assert!(!stored.is_empty(), "no quiet boundary was sampled");
+            assert!(
+                wrong_stored.is_empty(),
+                "quiet games at steps {wrong_stored:?} played another game"
             );
         }
     }

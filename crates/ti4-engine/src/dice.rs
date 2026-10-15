@@ -68,7 +68,7 @@ impl Roll {
 }
 
 /// A seeded ten-sided roller with a full history.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dice {
     sides: u32,
     history: Vec<Roll>,
@@ -78,6 +78,7 @@ pub struct Dice {
     /// Pre-loaded faces for tests. Drained left-to-right; exhausted slots fall through
     /// to the RNG. Only populated when constructed via [`Dice::from_faces`].
     #[cfg(test)]
+    #[serde(skip)]
     preload: Option<Vec<u32>>,
 }
 

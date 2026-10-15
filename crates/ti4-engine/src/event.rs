@@ -76,7 +76,7 @@ impl Event {
 }
 
 /// A deterministic per-trace event-ID allocator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSequence {
     next_id: u64,
 }

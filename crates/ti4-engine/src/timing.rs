@@ -463,6 +463,36 @@ impl ResolverSnapshot {
     }
 }
 
+/// What [`Resolver::registered`] lists.
+pub type RegisteredAbilities<'a> = (
+    Vec<(&'a str, &'a PlayerId, &'a str, Relation)>,
+    Vec<&'a str>,
+);
+
+/// A [`Resolver`] as data: everything but its registry of abilities, its deciders and its
+/// participation binding (see [`Resolver::plain`]). The registry holds closures; it is rebuilt
+/// by [`crate::reactions::arm`] from the state, as [`crate::game::Game::with_table`] builds it.
+///
+/// FORK RULE: `plain` and `restore_plain` destructure `Resolver` without `..`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolverPlain {
+    initiative_order: Vec<PlayerId>,
+    seating_order: Vec<PlayerId>,
+    active_player: Option<PlayerId>,
+    speaker: Option<PlayerId>,
+    phase: Phase,
+    /// The resolver's table without its decision log.
+    table: crate::choice::TableState,
+    log: Vec<String>,
+    applied_events: Vec<Event>,
+    relation_being_resolved: Option<Relation>,
+    emission_stack: Vec<(String, u64)>,
+    maximum_depth: usize,
+    used: BTreeSet<(String, FrequencyScope)>,
+    round_number: u64,
+    turn_number: u64,
+}
+
 impl Resolver {
     /// Copy this resolver's rules state. Decider input (who answers) is NOT copied: the copy's
     /// table has first-option deciders, no observation callbacks, but the same decision log
@@ -508,6 +538,122 @@ impl Resolver {
             round_number: *round_number,
             turn_number: *turn_number,
         }
+    }
+
+    /// The plain part of this resolver (see [`ResolverPlain`]). The decision log of its table
+    /// is left empty, as in [`crate::game::Game::snapshot_unlogged`].
+    pub(crate) fn plain(&self) -> ResolverPlain {
+        let Self {
+            registry: _, // closures: rebuilt by `reactions::arm`
+            initiative_order,
+            seating_order,
+            active_player,
+            speaker,
+            phase,
+            table,
+            log,
+            applied_events,
+            relation_being_resolved,
+            emission_stack,
+            maximum_depth,
+            used,
+            round_number,
+            turn_number,
+            participation: _, // input wiring, as in a fork
+        } = self;
+        ResolverPlain {
+            initiative_order: initiative_order.clone(),
+            seating_order: seating_order.clone(),
+            active_player: active_player.clone(),
+            speaker: speaker.clone(),
+            phase: *phase,
+            table: table.state_unlogged(),
+            log: log.clone(),
+            applied_events: applied_events.clone(),
+            relation_being_resolved: *relation_being_resolved,
+            emission_stack: emission_stack.clone(),
+            maximum_depth: *maximum_depth,
+            used: used.clone(),
+            round_number: *round_number,
+            turn_number: *turn_number,
+        }
+    }
+
+    /// Put back the plain part of a resolver. The registry stays as it is: arm it first.
+    pub(crate) fn restore_plain(&mut self, plain: ResolverPlain) {
+        let ResolverPlain {
+            initiative_order,
+            seating_order,
+            active_player,
+            speaker,
+            phase,
+            table,
+            log,
+            applied_events,
+            relation_being_resolved,
+            emission_stack,
+            maximum_depth,
+            used,
+            round_number,
+            turn_number,
+        } = plain;
+        let Self {
+            registry: _,
+            initiative_order: initiative_order_slot,
+            seating_order: seating_order_slot,
+            active_player: active_player_slot,
+            speaker: speaker_slot,
+            phase: phase_slot,
+            table: table_slot,
+            log: log_slot,
+            applied_events: applied_events_slot,
+            relation_being_resolved: relation_being_resolved_slot,
+            emission_stack: emission_stack_slot,
+            maximum_depth: maximum_depth_slot,
+            used: used_slot,
+            round_number: round_number_slot,
+            turn_number: turn_number_slot,
+            participation: _,
+        } = self;
+        *initiative_order_slot = initiative_order;
+        *seating_order_slot = seating_order;
+        *active_player_slot = active_player;
+        *speaker_slot = speaker;
+        *phase_slot = phase;
+        table_slot.restore_state(table);
+        *log_slot = log;
+        *applied_events_slot = applied_events;
+        *relation_being_resolved_slot = relation_being_resolved;
+        *emission_stack_slot = emission_stack;
+        *maximum_depth_slot = maximum_depth;
+        *used_slot = used;
+        *round_number_slot = round_number;
+        *turn_number_slot = turn_number;
+    }
+
+    /// The registered abilities in registration order (id, owner, event, relation), and the
+    /// labels of the registered prohibitions. Two resolvers armed alike give the same lists.
+    #[must_use]
+    pub fn registered(&self) -> RegisteredAbilities<'_> {
+        (
+            self.registry
+                .abilities
+                .iter()
+                .map(|ability| {
+                    (
+                        ability.id.as_str(),
+                        &ability.owner,
+                        ability.event_type.as_str(),
+                        ability.relation,
+                    )
+                })
+                .collect(),
+            self.registry
+                .cannot
+                .iter()
+                .map(|cannot| cannot.label.as_str())
+                .collect(),
+        )
     }
 
     pub(crate) fn checkpoint(&self) -> ResolverCheckpoint {
@@ -1312,7 +1458,7 @@ pub enum TimingError {
     StatefulContextRequired(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 enum FrequencyScope {
     Trigger(u64),
     Turn(u64),

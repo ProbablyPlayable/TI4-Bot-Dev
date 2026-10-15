@@ -1,5 +1,6 @@
 //! `Game::fork` must continue EXACTLY like the original: same offers, same step results, same
-//! decision log, same final state, events, timing log, dice and RNG positions.
+//! decision log, same final state, events, timing log, dice and RNG positions. So must a game
+//! restored from `Game::quiet`, written as JSON and read back, where no window is open.
 //!
 //! This is the enforcement behind the FORK RULE in AGENTS.md: the exhaustive destructuring in
 //! `Game::snapshot` stops a new field from being forgotten silently; this test proves that what
@@ -9,7 +10,7 @@ use crate::support;
 
 use std::collections::BTreeSet;
 
-use ti4_engine::game::Game;
+use ti4_engine::game::{Game, QuietGame};
 use ti4_host::rng_force::RngForce;
 
 use crate::support::{
@@ -19,6 +20,8 @@ use crate::support::{
 #[derive(Default, Debug)]
 struct Stats {
     forks: usize,
+    /// Fork points with no window open, where a quiet game was restored from JSON beside the fork.
+    quiet: usize,
     skipped_pending_rng: usize,
     steps_compared: usize,
     prompts: BTreeSet<String>,
@@ -36,6 +39,31 @@ fn fork_at(source: &Source, original: &Game<'static>) -> Game<'static> {
         force.attach(&mut fork);
     }
     fork
+}
+
+/// `original` taken as a quiet game, through JSON, restored with the source's deciders; `None`
+/// where a window is open. The holder puts back the decision log and the deck reserve of a
+/// turn redo, which the state does not serialize.
+fn restored_at(source: &Source, original: &mut Game<'static>) -> Option<Game<'static>> {
+    let json = serde_json::to_string(&original.quiet()?).expect("a quiet game serializes");
+    let read: QuietGame = serde_json::from_str(&json).expect("a quiet game reads back");
+    let from = original.table.log.records.len();
+    let force = RngForce::new(&source.marks);
+    let mut restored = read.restore(
+        ti4_content::ContentStore::embedded(),
+        support::forced_table(source, from, force.clone()),
+        original.galaxy().cloned(),
+    );
+    restored.table.log.records = original.table.log.records.clone();
+    restored.state.deck_reserve = original
+        .state
+        .deck_reserve
+        .as_ref()
+        .map(ti4_model::deck_reserve::DeckReserve::detached);
+    if let Some(force) = &force {
+        force.attach(&mut restored);
+    }
+    Some(restored)
 }
 
 fn assert_same_end(original: &Game<'static>, fork: &Game<'static>, context: &str) {
@@ -107,6 +135,10 @@ fn check(source: &Source, stride: usize, window: usize) -> Stats {
                 }
                 forks.push((fork_at(source, &original), end));
                 stats.forks += 1;
+                if let Some(restored) = restored_at(source, &mut original) {
+                    forks.push((restored, end));
+                    stats.quiet += 1;
+                }
             }
         }
         boundary += 1;
@@ -171,6 +203,7 @@ fn slow_a_fork_of_a_generated_game_continues_identically() {
     let stats = check(&source, 5, 40);
     eprintln!("{stats:?}");
     assert!(stats.forks > 60, "{stats:?}");
+    assert!(stats.quiet > 10, "{stats:?}");
     assert!(stats.prompts.len() > 12, "{stats:?}");
 }
 
@@ -191,6 +224,7 @@ fn slow_a_fork_of_games_seating_the_newer_factions_continues_identically() {
         let stats = check(&source, 4, 30);
         eprintln!("{factions:?}: {stats:?}");
         assert!(stats.forks > 30, "{factions:?}: {stats:?}");
+        assert!(stats.quiet > 5, "{factions:?}: {stats:?}");
     }
 }
 
@@ -203,6 +237,7 @@ fn slow_a_fork_of_a_game_with_forced_rng_positions_continues_identically() {
     let stats = check(&source, 3, 30);
     eprintln!("{stats:?}");
     assert!(stats.forks > 60, "{stats:?}");
+    assert!(stats.quiet > 10, "{stats:?}");
     assert_eq!(stats.skipped_pending_rng, 0, "{stats:?}");
     // Flushing at every fork point must not change the game: the checked original ends exactly
     // where a plain replay (which never flushes) ends.
@@ -287,6 +322,41 @@ fn scan_saved_games() {
             }
         }
     }
+}
+
+/// A restored quiet game arms the abilities from its state: the registry must be the one the
+/// original armed at the start, in the same order, at every quiet boundary of a played game.
+#[test]
+fn a_quiet_game_restores_the_same_registry_and_continues_identically() {
+    let source = generated("generated-quiet-9", 9, 240, 0);
+    let mut original = start_game(&source);
+    let mut compared = 0;
+    while original.table.log.records.len() < source.records.len() && !original.state.finished {
+        if let Some(restored) = restored_at(&source, &mut original) {
+            let (abilities, prohibitions) = original.timing.registered();
+            assert!(!abilities.is_empty());
+            assert_eq!(
+                restored.timing.registered(),
+                (abilities, prohibitions),
+                "registry at decision {}",
+                original.table.log.records.len()
+            );
+            compared += 1;
+        }
+        if original.step().error.is_some() {
+            break;
+        }
+    }
+    assert!(compared > 10, "{compared} quiet boundaries");
+    let stats = check(&source, 3, 20);
+    eprintln!(
+        "{compared} registries compared over {} decisions; {} forks, {} quiet games, {} steps compared",
+        source.records.len(),
+        stats.forks,
+        stats.quiet,
+        stats.steps_compared
+    );
+    assert!(stats.quiet > 5, "{stats:?}");
 }
 
 #[test]

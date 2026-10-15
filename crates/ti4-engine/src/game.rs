@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use ti4_content::ContentStore;
 use ti4_content::galaxy::Galaxy;
 use ti4_model::content_types::{POK, SourceSet};
@@ -1257,6 +1259,153 @@ impl<'a> GameSnapshot<'a> {
     }
 }
 
+/// A game at a quiet step boundary, as data: no window is open there, so the state, the
+/// random streams, the dice and the counters are all it is. Taken by [`Game::quiet`] and put
+/// back by [`QuietGame::restore`]; the restored game continues like a [`Game::fork`].
+///
+/// Not stored: the decision log of the table (the holder has it and puts it back, as with
+/// [`Game::snapshot_unlogged`]), the galaxy (given to `restore`), the registry of timing
+/// abilities (closures, rebuilt by [`crate::reactions::arm`] from the state), the deck reserve
+/// of a turn redo (the state does not serialize it), and the input wiring (deciders,
+/// observers, the RNG side channel).
+///
+/// FORK RULE: [`Game::quiet`] and [`QuietGame::restore`] destructure `Game` without `..`. A
+/// new field of `Game` is a compile error until it is stored here or required to be empty at a
+/// quiet boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuietGame {
+    state: GameState,
+    table: crate::choice::TableState,
+    events: Vec<String>,
+    timing: crate::timing::ResolverPlain,
+    event_sequence: EventSequence,
+    #[serde(with = "source_names")]
+    sources: SourceSet,
+    strategy_cards: Vec<StrategyCardId>,
+    rng_seed: u64,
+    rng: crate::rng::RngPositions,
+    dice: Dice,
+    status_resolved: bool,
+    agenda_resolved: bool,
+    strategy_phase_announced: bool,
+    failed_component_actions: std::collections::BTreeSet<String>,
+    actions_this_turn: u8,
+    prepared_turn_seq: Option<u32>,
+    round_income_trade_goods: i32,
+    round_income_seat: Option<PlayerId>,
+}
+
+/// A [`SourceSet`] as the names of its sources (`enumset` has no serde here).
+mod source_names {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use ti4_model::content_types::{Source, SourceSet};
+
+    pub fn serialize<S: Serializer>(sources: &SourceSet, serializer: S) -> Result<S::Ok, S::Error> {
+        sources
+            .iter()
+            .map(|source| source.to_string())
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SourceSet, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .iter()
+            .map(|name| {
+                name.parse::<Source>()
+                    .map_err(|_| serde::de::Error::custom(format!("unknown source {name:?}")))
+            })
+            .collect()
+    }
+}
+
+impl QuietGame {
+    /// The game this was taken from, with `table` answering and `galaxy` as its map. The
+    /// table's own decision log is replaced by the stored one, which is empty: put the log
+    /// back with `game.table.log.records = ...` before stepping when the game needs it.
+    #[must_use]
+    pub fn restore<'a>(
+        self,
+        content: &'a ContentStore,
+        mut table: Table,
+        galaxy: Option<Galaxy>,
+    ) -> Game<'a> {
+        let Self {
+            state,
+            table: table_state,
+            events,
+            timing: timing_plain,
+            event_sequence,
+            sources,
+            strategy_cards,
+            rng_seed,
+            rng: rng_positions,
+            dice,
+            status_resolved,
+            agenda_resolved,
+            strategy_phase_announced,
+            failed_component_actions,
+            actions_this_turn,
+            prepared_turn_seq,
+            round_income_trade_goods,
+            round_income_seat,
+        } = self;
+        table.restore_state(table_state);
+        let mut timing =
+            Resolver::new(state.initiative_order(), state.active.clone(), Table::new());
+        crate::reactions::arm(&mut timing, &state);
+        timing.restore_plain(timing_plain);
+        let mut rng = GameRng::new(rng_seed);
+        rng.set_positions(&rng_positions);
+        Game {
+            state,
+            table,
+            events,
+            timing,
+            event_sequence,
+            content,
+            sources,
+            strategy_cards,
+            secondary: None,
+            secondary_after_tactical: None,
+            leader_strategy: None,
+            leader_followers: None,
+            scoring: None,
+            event_scoring: None,
+            tokens: None,
+            voting: None,
+            executive_order: None,
+            agenda_queue_after_event_scoring: None,
+            galaxy,
+            tactical: None,
+            aftermath: None,
+            trade: None,
+            diplomacy: None,
+            agenda_talks: None,
+            rng,
+            dice,
+            status_resolved,
+            agenda_resolved,
+            strategy_phase_announced,
+            failed_component_actions,
+            turn_closing: None,
+            actions_this_turn,
+            prepared_turn_seq,
+            blocked: None,
+            round_income_trade_goods,
+            round_income_seat,
+            aftermath_observer: None,
+            strategic_observer: None,
+        }
+    }
+
+    /// The state when this was taken.
+    #[must_use]
+    pub const fn state(&self) -> &GameState {
+        &self.state
+    }
+}
+
 impl<'a> Game<'a> {
     /// Copy everything this game needs to continue identically, as plain data.
     ///
@@ -1549,7 +1698,8 @@ impl<'a> Game<'a> {
     /// The names of the windows that are open now: rules state that is not in [`GameState`].
     ///
     /// Empty at a step boundary means that the state, the dice and the counters are all that a
-    /// stored copy of this game would need. [`Game::fork`] copies the open windows too.
+    /// stored copy of this game needs: [`Game::quiet`] takes it. [`Game::fork`] copies the open
+    /// windows too.
     #[must_use]
     pub fn open_windows(&self) -> Vec<&'static str> {
         [
@@ -1579,6 +1729,100 @@ impl<'a> Game<'a> {
         .into_iter()
         .filter_map(|(name, open)| open.then_some(name))
         .collect()
+    }
+
+    /// This game as data, when it stands at a quiet step boundary: no window open (see
+    /// [`Game::open_windows`]), not blocked, and no forced RNG position waiting for a draw
+    /// after [`Game::flush_rng_sync`], which this calls first. `None` anywhere else.
+    ///
+    /// Take it between steps, like a snapshot. See [`QuietGame`] for what is not stored.
+    pub fn quiet(&mut self) -> Option<QuietGame> {
+        self.flush_rng_sync();
+        if self.rng_sync_pending() {
+            return None;
+        }
+        let Self {
+            state,
+            table,
+            events,
+            timing,
+            event_sequence,
+            content: _, // given to `restore`
+            sources,
+            strategy_cards,
+            secondary,
+            secondary_after_tactical,
+            leader_strategy,
+            leader_followers,
+            scoring,
+            event_scoring,
+            tokens,
+            voting,
+            executive_order,
+            agenda_queue_after_event_scoring,
+            galaxy: _, // given to `restore`
+            tactical,
+            aftermath,
+            trade,
+            diplomacy,
+            agenda_talks,
+            rng,
+            dice,
+            status_resolved,
+            agenda_resolved,
+            strategy_phase_announced,
+            failed_component_actions,
+            turn_closing,
+            actions_this_turn,
+            prepared_turn_seq,
+            blocked,
+            round_income_trade_goods,
+            round_income_seat,
+            // Input wiring, chosen by whoever restores the game.
+            aftermath_observer: _,
+            strategic_observer: _,
+        } = self;
+        // The windows: rules state that has no data form. A quiet boundary has none open.
+        let open = secondary.is_some()
+            || secondary_after_tactical.is_some()
+            || leader_strategy.is_some()
+            || leader_followers.is_some()
+            || scoring.is_some()
+            || event_scoring.is_some()
+            || tokens.is_some()
+            || voting.is_some()
+            || executive_order.is_some()
+            || agenda_queue_after_event_scoring.is_some()
+            || tactical.is_some()
+            || aftermath.is_some()
+            || trade.is_some()
+            || diplomacy.is_some()
+            || agenda_talks.is_some()
+            || turn_closing.is_some()
+            || blocked.is_some();
+        if open {
+            return None;
+        }
+        Some(QuietGame {
+            state: detached_state(state),
+            table: table.state_unlogged(),
+            events: events.clone(),
+            timing: timing.plain(),
+            event_sequence: event_sequence.clone(),
+            sources: *sources,
+            strategy_cards: strategy_cards.clone(),
+            rng_seed: rng.seed(),
+            rng: rng.positions(),
+            dice: dice.clone(),
+            status_resolved: *status_resolved,
+            agenda_resolved: *agenda_resolved,
+            strategy_phase_announced: *strategy_phase_announced,
+            failed_component_actions: failed_component_actions.clone(),
+            actions_this_turn: *actions_this_turn,
+            prepared_turn_seq: *prepared_turn_seq,
+            round_income_trade_goods: *round_income_trade_goods,
+            round_income_seat: round_income_seat.clone(),
+        })
     }
 
     /// Make the same fork on another thread, with fresh input bindings there.

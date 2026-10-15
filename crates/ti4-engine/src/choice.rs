@@ -331,7 +331,7 @@ impl Choice {
 /// A decider returned something that was not on offer.
 ///
 /// This is the boundary that keeps an LLM or a buggy bot from inventing moves.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 pub enum IllegalChoice {
     #[error("{player} chose {chosen:?}, which was not offered: {offered:?}")]
     NotOffered {
@@ -2250,7 +2250,7 @@ pub type WindowObserver = Box<
 /// Public feedback only. It is deliberately *not* a [`DecisionRecord`]: the skipped ask is
 /// never journaled, so a replay re-derives the same lone option and the log is unchanged.
 /// It carries only what the actor was already shown (the prompt and the option's label).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoResolved {
     pub player: PlayerId,
     pub prompt: String,
@@ -2261,7 +2261,7 @@ pub struct AutoResolved {
 }
 
 /// The state-carrying part of a [`Table`] (see [`Table::state`]). `Send`, unlike a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableState {
     pub log: DecisionLog,
     auto_resolved: Vec<AutoResolved>,
