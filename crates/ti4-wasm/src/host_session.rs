@@ -73,6 +73,7 @@ use ti4_host::protocol::server::{
 use ti4_host::protocol::staged::StagedSlot;
 use ti4_host::protocol::status::{RejectionReason, ViewerRole};
 use ti4_host::protocol::view::BoardTileView;
+pub use ti4_host::replay::decisions_hash;
 use ti4_host::setup::TableSeats;
 use ti4_host::staged::ready::{self, Check as ReadyCheck};
 use ti4_host::staged::{Put, SeatStaged};
@@ -1968,20 +1969,4 @@ pub struct HostSave {
     /// The engine that saved: its build and the digest of its content.
     #[cfg_attr(feature = "ts", ts(type = "{ build: string, content_digest: string }"))]
     pub engine: serde_json::Value,
-}
-
-/// A short hash of the decisions of a game, to tell on replay that the engine still decides the
-/// same (FNV-1a over the canonical V1 fingerprint of each record).
-#[must_use]
-pub fn decisions_hash(records: &[DecisionRecord]) -> String {
-    use ti4_engine::fingerprint::{CanonicalHashVersion, decision_hash};
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for record in records {
-        let digest = decision_hash(CanonicalHashVersion::V1, record);
-        for byte in format!("{digest:?}").bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    format!("{hash:016x}")
 }

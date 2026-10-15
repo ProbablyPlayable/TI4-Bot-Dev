@@ -36,6 +36,23 @@ pub struct ReplayReport {
     pub rolls: Vec<ti4_engine::dice::Roll>,
 }
 
+/// A short hash of a decision log, to tell on replay that the engine still decides the same:
+/// FNV-1a over the canonical V1 fingerprint of each record, as 16 hex digits. Stable across
+/// processes and builds of the same engine, so it is stored (the browser's save,
+/// [`crate::step_snapshot::StoredPosition`]).
+#[must_use]
+pub fn decisions_hash(records: &[DecisionRecord]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for record in records {
+        let digest = decision_hash(CanonicalHashVersion::V1, record);
+        for byte in format!("{digest:?}").bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
 struct ReplayDecider {
     script: VecDeque<String>,
     #[allow(dead_code)]
