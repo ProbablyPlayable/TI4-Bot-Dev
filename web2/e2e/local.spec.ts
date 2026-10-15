@@ -447,6 +447,100 @@ test("a reload goes on where the game was, and undo takes back one answer @slow"
   await expect(undo(page)).toHaveCount(0);
 });
 
+/**
+ * The largest total of "decision N of M" / "answer N of M" / "Replaying N of M" that the page
+ * showed since it was loaded: how many decisions the engine played again. 0 when it showed none:
+ * a replay of fewer than 20 decisions tells no progress.
+ */
+async function watchReplay(page: Page) {
+  await page.addInitScript(() => {
+    const seen = { total: 0 };
+    Object.assign(window, { __replayed: seen });
+    const read = () => {
+      const text = document.body?.textContent ?? "";
+      for (const match of text.matchAll(/(?:decision|answer|Replaying) \d+ of (\d+)/g)) {
+        seen.total = Math.max(seen.total, Number(match[1]));
+      }
+    };
+    new MutationObserver(read).observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+}
+const replayed = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __replayed: { total: number } }).__replayed.total);
+
+/** The decisions of all seats, from the line of the Dev sheet. */
+const decisionsSaved = async (page: Page) =>
+  Number(/(\d+) decisions of all seats/.exec(await savedLine(page))?.[1] ?? -1);
+
+/** A saved game with the position that the store keeps beside it (`web-shared/src/storage`). */
+type Positioned = StoredGame & { position?: { log_len: number; gzip: Uint8Array } };
+
+test("a reload starts from the stored position and replays only the decisions after it @slow", async ({
+  page,
+}) => {
+  const slot = "local.3.8.1";
+  await watchReplay(page);
+  await page.goto("/?local=3&players=8&humans=1");
+  await expect(send(page)).toBeDisabled();
+  // Far enough that the engine has passed many quiet steps.
+  while ((await decisionsSaved(page)) < 300) {
+    await answer(page);
+  }
+  const decisions = await decisionsSaved(page);
+  const line = await savedLine(page);
+  const open = await heading(page).textContent();
+  const round = await page.getByText(/^Round \d+ · /).textContent();
+
+  // The save has the game at its last quiet step, a few decisions before the end of its log.
+  await expect
+    .poll(async () => ((await savedGame(page, slot)) as Positioned | undefined)?.save.decisions)
+    .toHaveLength(decisions);
+  const stored = (await savedGame(page, slot)) as Positioned;
+  expect(stored.position, "the save has a stored position").toBeDefined();
+  const tail = decisions - stored.position!.log_len;
+  expect(tail).toBeGreaterThanOrEqual(0);
+  expect(tail).toBeLessThan(100);
+
+  // A reload starts from it: the same question, after playing only the tail again.
+  let start = Date.now();
+  await page.reload();
+  await expect(heading(page)).toHaveText(open ?? "");
+  await expect(send(page)).toBeDisabled();
+  const fromPosition = Date.now() - start;
+  await expect(page.getByText(/^Round \d+ · /)).toHaveText(round ?? "");
+  expect(await savedLine(page)).toBe(line);
+  expect(await replayed(page)).toBeLessThanOrEqual(tail);
+
+  // The next save still has a position, at least as late as the one that the reload started from.
+  await answer(page);
+  const after = await decisionsSaved(page);
+  await page.goto("/");
+  await expect
+    .poll(async () => ((await savedGame(page, slot)) as Positioned | undefined)?.save.decisions)
+    .toHaveLength(after);
+  const next = (await savedGame(page, slot)) as Positioned;
+  expect(next.position, "the save after the reload has a position").toBeDefined();
+  expect(next.position!.log_len).toBeGreaterThanOrEqual(stored.position!.log_len);
+  expect(next.position!.log_len).toBeLessThanOrEqual(after);
+
+  // Without the position the same save is played again from the seed: every decision.
+  const { position: _position, ...bare } = next;
+  await putRecord(page, bare);
+  start = Date.now();
+  await page.goto("/?local=3&players=8&humans=1");
+  await expect(send(page)).toBeVisible();
+  const fromSeed = Date.now() - start;
+  expect(await replayed(page)).toBeGreaterThan(after - 20);
+  test.info().annotations.push({
+    type: "reload",
+    description: `${decisions} decisions, tail ${tail}: ${fromPosition} ms from the position, ${fromSeed} ms from the seed (${after} decisions)`,
+  });
+});
+
 test("an exported game is imported in another browser and opens at the same choice", async ({
   page,
   browser,
