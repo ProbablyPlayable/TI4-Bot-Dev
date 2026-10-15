@@ -70,6 +70,8 @@ src/storage/ types.ts     HostSave (format 2), SavedGameRecord, GameMeta, StoreS
                           OfflineSaveStore, FeedbackBackend
              backend.ts   Backend: IdbBackend (DB `ti4-offline`, DB_VERSION, MIGRATIONS), MemoryBackend
              saveStore.ts openOfflineSaveStore: the games, a memory fallback, import and export
+             position.ts  pack/unpack: the save's position (`HostSave.position`, megabytes of JSON text)
+                          gzipped at rest (`CompressionStream`), unpacked on a read: the apps see the text
              autosave.ts  createAutosave: debounced writes, flushed on pagehide and a hidden tab
              validate.ts  validateSave, the record and the export file (EXPORT_KIND, EXPORT_VERSION),
                           engineDifferences
@@ -294,28 +296,36 @@ The single player games of both apps, in one IndexedDB database of the origin. I
 - `createAutosave` flushes on `pagehide`, but a write of IndexedDB that starts there does not
   end when the page is gone (a reload, a navigation). An app that must not lose the last save
   keeps it at once elsewhere: web2 puts it into localStorage and into the store on the next
-  load (the saved game in `web2/docs/agents/local-play.md`).
+  load (the saved game in `web2/docs/agents/local-play.md`), without its position: the store's
+  older position goes with it when it was taken within the decisions that both share.
 - web2 keeps its local games and its single player game here (`web2/src/session/saves.ts`), with
   the slots below; web/ its offline games.
 - **The record** (`SavedGameRecord`, schema 2): `id`, `slot?`, `nickname`, `createdAt`,
   `updatedAt`, `status`, `summary {playerCount, humans, factions, seed, round, phase, answers}`,
-  `engine`, `resumeEstimateMs`, `imported`, `sizeBytes`, `save`.
+  `engine`, `resumeEstimateMs`, `imported`, `sizeBytes`, `save`, `position?`. At rest `save` has
+  no position: it is beside it as `position {build, content_digest, log_len, gzip: Uint8Array}`
+  (`StoredRecord`), and `sizeBytes` counts the gzip. `load`/`findSlot` put it back into
+  `save.position` as text.
 - **The slot** is the fixed address of a game in an app: `"single"`,
   `"local.<seed>.<players>.<mask>"`, `"scenario.<id>.<mask>"`. A game found by its id only has
   none.
 - **The save** is the engine's `HostSave`, format 2 (`crates/ti4-wasm/README.md`). `validateSave`
   checks what the store and the lists rely on (2 to 8 players, the humans mask, every seat's
-  decisions, the limits); the engine checks the rest when it resumes. A record that fails
-  (an older save format or record schema, a broken row) is not shown and is counted in
-  `status().unreadable`.
+  decisions, the limits); the engine checks the rest when it resumes. The position (the game at
+  its last quiet step) is a cache: a malformed one is dropped and the save loads; a save that does
+  not fit the limits with it is stored without it; the engine checks that it fits the save. A
+  record that fails (an older save format or record schema, a broken row) is not shown and is
+  counted in `status().unreadable`.
 - **The export file** is the one export format of both apps: `{kind: "ti4-offline-game",
-  version: 2, exportedAt, game: {nickname, factions, createdAt, engine, save}}`.
+  version: 2, exportedAt, game: {nickname, factions, createdAt, engine, save}}`. An export leaves
+  the position out; an import keeps one that a file has.
 - **The schema.** Database `ti4-offline`, version 2: `games` (key `id`, indexes `updatedAt` and
   `slot`), `feedback` (key `localId`), `meta`. A change adds a step to `MIGRATIONS` and bumps
   `DB_VERSION`; an old step is never edited. A database newer than the build is not touched (the
   memory fallback).
-- **The limits** (`LIMITS`): 8 MiB a save, 100 games, 128 MiB in all, 20000 answers, 200000
-  decisions, a nickname of 40 characters.
+- **The limits** (`LIMITS`): 8 MiB a save as stored (the position gzipped: about 145 KiB of a
+  2 MB text at 2300 decisions), a position of 32 Mi characters, 100 games, 128 MiB in all, 20000
+  answers, 200000 decisions, a nickname of 40 characters.
 - **Feedback.** The object store `feedback` belongs to web's feedback queue
   (`web/src/offline/storage/feedbackQueue.ts`), through `store.feedbackBackend`. It is part of
   this schema because it is one database; the queue's code and its rows are web's.

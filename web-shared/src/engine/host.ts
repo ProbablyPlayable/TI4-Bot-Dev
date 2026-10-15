@@ -7,6 +7,8 @@
  * (`restart` in the reply) needs a new `Host`.
  */
 
+import type { SavedPosition } from "../wire/index.ts";
+
 export { hasJspi } from "./jspi.ts";
 
 /** The answer to a `progress` output: go on. */
@@ -87,6 +89,12 @@ export interface HostSave {
   engine: { build: string; content_digest: string };
   /** What each seat staged and did not send (`ti4_host::staged`). */
   staged?: Record<string, unknown>;
+  /**
+   * The game at its last quiet step (JSON text in `data`, up to a few MB): a resume replays only
+   * the decisions after it. A cache: without it, or when it does not fit, the game replays from
+   * the seed.
+   */
+  position?: SavedPosition;
 }
 
 export interface HostEnd {

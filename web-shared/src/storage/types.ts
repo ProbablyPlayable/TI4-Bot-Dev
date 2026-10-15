@@ -2,9 +2,15 @@
 
 /** Hard limits. Everything that comes from outside (a file, a stored record) is checked against them. */
 export const LIMITS = {
-  /** One game's save, serialised. A 5000-answer game is about 60 KiB; this is generous. */
+  /**
+   * One game's save as it is stored: the JSON of the save without its position, plus the gzip of
+   * the position's data. A 5000-answer game is about 60 KiB without it; the position of a game at
+   * 2300 decisions is 2 MB of text and 145 KiB gzipped. A save over it is stored without its position.
+   */
   maxSaveBytes: 8 * 1024 * 1024,
-  /** An imported file (the save plus its envelope). */
+  /** The text of a position (`SavedPosition.data`); a longer one is dropped. */
+  maxPositionChars: 32 * 1024 * 1024,
+  /** An imported file (the save plus its envelope). An export has no position. */
   maxImportBytes: 9 * 1024 * 1024,
   maxGames: 100,
   /** All games together. */
@@ -44,7 +50,31 @@ export interface HostSave {
   round?: number | null;
   phase?: string | null;
   engine?: { build?: string; content_digest?: string };
+  /**
+   * The game at its last quiet step, so that a resume replays only the decisions after it. A cache:
+   * a save without it, or whose position does not fit, replays from the seed. A malformed one is
+   * dropped, not refused.
+   */
+  position?: SavedPosition;
   [extra: string]: unknown;
+}
+
+/** The position of a save, as the engine gives and takes it (the generated `SavedPosition`). */
+export interface SavedPosition {
+  build: string;
+  content_digest: string;
+  /** The number of decisions of the save that the position was taken after. */
+  log_len: number;
+  /** The engine's position as JSON text, up to a few MB. */
+  data: string;
+}
+
+/** A position as the store keeps it (`StoredRecord.position`): its `data` gzipped. */
+export interface PackedPosition {
+  build: string;
+  content_digest: string;
+  log_len: number;
+  gzip: Uint8Array;
 }
 
 export const RECORD_SCHEMA = 2;
@@ -78,12 +108,20 @@ export interface SavedGameRecord {
   /** Time of the last measured replay, for the progress estimate. */
   resumeEstimateMs: number | null;
   imported: boolean;
-  /** Serialised size of `save`. */
+  /** Stored size: the JSON of `save` without its position, plus the gzip of the position's data. */
   sizeBytes: number;
   save: HostSave;
 }
 
 export type SavedGameSummary = Omit<SavedGameRecord, "save">;
+
+/**
+ * A record as it is at rest: `save` has no position, and the position is beside it with its data
+ * gzipped. The store reads it back into `save.position`; the apps never see this form.
+ */
+export interface StoredRecord extends SavedGameRecord {
+  position?: PackedPosition;
+}
 
 /** Why the store is not (fully) persistent. A null `warningKind` means all is well. */
 export interface StoreStatus {

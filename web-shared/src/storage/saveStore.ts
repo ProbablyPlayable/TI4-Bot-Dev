@@ -1,4 +1,5 @@
 import { type Backend, BackendOpenError, IdbBackend, MemoryBackend } from "./backend.ts";
+import { canPack, pack, unpack } from "./position.ts";
 import {
   type EngineIdentity,
   type FeedbackBackend,
@@ -7,10 +8,13 @@ import {
   type ImportOutcome,
   LIMITS,
   type OfflineSaveStore,
+  type PackedPosition,
   type SavedGameRecord,
   type SavedGameSummary,
+  type SavedPosition,
   type StoreStatus,
   StoreError,
+  type StoredRecord,
 } from "./types.ts";
 import {
   buildExport,
@@ -19,6 +23,7 @@ import {
   parseExport,
   validateRecord,
   validateSave,
+  withoutPosition,
 } from "./validate.ts";
 
 export interface OpenStoreOptions {
@@ -66,6 +71,16 @@ export async function openOfflineSaveStore(opts: OpenStoreOptions = {}): Promise
   );
 }
 
+/** The summary of a record: no save, no position. */
+const summaryOf = ({ save: _save, position: _position, ...summary }: StoredRecord) => summary;
+
+/** A record as the apps see it: the position unpacked into the save, or dropped when it does not read. */
+async function unpackRecord(rec: StoredRecord): Promise<SavedGameRecord> {
+  const { position, ...rest } = rec;
+  const plain = position && (await unpack(position));
+  return plain ? { ...rest, save: { ...rest.save, position: plain } } : rest;
+}
+
 /** What the store keeps of every game between reads: the limits and the fields a later write keeps. */
 interface IndexEntry {
   sizeBytes: number;
@@ -74,7 +89,7 @@ interface IndexEntry {
   imported: boolean;
 }
 
-const indexEntry = (r: SavedGameRecord): IndexEntry => ({
+const indexEntry = (r: StoredRecord): IndexEntry => ({
   sizeBytes: r.sizeBytes,
   createdAt: r.createdAt,
   ...(r.slot !== undefined ? { slot: r.slot } : {}),
@@ -84,7 +99,7 @@ const indexEntry = (r: SavedGameRecord): IndexEntry => ({
 class SaveStore implements OfflineSaveStore {
   private listeners = new Set<() => void>();
   /** Records whose last write failed: the truth until a write succeeds. */
-  private shadow = new Map<string, SavedGameRecord>();
+  private shadow = new Map<string, StoredRecord>();
   private deleted = new Set<string>();
   private index: Map<string, IndexEntry> | null = null;
   private unreadable = 0;
@@ -93,6 +108,8 @@ class SaveStore implements OfflineSaveStore {
   /** Writes of one game go one after the other. */
   private chains = new Map<string, Promise<unknown>>();
   private closed = false;
+  /** The last position packed: the saves between two quiet steps have the same one. */
+  private lastPacked: { data: string; gzip: Uint8Array } | null = null;
 
   constructor(
     private backend: Backend,
@@ -137,8 +154,8 @@ class SaveStore implements OfflineSaveStore {
 
   // --- reading --------------------------------------------------------------------------
 
-  private async readAll(): Promise<Map<string, SavedGameRecord>> {
-    const out = new Map<string, SavedGameRecord>();
+  private async readAll(): Promise<Map<string, StoredRecord>> {
+    const out = new Map<string, StoredRecord>();
     let unreadable = 0;
     let rows: unknown[] = [];
     try {
@@ -172,23 +189,22 @@ class SaveStore implements OfflineSaveStore {
 
   async list(): Promise<SavedGameSummary[]> {
     const all = await this.readAll();
-    return [...all.values()]
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map(({ save: _save, ...summary }) => summary);
+    return [...all.values()].sort((a, b) => b.updatedAt - a.updatedAt).map(summaryOf);
   }
 
   async load(id: string): Promise<SavedGameRecord | null> {
-    return (await this.readAll()).get(id) ?? null;
+    const rec = (await this.readAll()).get(id);
+    return rec ? unpackRecord(rec) : null;
   }
 
   async findSlot(slot: string): Promise<SavedGameRecord | null> {
-    let found: SavedGameRecord | null = null;
+    let found: StoredRecord | null = null;
     for (const rec of (await this.readAll()).values()) {
       if (rec.slot === slot && (!found || rec.updatedAt > found.updatedAt)) {
         found = rec;
       }
     }
-    return found;
+    return found && unpackRecord(found);
   }
 
   // --- writing --------------------------------------------------------------------------
@@ -216,8 +232,12 @@ class SaveStore implements OfflineSaveStore {
     if (this.closed) {
       throw new StoreError("closed", "The store is closed.");
     }
-    validateSave(save); // our own caller, but a bad save must never overwrite a good one
+    // Our own caller, but a bad save must never overwrite a good one.
+    const checked = validateSave(save);
+    const bare = withoutPosition(checked);
     return this.serial(id, async () => {
+      // In the queue of the game: a later write must not overtake this one while it packs.
+      const packed = checked.position && (await this.pack(checked.position));
       if (!this.index) {
         await this.readAll();
       }
@@ -232,9 +252,9 @@ class SaveStore implements OfflineSaveStore {
         }
       }
       const total = [...this.index!].reduce((n, [k, v]) => n + (k === id ? 0 : v.sizeBytes), 0);
-      const rec = buildRecord(
+      const built = buildRecord(
         id,
-        save,
+        bare,
         {
           nickname: meta.nickname,
           factions: meta.factions,
@@ -246,6 +266,12 @@ class SaveStore implements OfflineSaveStore {
         },
         this.now(),
       );
+      // The position goes along when the save still fits with it, else the save is stored without.
+      const size = packed ? built.sizeBytes + packed.gzip.byteLength : 0;
+      const rec: StoredRecord =
+        packed && size <= LIMITS.maxSaveBytes && total + size <= LIMITS.maxTotalBytes
+          ? { ...built, sizeBytes: size, position: packed }
+          : built;
       if (rec.sizeBytes > LIMITS.maxSaveBytes) {
         throw new StoreError("too-large", "The saved game is too large.");
       }
@@ -256,8 +282,26 @@ class SaveStore implements OfflineSaveStore {
     });
   }
 
+  /** The position gzipped; undefined when this runtime cannot (the save is stored without it). */
+  private async pack(position: SavedPosition): Promise<PackedPosition | undefined> {
+    if (!canPack()) {
+      return undefined;
+    }
+    const { data, ...head } = position;
+    if (this.lastPacked?.data === data) {
+      return { ...head, gzip: this.lastPacked.gzip };
+    }
+    try {
+      const packed = await pack(position);
+      this.lastPacked = { data, gzip: packed.gzip };
+      return packed;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Writes; on failure keeps the record in memory and raises the warning instead of throwing. */
-  private async writeRecord(rec: SavedGameRecord): Promise<void> {
+  private async writeRecord(rec: StoredRecord): Promise<void> {
     this.deleted.delete(rec.id);
     try {
       await this.backend.putGame(rec);
@@ -326,7 +370,8 @@ class SaveStore implements OfflineSaveStore {
   // --- export / import ------------------------------------------------------------------
 
   async exportGame(id: string): Promise<{ filename: string; blob: Blob }> {
-    const rec = await this.load(id);
+    // The export has no position: the record is not unpacked.
+    const rec = (await this.readAll()).get(id);
     if (!rec) {
       throw new StoreError("not-found", "This game is not stored on this device.");
     }
@@ -361,14 +406,13 @@ class SaveStore implements OfflineSaveStore {
       },
       true,
     );
-    const rec = await this.load(id);
+    const rec = (await this.readAll()).get(id);
     if (!rec) {
       throw new StoreError("write-failed", "The game could not be stored.");
     }
-    const { save: _s, ...summary } = rec;
     return {
       id,
-      record: summary,
+      record: summaryOf(rec),
       engineDiffers: currentEngine
         ? engineDifferences(rec.engine, currentEngine).length > 0
         : false,

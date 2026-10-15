@@ -3,9 +3,12 @@ import {
   type EngineIdentity,
   type HostSave,
   LIMITS,
+  type PackedPosition,
   RECORD_SCHEMA,
   type SavedGameRecord,
+  type SavedPosition,
   StoreError,
+  type StoredRecord,
 } from "./types.ts";
 
 export const EXPORT_KIND = "ti4-offline-game";
@@ -29,7 +32,33 @@ export function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).length;
 }
 
-/** Checks the fields the store and the shell rely on; leaves the rest to the engine (which validates a resume itself). */
+/** The save without its position. */
+export function withoutPosition(save: HostSave): HostSave {
+  if (!("position" in save)) {
+    return save;
+  }
+  const { position: _position, ...rest } = save;
+  return rest as HostSave;
+}
+
+/** The fields that a position has besides its data, against the decisions of its save. */
+const positionHead = (p: Record<string, unknown>, decisions: number) =>
+  isStr(p.build, 200) && isStr(p.content_digest, 200) && isInt(p.log_len, 0, decisions);
+
+const validPosition = (p: unknown, decisions: number): p is SavedPosition =>
+  isObj(p) && positionHead(p, decisions) && isStr(p.data, LIMITS.maxPositionChars);
+
+const validPacked = (p: unknown, decisions: number): p is PackedPosition =>
+  isObj(p) &&
+  positionHead(p, decisions) &&
+  p.gzip instanceof Uint8Array &&
+  p.gzip.byteLength <= LIMITS.maxSaveBytes;
+
+/**
+ * Checks the fields the store and the shell rely on; leaves the rest to the engine (which validates
+ * a resume itself). A malformed position is dropped (a copy without it is returned): the position
+ * is a cache, and the save plays without it. The size limit does not count the position.
+ */
 export function validateSave(v: unknown): HostSave {
   if (!isObj(v)) {
     bad("save is not an object");
@@ -83,10 +112,14 @@ export function validateSave(v: unknown): HostSave {
   if (v.engine !== undefined && !isObj(v.engine)) {
     bad("save.engine");
   }
-  if (jsonBytes(v) > LIMITS.maxSaveBytes) {
+  let save = v as HostSave;
+  if (v.position !== undefined && !validPosition(v.position, v.decisions.length)) {
+    save = withoutPosition(save);
+  }
+  if (jsonBytes(withoutPosition(save)) > LIMITS.maxSaveBytes) {
     throw new StoreError("too-large", "The saved game is too large.");
   }
-  return v as HostSave;
+  return save;
 }
 
 export function validateEngine(v: unknown): EngineIdentity {
@@ -138,7 +171,7 @@ export function validateFactions(v: unknown, players: number): Array<string | nu
 
 const validSlot = (v: unknown): v is string => isStr(v, LIMITS.maxSlotChars) && v !== "";
 
-/** Builds the stored record of a save. `now` is the update time. */
+/** Builds the record of a save. `sizeBytes` is the JSON of `save`. `now` is the update time. */
 export function buildRecord(
   id: string,
   save: HostSave,
@@ -185,8 +218,11 @@ export function buildRecord(
   };
 }
 
-/** A record read from the database. Throws StoreError("invalid") for anything unexpected (including newer schemas). */
-export function validateRecord(v: unknown): SavedGameRecord {
+/**
+ * A record read from the database. Throws StoreError("invalid") for anything unexpected (including
+ * newer schemas). A malformed position, in `save` or packed beside it, is dropped.
+ */
+export function validateRecord(v: unknown): StoredRecord {
   if (!isObj(v)) {
     bad("record");
   }
@@ -218,7 +254,13 @@ export function validateRecord(v: unknown): SavedGameRecord {
     bad("record.summary seats");
   }
   validateFactions(summary.factions, save.players);
-  return { ...(v as unknown as SavedGameRecord), engine, save };
+  const { position, ...rest } = v as unknown as StoredRecord;
+  return {
+    ...rest,
+    engine,
+    save,
+    ...(validPacked(position, save.decisions.length) ? { position } : {}),
+  };
 }
 
 export interface ExportFile {
@@ -235,6 +277,7 @@ export interface ExportFile {
   };
 }
 
+/** The export file of a game. It has no position: an import replays from the seed once. */
 export function buildExport(rec: SavedGameRecord, now: number): ExportFile {
   return {
     kind: EXPORT_KIND,
@@ -245,7 +288,7 @@ export function buildExport(rec: SavedGameRecord, now: number): ExportFile {
       factions: rec.summary.factions,
       createdAt: rec.createdAt,
       engine: rec.engine,
-      save: rec.save,
+      save: withoutPosition(rec.save),
     },
   };
 }

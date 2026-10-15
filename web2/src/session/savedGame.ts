@@ -135,10 +135,14 @@ export interface LeftSave {
   save: HostSave;
 }
 
-/** Keeps the save of a page that is left. Says whether localStorage took it. */
+/**
+ * Keeps the save of a page that is left, without its position (megabytes of text: localStorage is
+ * small, and the store keeps the position). Says whether localStorage took it.
+ */
 export function storeLeft(storage: SaveStorage, id: string, left: LeftSave): boolean {
+  const { position: _position, ...save } = left.save;
   try {
-    storage.setItem(sideKey(id, "left"), JSON.stringify(left));
+    storage.setItem(sideKey(id, "left"), JSON.stringify({ ...left, save }));
     return true;
   } catch {
     // Full: the write of the store is all there is.

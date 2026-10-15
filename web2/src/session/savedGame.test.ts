@@ -107,6 +107,10 @@ it("keeps the save of a page that is left, and lists the games that have one", (
   const left = { slot: "local.3.8.1", engine: "ab12", at: 5, save: save() };
   expect(storeLeft(store, "g", left)).toBe(true);
   expect(readLeft(store, "g")).toEqual(left);
+  // The position of a save stays in the store, not in localStorage.
+  const position = { build: "b", content_digest: "c", log_len: 1, data: "{}" };
+  storeLeft(store, "g", { ...left, save: { ...save(), position } });
+  expect(readLeft(store, "g")).toEqual(left);
   store.setItem(sideKey("g", "wait"), "500");
   expect(leftIds(store)).toEqual(["g"]);
   // Something else under the key is not read.

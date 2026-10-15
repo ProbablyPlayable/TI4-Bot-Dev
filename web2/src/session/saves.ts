@@ -83,7 +83,7 @@ export async function takeLeft(
     const left = readLeft(storage, id);
     const record = left && (await store.load(id));
     if (left && (!record || record.updatedAt <= left.at)) {
-      const { save } = left;
+      const save = withPositionOf(left.save, record?.save);
       try {
         await store.put(id, save, {
           nickname: record?.nickname ?? nickname,
@@ -100,6 +100,24 @@ export async function takeLeft(
     }
     clearLeft(storage, id);
   }
+}
+
+/**
+ * The left save (it has no position) with the position of the older save of the store, when that
+ * position was taken within the decisions that both saves share: the left save then replays only
+ * the decisions after it. Else the left save as it is (it replays from the seed).
+ */
+function withPositionOf(save: HostSave, older: HostSave | undefined): HostSave {
+  const position = older?.position;
+  if (save.position || !position || position.log_len > save.decisions.length) {
+    return save;
+  }
+  for (let index = 0; index < position.log_len; index++) {
+    if (older.decisions[index] !== save.decisions[index]) {
+      return save;
+    }
+  }
+  return { ...save, position };
 }
 
 /** Removes a game, and what localStorage keeps next to it. */

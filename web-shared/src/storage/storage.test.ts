@@ -1,14 +1,16 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAutosave } from "./autosave.ts";
-import { DB_NAME, MemoryBackend, MIGRATIONS } from "./backend.ts";
+import { DB_NAME, IdbBackend, MemoryBackend, MIGRATIONS } from "./backend.ts";
 import { openOfflineSaveStore } from "./saveStore.ts";
 import {
   type EngineIdentity,
   type HostSave,
   LIMITS,
   type OfflineSaveStore,
+  type SavedPosition,
   StoreError,
+  type StoredRecord,
 } from "./types.ts";
 import { engineDifferences } from "./validate.ts";
 
@@ -322,6 +324,126 @@ describe("storage failures", () => {
     const s2 = await open(new IDBFactory());
     expect(await s2.requestPersistence()).toBeNull();
     expect(await s2.estimate()).toBeNull();
+  });
+});
+
+describe("the position", () => {
+  /** Text like the engine's position: JSON with repeated keys and varied numbers. */
+  const positionData = (n: number) =>
+    JSON.stringify({
+      state: Array.from({ length: n }, (_, i) => ({
+        id: `unit-${i % 97}`,
+        planet: `planet_${(i * 7919) % 211}`,
+        count: (i * 31) % 13,
+      })),
+    });
+  const position = (data = positionData(5000)): SavedPosition => ({
+    build: "b1",
+    content_digest: "c1",
+    log_len: 2,
+    data,
+  });
+  /** Incompressible text. */
+  const noise = (n: number) => {
+    let x = 12345;
+    return Array.from({ length: n }, () => {
+      x = (x * 1103515245 + 12345) % 2 ** 31;
+      return String.fromCharCode(33 + (x % 90));
+    }).join("");
+  };
+
+  it("round-trips through IndexedDB with the text identical, gzipped at rest", async () => {
+    const s = await open();
+    const p = position();
+    await s.put("a", mkSave(3, { position: p }), META);
+    s.close();
+    const s2 = await open();
+    const rec = await s2.load("a");
+    expect(rec?.save.position).toEqual(p);
+    expect((await s2.list())[0]).not.toHaveProperty("position");
+    s2.close();
+    const backend = await IdbBackend.open(factory);
+    const [row] = (await backend.getAllGames()) as StoredRecord[];
+    const packed = row!.position!;
+    expect(row!.save.position).toBeUndefined();
+    expect(packed.gzip).toBeInstanceOf(Uint8Array);
+    expect(packed.gzip.byteLength).toBeLessThan(p.data.length / 5);
+    expect(packed).toMatchObject({ build: "b1", content_digest: "c1", log_len: 2 });
+    expect(row!.sizeBytes).toBe(
+      new TextEncoder().encode(JSON.stringify(mkSave(3))).length + packed.gzip.byteLength,
+    );
+    backend.close();
+  });
+
+  it("round-trips through memory, also by its slot and through the autosave", async () => {
+    const s = await openOfflineSaveStore({ backend: new MemoryBackend() });
+    const p = position();
+    await s.put("a", mkSave(3, { position: p }), { ...META, slot: "single" });
+    expect((await s.findSlot("single"))?.save.position).toEqual(p);
+    const auto = createAutosave(s, { windowTarget: null, documentTarget: null });
+    const next = position(positionData(6000));
+    auto.schedule("a", mkSave(4, { position: next }), META);
+    await auto.flush();
+    expect((await s.load("a"))?.save.position).toEqual(next);
+    auto.dispose();
+  });
+
+  it("keeps the order of the writes of a game while it packs", async () => {
+    const s = await openOfflineSaveStore({ backend: new MemoryBackend() });
+    const writes = [
+      s.put("a", mkSave(3, { position: position(positionData(20000)) }), META),
+      s.put("a", mkSave(4), META),
+    ];
+    await Promise.all(writes);
+    const rec = await s.load("a");
+    expect(rec?.save.answers).toHaveLength(4);
+    expect(rec?.save).not.toHaveProperty("position");
+  });
+
+  it("drops a malformed position, and the save loads", async () => {
+    const backend = new MemoryBackend();
+    const s = await openOfflineSaveStore({ backend });
+    const bad = { build: "b1", content_digest: "c1", log_len: 99, data: "{}" };
+    await s.put("a", mkSave(3, { position: bad as SavedPosition }), META);
+    const rec = await s.load("a");
+    expect(rec?.save.answers).toEqual(["opt-0", "opt-1", "opt-2"]);
+    expect(rec?.save).not.toHaveProperty("position");
+    // At rest: a packed position of the wrong shape, or bytes that are not gzip.
+    await s.put("b", mkSave(3, { position: position() }), META);
+    const [, row] = (await backend.getAllGames()) as StoredRecord[];
+    const shape = { ...row!, id: "c", position: { ...row!.position, gzip: "x" } };
+    const bytes = { ...row!, id: "d", position: { ...row!.position!, gzip: new Uint8Array(3) } };
+    await backend.putGame(shape);
+    await backend.putGame(bytes);
+    for (const id of ["c", "d"]) {
+      const broken = await s.load(id);
+      expect(broken?.save.answers).toHaveLength(3);
+      expect(broken?.save).not.toHaveProperty("position");
+    }
+    expect(s.status().unreadable).toBe(0);
+  });
+
+  it("stores a save without its position when the two do not fit", async () => {
+    const backend = new MemoryBackend();
+    const s = await openOfflineSaveStore({ backend });
+    const filler = "x".repeat(LIMITS.maxSaveBytes - 2000);
+    await s.put("a", mkSave(1, { filler, position: position(noise(20000)) }), META);
+    const rec = await s.load("a");
+    expect(rec?.save.filler).toBe(filler);
+    expect(rec?.save).not.toHaveProperty("position");
+    expect(s.status().warningKind).toBeNull();
+  });
+
+  it("leaves the position out of an export, and keeps the one of an imported file", async () => {
+    const s = await openOfflineSaveStore({ backend: new MemoryBackend(), newId: () => "new" });
+    const p = position();
+    await s.put("a", mkSave(3, { position: p }), META);
+    const { blob } = await s.exportGame("a");
+    const file = JSON.parse(await blob.text());
+    expect(file.game.save).not.toHaveProperty("position");
+    file.game.save.position = p;
+    await s.importGame(JSON.stringify(file));
+    expect((await s.load("new"))?.save.position).toEqual(p);
   });
 });
 

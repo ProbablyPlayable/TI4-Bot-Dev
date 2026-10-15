@@ -115,3 +115,35 @@ it("puts the save that a left page kept into the store, unless the store has a l
   expect((await store.load("g"))?.save.answers).toEqual(["a", "b"]);
   expect(local.length).toBe(0);
 });
+
+it("gives a left save the position of the store's older save when their decisions agree", async () => {
+  let now = 100;
+  const store = await openOfflineSaveStore({ backend: new MemoryBackend(), now: () => now });
+  const local = storage();
+  const meta = {
+    nickname: "Ada",
+    factions: [null, null, null, null],
+    engine: { build: "b", contentDigest: "c", wasmSha256: "w" },
+  };
+  const position = { build: "b", content_digest: "c", log_len: 2, data: '{"game":1}' };
+  await store.put("g", { ...save(["a", "b"]), position }, meta);
+  // The page was left two answers later: the position is not in localStorage.
+  storeLeft(local, "g", {
+    engine: "w",
+    at: 150,
+    save: { ...save(["a", "b", "c", "d"]), position },
+  });
+  expect(readLeft(local, "g")?.save.position).toBeUndefined();
+  now = 200;
+  await takeLeft(store, local, "Player");
+  const taken = await store.load("g");
+  expect(taken?.save.answers).toEqual(["a", "b", "c", "d"]);
+  expect(taken?.save.position).toEqual(position);
+  // An undo changed a decision within the position: the left save goes without it.
+  storeLeft(local, "g", { engine: "w", at: 250, save: save(["z", "y", "x"]) });
+  now = 300;
+  await takeLeft(store, local, "Player");
+  const undone = await store.load("g");
+  expect(undone?.save.answers).toEqual(["z", "y", "x"]);
+  expect(undone?.save.position).toBeUndefined();
+});
