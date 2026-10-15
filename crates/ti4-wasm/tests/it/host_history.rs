@@ -386,3 +386,181 @@ fn slow_queries_and_settings_answer_in_the_servers_shapes() {
     assert_eq!(save["save"]["never"], json!([card]));
     assert!(host_api::out_text().contains("never"));
 }
+
+/// Answers with the decisions of a save, in order; with nothing left, it fails. A seat that draws
+/// from the random seats' stream draws from `stream` too, which must give the saved decision.
+struct Tail {
+    log: std::collections::VecDeque<String>,
+    stream: (ti4_engine::choice::SeededRandom, u32),
+    drawn: Arc<Mutex<usize>>,
+}
+
+impl ti4_engine::choice::Decider for Tail {
+    fn choose(
+        &mut self,
+        choice: &ti4_engine::choice::Choice,
+    ) -> Result<ti4_engine::choice::ChoiceOption, ti4_engine::choice::IllegalChoice> {
+        let wanted = self.log.pop_front().ok_or_else(|| {
+            ti4_engine::choice::IllegalChoice::DeciderFailed {
+                player: choice.player.clone(),
+                prompt: choice.prompt.clone(),
+                reason: "the save has no more decisions".to_owned(),
+            }
+        })?;
+        let (stream, humans) = &mut self.stream;
+        let seat = choice.player.as_str().as_bytes()[0] - b'a';
+        if *humans >> seat & 1 == 0 {
+            let drawn = stream.choose(choice)?;
+            assert_eq!(drawn.id, wanted, "the stream draws the saved decision");
+            *self.drawn.lock().unwrap() += 1;
+        }
+        Ok(choice.option(&wanted).expect("the saved decision is offered").clone())
+    }
+}
+
+/// The game of `save`, from its position and the decisions after it: the decider runs out at the
+/// question the save was taken at. Returns the game, the state that question was offered on, and
+/// how many decisions of the random seats were drawn again from the stored stream.
+fn played_from_position(
+    save: &Value,
+    position: &ti4_wasm::position::Position,
+) -> (ti4_engine::game::Game<'static>, Option<ti4_model::state::GameState>, usize) {
+    let start: ti4_wasm::host_setup::Start =
+        serde_json::from_value(json!({ "resume": save })).unwrap();
+    let built = start.build().unwrap();
+    let decisions: Vec<String> = serde_json::from_value(save["decisions"].clone()).unwrap();
+    assert!(
+        !built.table && built.bots.iter().all(Option::is_none),
+        "every seat of the page's game draws from the stream"
+    );
+    let mut stream = ti4_engine::choice::SeededRandom::new(built.seed);
+    stream.set_position(position.play.random.expect("a game with random seats"));
+    let drawn = Arc::new(Mutex::new(0));
+    let tail = Tail {
+        log: decisions[position.game.log_len..].iter().cloned().collect(),
+        stream: (stream, built.humans),
+        drawn: drawn.clone(),
+    };
+    let offered = Arc::new(Mutex::new(None));
+    let mut table = ti4_engine::choice::Table::with_default(Box::new(tail));
+    let seen = offered.clone();
+    table.on_observed_offer(move |_, state| *seen.lock().unwrap() = Some(state.clone()));
+    let mut game = position.game.clone().restore(
+        &position.records,
+        ti4_content::ContentStore::embedded(),
+        table,
+        built.galaxy,
+    );
+    for _ in 0..10_000 {
+        if game.step().error.is_some() {
+            break;
+        }
+    }
+    let offered = offered.lock().unwrap().take();
+    let drawn = *drawn.lock().unwrap();
+    (game, offered, drawn)
+}
+
+/// A save, the position the page was shown, and the decisions of the session.
+type Look = (Value, ti4_model::state::GameState, Vec<String>);
+
+/// A save keeps the game at its last quiet step: the engine, the decisions before it, and what
+/// the session and the play loop hold there. Restored and played on with the rest of the log, it
+/// reaches the question that the save was taken at.
+#[test]
+fn a_late_save_keeps_a_position_that_plays_on_to_its_question() {
+    let _serial = crate::common::serial();
+    let seed = 5;
+    // A save at each of ten questions; the session is looked at with each.
+    let looks: Arc<Mutex<Vec<Look>>> = Arc::default();
+    let mut script = vec![Act::Answer(70)];
+    for _ in 0..10 {
+        let looks = looks.clone();
+        script.push(Act::Probe(Box::new(move |page| {
+            let save = send(&json!({ "type": "save_state" }))["save"].clone();
+            let (state, events, answers, log) = host_api::with(|session| {
+                (
+                    session.state().clone(),
+                    session.events().to_vec(),
+                    session.answers().len(),
+                    session.decision_log().to_vec(),
+                )
+            })
+            .unwrap();
+            if let Some(saved) = save.get("position") {
+                let position: ti4_wasm::position::Position =
+                    serde_json::from_str(saved["data"].as_str().unwrap()).unwrap();
+                // What the session holds there is a prefix of what it holds at the save.
+                assert_eq!(log[..position.game.log_len], position.records[..]);
+                let held = position.session.events.len();
+                assert_eq!(events[..held], position.session.events[..]);
+                assert!(position.session.answers <= answers);
+                assert_eq!(position.session.undo.len(), position.session.answers);
+            }
+            let chosen = log.iter().map(|record| record.chosen.clone()).collect();
+            looks.lock().unwrap().push((save, state, chosen));
+            page.script.push_front(Act::Answer(1));
+        })));
+    }
+    script.push(Act::Leave);
+    let first = page(script);
+    install(&first, seed, "a");
+    // A local game: the seats that the page does not play draw from the random seats' stream.
+    let request = json!({ "local": { "seed": seed, "players": 6, "humans": 1 } });
+    let len = host_api::put_input(&request.to_string());
+    assert!(
+        ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0,
+        "{}",
+        host_api::out_text()
+    );
+
+    let mut drawn = 0;
+    for (save, shown, log) in looks.lock().unwrap().iter() {
+        let decisions: Vec<String> = serde_json::from_value(save["decisions"].clone()).unwrap();
+        assert_eq!(&decisions, log);
+        assert!(decisions.len() > 200, "{} decisions", decisions.len());
+        let saved: ti4_wasm::position::SavedPosition =
+            serde_json::from_value(save["position"].clone()).expect("a late save has a position");
+        assert_eq!(saved.build, save["engine"]["build"]);
+        assert_eq!(saved.content_digest, save["engine"]["content_digest"]);
+        assert!(saved.log_len <= decisions.len());
+        let position: ti4_wasm::position::Position = serde_json::from_str(&saved.data).unwrap();
+        assert_eq!(position.game.log_len, saved.log_len);
+        assert!(position.game.fits(&position.records));
+        assert!(position.play.decided <= decisions.len() as u64);
+
+        // Restored, the game plays the rest of the log, the random seats drawing from the
+        // stored stream, and stops at the question of the save, on the position it was shown.
+        let (game, offered, random) = played_from_position(save, &position);
+        let replayed: Vec<&str> = game.table.log.records.iter().map(|r| r.chosen.as_str()).collect();
+        assert_eq!(replayed, decisions);
+        assert_eq!(
+            serde_json::to_value(offered.expect("the question is offered")).unwrap(),
+            serde_json::to_value(shown).unwrap(),
+        );
+        drawn += random;
+    }
+    assert!(drawn > 0, "the random seats decided after a position");
+}
+
+/// An MLP seat carries its power map from its first decision on: a save of its table has no
+/// position.
+#[test]
+fn a_save_of_a_table_with_an_mlp_seat_has_no_position() {
+    let _serial = crate::common::serial();
+    let _model = ti4_host::bots::test_model();
+    let first = page(vec![
+        Act::Answer(12),
+        Act::Cmd(json!({ "type": "save_state" })),
+        Act::Leave,
+    ]);
+    install(&first, 3, "a");
+    let request = json!({
+        "local": { "seed": 3, "players": 4, "humans": 1, "bots": [null, "mlp:test", "random"] },
+    });
+    let len = host_api::put_input(&request.to_string());
+    assert!(ti4_wasm::ti4_host_start(u32::try_from(len).unwrap()) >= 0, "{}", host_api::out_text());
+    let save = first.lock().unwrap().replies.last().unwrap()["save"].clone();
+    assert!(save["decisions"].as_array().unwrap().len() > 20);
+    assert!(save.get("position").is_none(), "{}", save["position"]);
+}

@@ -694,7 +694,33 @@ with a copy of the random seats' stream:
   resolver's applied events 69 KiB and its log 45 KiB, the game's events 27 KiB. The
   logs grow with the game.
 - A fork lives in memory only. Of the window types only `DiplomacyWindow` can be serialized
-  today, so a stored checkpoint is a quiet game. Not done: a reload pays the replay once.
+  today, so a stored checkpoint is a quiet game. The save keeps the last one ("The stored
+  position"). Not done: a reload does not read it yet and pays the replay once.
+
+### The stored position
+
+After each step the play loop takes the game as a quiet game where it can (`hold_position` in
+`lib.rs`), and the session holds the last one with what it and the play loop hold there
+(`position::Held`). `save_state` writes it as `position` (`position::SavedPosition`); its `data`
+is the JSON text of `position::Position`. The doc of `Position` lists every piece of state of a
+hosted game and whether it is stored, rebuilt from the save, or empty at such a step.
+
+- It is taken where no window is open, the game is not over, the session waits for nothing and
+  does not replay a save or the answers after an undo, and every bot seat carries nothing.
+- An undo to a checkpoint before it drops it. A new run (a resume, a redo, an undo past the
+  checkpoints) starts with none.
+- An MLP seat carries its power map from its first decision on. The map is refreshed only where
+  the board changed, and while a tactical action is open the value from before it is returned,
+  so a new pipeline would read another value. A table with an MLP seat has no position after
+  that seat's first decision.
+- The decisions after the position are few: 0 to 12 in the ten saves of
+  `a_late_save_keeps_a_position_that_plays_on_to_its_question` (six seats, about 500 decisions).
+- Taking it costs nothing that can be measured: a game of eight seats to 120 answers (seed 3,
+  1862 decisions, a debug build natively) took 11.17 s and 11.40 s without it, 11.32 s and
+  11.44 s with it.
+- It is large. In that game it is 1.78 MB of JSON: the session's events 656 KB, the decisions
+  611 KB (their contexts most of it), the resolver 368 KB, the engine's events 59 KB and the
+  state 55 KB. Writing the save took 124 to 198 ms in place of 26 ms in the debug build.
 
 Limits:
 
@@ -893,6 +919,7 @@ A page that does not ask for it (`web/`) is sent no `seat_staged`.
 | `redo`, `never`, `staged`, `event_times`, `event_versions`, `version`, `generation`, `decisions_hash` | What the run goes on with: the redo list, the Never cards, the staged work of each seat (see "Staged work"), the time and version of each event, the counters, and the hash that the replay is checked against. |
 | `finished`, `round`, `phase` | Where the game is. |
 | `engine` | `{build, content_digest}`. |
+| `position`? | The game at its last quiet step: `{build, content_digest, log_len, data}` ("The stored position"). A cache: a resume does not read it yet. |
 
 Resume: `ti4_host_start({"resume": save})`; the game is `save.game` (a request that names its own
 game, as web2's does, plays that one). The game plays the `decisions` again without asking (a few

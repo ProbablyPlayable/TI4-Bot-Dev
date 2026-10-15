@@ -648,6 +648,22 @@ pub fn after_step(game: &Game<'_>, events_before: usize) {
     with(|session| session.after_step(game, events_before));
 }
 
+/// Whether the session can go on from the step that the game finished now
+/// ([`HostSession::may_hold`]).
+pub fn may_hold() -> bool {
+    with(|session| session.may_hold()).unwrap_or(false)
+}
+
+/// The game at a quiet step, held by the session for the save ([`HostSession::hold`]).
+pub fn hold(game: ti4_engine::game::QuietGame, log_len: usize, play: crate::position::PlayPart) {
+    with(|session| session.hold(game, log_len, play));
+}
+
+/// The session holds no position ([`HostSession::release`]).
+pub fn release() {
+    with(HostSession::release);
+}
+
 pub fn mark(asked: u64, decisions: usize) {
     with(|session| session.mark(asked, decisions));
 }

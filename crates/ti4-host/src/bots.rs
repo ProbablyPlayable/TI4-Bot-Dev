@@ -441,6 +441,16 @@ impl Bot {
         }
     }
 
+    /// Whether the seat keeps nothing that its later decisions depend on: a new seat of the same
+    /// kind would decide the same from here ([`ti4_policy::mlp::Pipeline::carries_nothing`]).
+    #[must_use]
+    pub fn carries_nothing(&self) -> bool {
+        match self {
+            Self::Mlp(seat) => seat.pipeline.carries_nothing(),
+            Self::Smart | Self::Random => true,
+        }
+    }
+
     /// Put back a [`Self::carry`] of this seat.
     pub fn restore(&mut self, carry: Option<Carry>) {
         if let (Self::Mlp(seat), Some(carry)) = (self, carry) {

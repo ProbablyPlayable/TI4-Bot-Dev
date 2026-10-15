@@ -546,6 +546,13 @@ fn seat_key(seen: &Observed<'_>, player: &PlayerId) -> u64 {
 }
 
 impl PowerCache {
+    /// Whether nothing has been computed yet: the next summary is computed whole, as with a new
+    /// cache.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.player.is_none()
+    }
+
     /// The summary for `player` in this position, refreshing only what changed since last time.
     pub fn summary(&mut self, seen: &Observed<'_>, player: &PlayerId) -> Summary {
         let Some(galaxy) = seen.galaxy() else {

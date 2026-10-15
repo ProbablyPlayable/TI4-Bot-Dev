@@ -44,7 +44,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use ti4_content::galaxy::Galaxy;
 use ti4_engine::choice::{Choice, ChoiceOption, DecisionRecord};
-use ti4_engine::game::Game;
+use ti4_engine::game::{Game, QuietGame};
 use ti4_host::PROTOCOL_VERSION;
 use ti4_host::batch::{LiveBatch, LiveStep, MovementPlan};
 use ti4_host::clock::Clock;
@@ -84,6 +84,8 @@ use ti4_host::view::reaction_modes::{Modes, NeverSet};
 use ti4_host::view::scenario::{Opening, OpeningRun};
 use ti4_model::id::{PlayerId, StrategyCardId};
 use ti4_model::state::{GameState, Phase, ReactionMode};
+
+use crate::position::{Held, PlayPart, SavedPosition};
 
 /// The most checkpoints (and so session marks) kept; see `CHECKPOINT_LIMIT` in `lib.rs`.
 pub const MARK_LIMIT: usize = 32;
@@ -358,6 +360,8 @@ pub struct HostSession {
     batch: Option<BatchRun>,
     /// How the last batch ended, for the host (taken by [`HostSession::take_batch_result`]).
     batch_result: Option<serde_json::Value>,
+    /// The game at the last quiet step, which the save keeps ([`HostSession::hold`]).
+    held: Option<Held>,
     // Replay of a save.
     /// The person's answers that are replayed from a save: no redo bookkeeping, no notes.
     quiet: usize,
@@ -440,6 +444,7 @@ impl HostSession {
             staged_told: None,
             batch: None,
             batch_result: None,
+            held: None,
             quiet: if resume.log.is_empty() {
                 resume.answers.len()
             } else {
@@ -1090,6 +1095,66 @@ impl HostSession {
         }
     }
 
+    // --- the position of the save -------------------------------------------------------------
+
+    /// Whether the session can go on from the step that the game finished now, so that a
+    /// position taken here is the run there ([`crate::position::Position`]): it does not replay a
+    /// save or the answers after an undo, it does not go back through the checkpoints, it waits
+    /// for nothing and every choice that a seat answered is in the log.
+    #[must_use]
+    pub fn may_hold(&self) -> bool {
+        !self.replaying()
+            && !self.finished
+            && self.error.is_none()
+            && self.undoing.is_none()
+            && self.selected.is_empty()
+            && !self.declined
+            && self.awaiting.is_none()
+            && self.pending.is_none()
+            && self.waiting.is_none()
+    }
+
+    /// The game finished a step at a quiet boundary after `log_len` decisions ([`Self::may_hold`]):
+    /// it is held in place of the last one, with what the session and the play loop hold here.
+    pub fn hold(&mut self, game: QuietGame, log_len: usize, play: PlayPart) {
+        if log_len != self.decision_log.len() {
+            return;
+        }
+        self.held = Some(Held {
+            game,
+            log_len,
+            events: self.events.len(),
+            answers: self.answers.len(),
+            undo: self.undo.entries().len(),
+            viewer: self.viewer.clone(),
+            event_counter: self.event_counter,
+            rolls_seen: self.rolls_seen,
+            prev_phase: self.prev_phase,
+            prev_round: self.prev_round,
+            play,
+        });
+    }
+
+    /// No position is held: a bot seat carries something from here on, so a position before
+    /// this step is too early to be worth its size.
+    pub fn release(&mut self) {
+        self.held = None;
+    }
+
+    /// The held position, as a save writes it: `engine` names the engine (`build`,
+    /// `content_digest`).
+    fn saved_position(&self, engine: &serde_json::Value) -> Option<SavedPosition> {
+        let held = self.held.as_ref()?;
+        let text = |key: &str| engine.get(key)?.as_str().map(str::to_owned);
+        let position = held.write(&self.decision_log, &self.events, self.undo.entries());
+        Some(SavedPosition {
+            build: text("build")?,
+            content_digest: text("content_digest")?,
+            log_len: held.log_len,
+            data: serde_json::to_string(&position).expect("a position is JSON"),
+        })
+    }
+
     /// The play loop went back to the checkpoint of `asked`: the session goes back with it, and
     /// the next question starts with a snapshot.
     ///
@@ -1102,6 +1167,13 @@ impl HostSession {
         let Some(mark) = self.marks.back().cloned() else {
             return;
         };
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|held| !held.kept_by(mark.decisions, mark.events, mark.answers))
+        {
+            self.held = None;
+        }
         let undone_answers: Vec<String> = self.answers.split_off(mark.answers);
         let undone_steps = self.undo.take_back(mark.answers);
         if !rollback {
@@ -1901,6 +1973,7 @@ impl HostSession {
             finished: self.finished,
             round: self.state.round,
             phase: self.state.phase,
+            position: self.saved_position(&extra),
             engine: extra,
         };
         serde_json::to_value(save).expect("a save is JSON")
@@ -1969,4 +2042,8 @@ pub struct HostSave {
     /// The engine that saved: its build and the digest of its content.
     #[cfg_attr(feature = "ts", ts(type = "{ build: string, content_digest: string }"))]
     pub engine: serde_json::Value,
+    /// The game at its last quiet step, so that a resume replays only the decisions after it. A
+    /// cache: a save without it, or whose position does not fit, replays from the seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<SavedPosition>,
 }

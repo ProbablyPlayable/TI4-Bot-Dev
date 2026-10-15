@@ -133,16 +133,27 @@ impl StoredPosition {
     /// Take `game`, which must be between steps, or `None` where it is not quiet
     /// ([`Game::quiet`]) or holds the deck reserve of a turn redo, which is not stored.
     pub fn capture(game: &mut Game<'_>) -> Option<Self> {
+        let quiet = Self::quiet(game)?;
+        Some(Self::new(quiet, &game.table.log.records))
+    }
+
+    /// The game part of [`Self::capture`], without the hash of the log: for a holder that takes
+    /// it often and hashes the log only when it writes the position ([`Self::new`]).
+    pub fn quiet(game: &mut Game<'_>) -> Option<QuietGame> {
         if game.state.deck_reserve.is_some() {
             return None;
         }
-        let quiet = game.quiet()?;
-        let records = &game.table.log.records;
-        Some(Self {
+        game.quiet()
+    }
+
+    /// The position of `game`, taken by [`Self::quiet`] after the decisions `records`.
+    #[must_use]
+    pub fn new(game: QuietGame, records: &[DecisionRecord]) -> Self {
+        Self {
             log_len: records.len(),
             prefix_hash: decisions_hash(records),
-            game: quiet,
-        })
+            game,
+        }
     }
 
     /// Whether `log` starts with exactly the decisions this position was taken after.

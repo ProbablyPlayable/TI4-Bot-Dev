@@ -20,6 +20,7 @@
 //! which no view shows. A card that is drawn from a deck in order sets no latch: only the view of
 //! the seat before and after its decision shows it ([`learned_identity`]).
 
+use serde::{Deserialize, Serialize};
 use ti4_engine::choice::{Choice, ChoiceOption};
 use ti4_engine::observation::ExecutionObservation;
 use ti4_model::id::PlayerId;
@@ -106,8 +107,9 @@ pub enum UndoRules {
     Local,
 }
 
-/// An answer of a seat that a person plays, as the track keeps it.
-#[derive(Debug, Clone)]
+/// An answer of a seat that a person plays, as the track keeps it. It is serde for the stored
+/// position of the browser host; a stored entry has no window, as under the local rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UndoEntry {
     /// The seat that answered.
     pub seat: PlayerId,
@@ -125,6 +127,7 @@ pub struct UndoEntry {
     pub step: Option<PlanStep>,
     /// Table rules: a choice that the seat may decline, read against its Never cards as they
     /// are at the undo.
+    #[serde(skip)]
     window: Option<Choice>,
 }
 

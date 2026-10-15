@@ -803,6 +803,16 @@ impl Pipeline {
         }
     }
 
+    /// Whether the seat carries nothing yet: no fleet plan, no power map and no table of an
+    /// activation. A new pipeline of the seat then decides the same. Once the seat has read a
+    /// power map it does not: the map is refreshed only where the board changed, and while a
+    /// tactical action is open the value from before it is returned, so a new pipeline would read
+    /// another value.
+    #[must_use]
+    pub fn carries_nothing(&self) -> bool {
+        self.plan.is_none() && self.last_table.is_none() && self.power_cache.borrow().is_empty()
+    }
+
     /// Put back what [`Self::carry`] took.
     pub fn restore(&mut self, carry: Carry) {
         self.plan = carry.plan;

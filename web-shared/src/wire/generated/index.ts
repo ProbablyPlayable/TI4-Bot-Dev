@@ -147,6 +147,7 @@ export type { ReactionOffer } from "./ReactionOffer.ts";
 export type { RejectionReason } from "./RejectionReason.ts";
 export type { RelicId } from "./RelicId.ts";
 export type { RelicRecord } from "./RelicRecord.ts";
+export type { SavedPosition } from "./SavedPosition.ts";
 export type { Scenario } from "./Scenario.ts";
 export type { ScenarioMap } from "./ScenarioMap.ts";
 export type { ScoreFacts } from "./ScoreFacts.ts";

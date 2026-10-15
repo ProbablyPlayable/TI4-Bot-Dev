@@ -16,6 +16,7 @@ pub mod buffer;
 pub mod host_api;
 pub mod host_session;
 pub mod host_setup;
+pub mod position;
 #[cfg(feature = "ts")]
 pub mod wire_ts;
 
@@ -1189,6 +1190,7 @@ fn drive(mut game: Game<'static>) -> Result<usize, Failure> {
             SECONDARY.completed_step(&game);
             stopped = error.map(RunError::from);
             host_api::after_step(&game, events_before);
+            hold_position(&mut game);
         }
         if let Some(latest) = LATEST.lock().expect("latest lock").as_mut() {
             latest.state.clone_from(&game.state);
@@ -1209,6 +1211,65 @@ fn drive(mut game: Game<'static>) -> Result<usize, Failure> {
     // The engine stops with an error when the host leaves; that is no failure of the game.
     let error = stopped.as_ref().filter(|_| !left).map(ToString::to_string);
     Ok(host_api::finish_run(error.as_deref(), left))
+}
+
+/// After a step: the session holds the game for the save where the game can be stored here and
+/// the run can go on from it ([`position::Position`]). Not while a save or the answers after an
+/// undo are played again, not when the game is over, and not while a bot seat carries something.
+fn hold_position(game: &mut Game<'static>) {
+    if game.state.finished {
+        return;
+    }
+    let play = {
+        let host = host();
+        let busy = host.left
+            || host.undo
+            || host.decided < host.saved
+            || host.preload_left > 0
+            || !host.script.is_empty();
+        if busy {
+            return;
+        }
+        position::PlayPart {
+            asked: host.asked,
+            decided: host.decided,
+            viewer: host.viewer.clone(),
+            random: None,
+            switches_asked: host
+                .switches
+                .iter()
+                .map(|switch| switch.asked)
+                .take_while(Option::is_some)
+                .collect(),
+        }
+    };
+    let carried = BOTS
+        .lock()
+        .expect("bots lock")
+        .iter()
+        .flatten()
+        .any(|bot| !bot.carries_nothing());
+    if carried {
+        // An MLP seat reads its power map from its first decision on: it carries it to the end.
+        host_api::release();
+        return;
+    }
+    if !host_api::may_hold() {
+        return;
+    }
+    let Some(quiet) = ti4_host::step_snapshot::StoredPosition::quiet(game) else {
+        return;
+    };
+    let random = RANDOM
+        .lock()
+        .expect("random lock")
+        .as_ref()
+        .map(SeededRandom::position);
+    host_api::hold(
+        quiet,
+        game.table.log.records.len(),
+        position::PlayPart { random, ..play },
+    );
 }
 
 /// Go back to the choice before the pending one: the game of the last checkpoint before it, and

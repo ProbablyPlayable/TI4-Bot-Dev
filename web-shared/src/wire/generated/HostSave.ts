@@ -2,6 +2,7 @@
 import type { GameRequest } from "./GameRequest.ts";
 import type { Phase } from "./Phase.ts";
 import type { PlayerId } from "./PlayerId.ts";
+import type { SavedPosition } from "./SavedPosition.ts";
 import type { SeatStaged } from "./SeatStaged.ts";
 import type { SeatSwitch } from "./SeatSwitch.ts";
 import type { TableSetup } from "./TableSetup.ts";
@@ -76,4 +77,9 @@ decisions_hash: string, finished: boolean, round: number, phase: Phase,
 /**
  * The engine that saved: its build and the digest of its content.
  */
-engine: { build: string, content_digest: string }, };
+engine: { build: string, content_digest: string }, 
+/**
+ * The game at its last quiet step, so that a resume replays only the decisions after it. A
+ * cache: a save without it, or whose position does not fit, replays from the seed.
+ */
+position?: SavedPosition, };

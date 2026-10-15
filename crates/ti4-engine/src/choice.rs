@@ -2113,6 +2113,18 @@ impl SeededRandom {
             rng: ChaCha8Rng::seed_from_u64(seed),
         }
     }
+
+    /// How far the stream has gone: the word position of its generator. A stream of the same
+    /// seed put there ([`Self::set_position`]) goes on with the same draws.
+    #[must_use]
+    pub fn position(&self) -> u128 {
+        self.rng.get_word_pos()
+    }
+
+    /// Put the stream at `position` ([`Self::position`]).
+    pub fn set_position(&mut self, position: u128) {
+        self.rng.set_word_pos(position);
+    }
 }
 
 impl Decider for SeededRandom {
