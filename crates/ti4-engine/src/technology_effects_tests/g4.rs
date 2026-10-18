@@ -8,19 +8,15 @@ use ti4_model::content_types::{DEFAULT, POK};
 use ti4_model::id::{PlanetId, SystemId, TechnologyId};
 use ti4_model::state::GameState;
 
-use super::{content, give, pid};
+use super::{content, give, pid, scripted};
 
 /// Seated and deployed at the default sources (Thunder's Edge factions need them).
 fn seated(seats: &[(&str, &str)]) -> GameState {
     crate::fixtures::seated_game(seats, DEFAULT)
 }
-use crate::choice::{ChoiceOption, Scripted, Table};
+use crate::choice::{ChoiceOption, Table};
 
 // -- helpers -----------------------------------------------------------------------------------
-
-fn scripted(answers: &[&str]) -> Table {
-    Table::with_default(Box::new(Scripted::new(answers.iter().copied())))
-}
 
 /// Emit one typed event through a resolver armed as the game arms one.
 fn emit(state: &mut GameState, answers: &[&str], kind: &str, pairs: &[(&str, serde_json::Value)]) {

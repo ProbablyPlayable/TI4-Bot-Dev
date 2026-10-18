@@ -23,6 +23,13 @@ pub(crate) fn content() -> &'static ContentStore {
     ContentStore::embedded()
 }
 
+/// A table that answers with `answers` in order, then the default decider.
+pub(crate) fn scripted(answers: &[&str]) -> crate::choice::Table {
+    crate::choice::Table::with_default(Box::new(crate::choice::Scripted::new(
+        answers.iter().map(|answer| (*answer).to_owned()),
+    )))
+}
+
 /// `PlayerId::new` for a seat name.
 pub(crate) fn pid(name: &str) -> PlayerId {
     PlayerId::new(name)

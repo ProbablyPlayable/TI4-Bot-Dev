@@ -1,6 +1,6 @@
 //! Technology effect tests, group g1: generic (non-faction) technologies (see mod.rs).
 
-use super::{content, give, pid, seated};
+use super::{content, give, pid, scripted, seated};
 use crate::choice::{FirstOption, Scripted, Table, Window as _};
 use crate::fixtures::{game, hub_with_centre, plain_hub, put, put_on_planet};
 use crate::game::{END_TURN_ID, Game, TACTICAL_ACTION_ID};
@@ -404,12 +404,6 @@ fn control(state: &mut GameState, system: &SystemId, planet: &PlanetId) {
     state
         .system_mut(system)
         .set_control(planet.clone(), pid("a"));
-}
-
-fn scripted(answers: &[&str]) -> Table {
-    Table::with_default(Box::new(Scripted::new(
-        answers.iter().map(|a| (*a).to_owned()),
-    )))
 }
 
 #[test]

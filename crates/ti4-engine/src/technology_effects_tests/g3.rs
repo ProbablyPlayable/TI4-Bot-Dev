@@ -11,7 +11,7 @@ use ti4_model::content_types::{DEFAULT, POK};
 use ti4_model::id::{PlanetId, PlayerId, SystemId};
 use ti4_model::state::GameState;
 
-use super::{content, give, owns, pid, seated};
+use super::{content, give, owns, pid, scripted, seated};
 use crate::choice::{Scripted, Table};
 use crate::fixtures::{put, put_on_planet};
 
@@ -20,12 +20,6 @@ fn a() -> PlayerId {
 }
 fn b() -> PlayerId {
     pid("b")
-}
-
-fn scripted(answers: &[&str]) -> Table {
-    Table::with_default(Box::new(Scripted::new(
-        answers.iter().map(|answer| (*answer).to_owned()),
-    )))
 }
 
 /// Emit one typed event (JSON payload) through a resolver armed exactly as the game arms it.
