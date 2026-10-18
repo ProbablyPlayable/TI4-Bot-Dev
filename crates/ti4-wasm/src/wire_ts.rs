@@ -73,6 +73,7 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::strategy_cards::ResearchPaymentHints>();
     collect.visit::<ti4_engine::strategy_cards::PurchaseHints>();
     collect.visit::<ti4_engine::strategy_cards::StructureHints>();
+    collect.visit::<ti4_engine::tokens::CommandTokenHints>();
     collect.visit::<ti4_engine::tokens::RedistributionHints>();
     collect.visit::<ti4_engine::strategy_cards::ReadyHints>();
     collect.visit::<ti4_engine::strategy_cards::PoliticsHints>();

@@ -45,6 +45,7 @@ export type { CombatKind } from "./CombatKind.ts";
 export type { CombatSide } from "./CombatSide.ts";
 export type { CombatView } from "./CombatView.ts";
 export type { CommandPools } from "./CommandPools.ts";
+export type { CommandTokenHints } from "./CommandTokenHints.ts";
 export type { CommodityLimit } from "./CommodityLimit.ts";
 export type { CommodityStanding } from "./CommodityStanding.ts";
 export type { ComponentCatalog } from "./ComponentCatalog.ts";

@@ -165,7 +165,8 @@ impl TokenGain {
 }
 
 /// Display-only facts for a command-token decision (see [`Choice::details`]): the pools as they
-/// stand now, the tokens still in reinforcements, and what the decision hands out or moves.
+/// stand now, the tokens still in reinforcements, and what the decision hands out or moves
+/// ([`CommandTokenHints`]).
 ///
 /// `mode` is `"buy"` (nothing free to place; the decision is Leadership's influence purchase),
 /// `"gain"` (with `tokens_to_place` tokens still to place, this one included) or
@@ -187,29 +188,58 @@ pub fn with_pool_details(
         ..
     } = pools;
     let reinforcements = state.tokens_in_reinforcements(&choice.player);
-    let choice = choice
-        .detailed("kind", "command_tokens")
-        .detailed("mode", mode)
-        .hinted("pools", &pools);
+    let mut hints = CommandTokenHints {
+        mode: mode.to_owned(),
+        pools,
+        reinforcements,
+        tokens_to_place: None,
+        total: None,
+        gained: None,
+    };
     match (mode, tokens_to_place) {
-        ("gain" | "buy", Some(count)) => choice
-            .detailed("reinforcements", reinforcements)
-            .detailed("tokens_to_place", count),
+        ("gain" | "buy", Some(count)) => hints.tokens_to_place = Some(count),
         ("redistribute", Some(gained)) if gained > 0 => {
             // A redistribution that also gains (the status phase): `pools` is the sheet before
             // the gain, `total` the arrangement to choose, and the gained tokens are already out
             // of the reinforcements it reports.
             let gained = i32::try_from(gained).unwrap_or(i32::MAX);
-            choice
-                .detailed("reinforcements", (reinforcements - gained).max(0))
-                .detailed("total", tactic + fleet + strategic + gained)
-                .detailed("gained", gained)
+            hints.reinforcements = (reinforcements - gained).max(0);
+            hints.total = Some(tactic + fleet + strategic + gained);
+            hints.gained = Some(gained);
         }
-        ("redistribute" | "restack", _) => choice
-            .detailed("reinforcements", reinforcements)
-            .detailed("total", tactic + fleet + strategic),
-        _ => choice.detailed("reinforcements", reinforcements),
+        ("redistribute" | "restack", _) => hints.total = Some(tactic + fleet + strategic),
+        _ => {}
     }
+    choice
+        .detailed("kind", "command_tokens")
+        .hinted_fields(&hints)
+}
+
+/// The facts of a command-token decision (display only, top-level keys of the details of a
+/// `kind: "command_tokens"` question: a gained token's pool, Leadership's purchase, a
+/// redistribution or a restack); see [`with_pool_details`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CommandTokenHints {
+    /// `"gain"`, `"buy"`, `"redistribute"` or `"restack"`.
+    pub mode: String,
+    /// The pools as they stand now (before the gain, for a redistribution that gains).
+    pub pools: CommandPools,
+    /// The tokens in reinforcements, less the ones a redistribution gains.
+    pub reinforcements: i32,
+    /// The tokens still to place, this one included (gain), or 0 (buy). Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub tokens_to_place: Option<usize>,
+    /// The tokens a redistribution or restack arranges, the gained ones included. Left out
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub total: Option<i32>,
+    /// The tokens gained in the same redistribution (the status phase). Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub gained: Option<i32>,
 }
 
 /// The three pools of a command sheet.
@@ -701,6 +731,11 @@ mod tests {
             state.tokens_in_reinforcements(&players[0])
         );
         assert!(choice.details.get("total").is_none());
+        let hints = choice.hint_fields::<CommandTokenHints>().unwrap();
+        assert_eq!(hints.mode, "gain");
+        assert_eq!(hints.tokens_to_place, Some(2));
+        assert_eq!(hints.pools.fleet, 4);
+        assert_eq!(hints.total, None);
     }
 
     #[test]
@@ -723,6 +758,11 @@ mod tests {
         assert_eq!(choice.details["mode"], "redistribute");
         assert_eq!(choice.details["total"], 9);
         assert!(choice.details.get("tokens_to_place").is_none());
+        let hints = choice.hint_fields::<CommandTokenHints>().unwrap();
+        assert_eq!(
+            (hints.total, hints.gained, hints.tokens_to_place),
+            (Some(9), None, None)
+        );
         // The offered arrangements are unchanged by the details.
         assert_eq!(choice.options.len(), distribution_options(9, 2).len());
     }
