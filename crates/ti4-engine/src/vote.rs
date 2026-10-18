@@ -27,6 +27,17 @@ pub const FOR: &str = "for";
 /// The other one.
 pub const AGAINST: &str = "against";
 
+/// Display / decider view only, on the planet question of a vote (`details.tally` and
+/// `details.votes_so_far`, written by [`Choice::hinted_fields`]): the ledger before this seat's
+/// votes, in the outcome order of the cast question, and the votes the seat has cast so far.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VoteTallyHints {
+    /// Each outcome with the votes it holds.
+    pub tally: Vec<(String, i64)>,
+    pub votes_so_far: i64,
+}
+
 /// The choice kind for picking an outcome.
 pub const VOTE_KIND: &str = "vote";
 /// The choice kind for exhausting a planet to cast its influence.
@@ -655,23 +666,14 @@ impl VoteWindow {
                         format!("exhaust a planet to vote {outcome}"),
                         options,
                     )
-                    // Display / decider view only: the ledger before this seat's votes (outcome
-                    // order as in the cast question) and the votes it has cast so far.
-                    .detailed(
-                        "tally",
-                        serde_json::Value::Array(
-                            self.choices
-                                .iter()
-                                .map(|o| {
-                                    serde_json::json!([
-                                        o,
-                                        self.ballot.counts.get(o).copied().unwrap_or(0)
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    )
-                    .detailed("votes_so_far", votes_so_far)
+                    .hinted_fields(&VoteTallyHints {
+                        tally: self
+                            .choices
+                            .iter()
+                            .map(|o| (o.clone(), self.ballot.counts.get(o).copied().unwrap_or(0)))
+                            .collect(),
+                        votes_so_far,
+                    })
                     .contextualized(DecisionContext::new(
                         player.clone(),
                         DecisionSource::Rule("8.11".to_owned()),

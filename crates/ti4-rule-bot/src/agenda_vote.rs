@@ -1610,20 +1610,13 @@ pub fn pick_planet(
         return None;
     }
     let decline = choice.options.iter().position(ChoiceOption::is_decline);
-    let rows: Vec<(String, f64)> = choice
-        .details
-        .get("tally")?
-        .as_array()?
-        .iter()
-        .filter_map(|row| {
-            let row = row.as_array()?;
-            Some((row.first()?.as_str()?.to_owned(), row.get(1)?.as_f64()?))
-        })
+    let hints = choice.hint_fields::<ti4_engine::vote::VoteTallyHints>()?;
+    let cast = hints.votes_so_far;
+    let rows: Vec<(String, f64)> = hints
+        .tally
+        .into_iter()
+        .map(|(outcome, votes)| (outcome, votes as f64))
         .collect();
-    let cast = choice
-        .details
-        .get("votes_so_far")
-        .and_then(serde_json::Value::as_i64)?;
     let outcomes: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
     let x = outcomes.iter().position(|o| o == outcome)?;
     let tally: BTreeMap<String, f64> = rows.into_iter().collect();

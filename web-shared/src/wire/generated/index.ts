@@ -277,6 +277,7 @@ export type { UnitTypeId } from "./UnitTypeId.ts";
 export type { Unloadable } from "./Unloadable.ts";
 export type { UnloadableCargo } from "./UnloadableCargo.ts";
 export type { ViewerRole } from "./ViewerRole.ts";
+export type { VoteTallyHints } from "./VoteTallyHints.ts";
 export type { WithheldStructure } from "./WithheldStructure.ts";
 
 /** `ti4_host::protocol::PROTOCOL_VERSION`: the version of the messages of this build. */

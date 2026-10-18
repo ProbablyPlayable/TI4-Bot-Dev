@@ -402,16 +402,11 @@ fn exhaust_for_vote(
         .trim()
         .to_owned();
     let agenda = agenda_of(choice)?;
-    let all: Vec<&str> = choice
-        .details
-        .get("tally")
-        .and_then(serde_json::Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|r| r.as_array()?.first()?.as_str())
-                .collect()
-        })
-        .unwrap_or_default();
+    let tally = choice.hint_fields::<ti4_engine::vote::VoteTallyHints>();
+    let all: Vec<&str> = tally
+        .iter()
+        .flat_map(|hints| hints.tally.iter().map(|(outcome, _)| outcome.as_str()))
+        .collect();
     if (tuning::agenda_value() || tuning::agenda_budget())
         && secret_outcome(agenda, &all, seen, me, bias).is_none()
     {
