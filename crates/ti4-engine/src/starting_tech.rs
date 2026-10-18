@@ -21,7 +21,7 @@
 use ti4_content::ContentStore;
 use ti4_content::factions;
 use ti4_model::content_types::{ContentType, SourceSet};
-use ti4_model::id::{PlayerId, TechnologyId};
+use ti4_model::id::{FactionId, PlayerId, TechnologyId};
 use ti4_model::state::{GameState, StartingTechPick, StartingTechSource};
 
 use crate::choice::{Choice, ChoiceOption, IllegalChoice, validate};
@@ -152,6 +152,36 @@ pub fn settle(state: &mut GameState, content: &ContentStore, sources: SourceSet)
     }
 }
 
+/// Which rule offers a starting-technology pick ([`StartingTechHints::rule`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub enum StartingTechRule {
+    /// A choice among the faction's printed list (the Winnu, the Argent Flight).
+    Listed,
+    /// Non-faction technologies that other players own (the Council Keleres).
+    OwnedByOthers,
+    /// A technology the seat could research now (the Thunder's Edge factions).
+    Researchable,
+}
+
+/// Display only: the facts of a starting-technology pick ([`choice`]), written as top-level
+/// keys of its details with [`Choice::hinted_fields`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StartingTechHints {
+    /// Which pick of the seat this is, counted from 1.
+    pub pick: u64,
+    /// How many picks the seat makes in all.
+    pub of: u64,
+    /// The rule that offers the technologies.
+    pub rule: StartingTechRule,
+    /// The faction of the seat that chooses.
+    pub faction: FactionId,
+    /// The technologies the seat holds already.
+    pub held: Vec<TechnologyId>,
+}
+
 /// The pick that is asked now, if any. `open` and `apply` leave the front pick one that needs an
 /// answer.
 #[must_use]
@@ -195,32 +225,22 @@ pub fn choice(state: &GameState, content: &ContentStore, sources: SourceSet) -> 
         "choose a starting technology".to_owned()
     };
     let rule = match pick.source {
-        StartingTechSource::Listed(_) => "listed",
-        StartingTechSource::OwnedByOthers => "owned_by_others",
-        StartingTechSource::Researchable => "researchable",
+        StartingTechSource::Listed(_) => StartingTechRule::Listed,
+        StartingTechSource::OwnedByOthers => StartingTechRule::OwnedByOthers,
+        StartingTechSource::Researchable => StartingTechRule::Researchable,
     };
-    let faction = state
-        .player(&pick.player)
-        .map(|seat| seat.faction.to_string())
-        .unwrap_or_default();
+    let seat = state.player(&pick.player);
     Some(
         Choice::new(pick.player.clone(), prompt, options)
-            .detailed("pick", u64::from(number))
-            .detailed("of", u64::from(pick.of))
-            .detailed("rule", rule)
-            .detailed("faction", faction)
-            .detailed(
-                "held",
-                state
-                    .player(&pick.player)
-                    .map(|seat| {
-                        seat.technologies
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                    })
+            .hinted_fields(&StartingTechHints {
+                pick: u64::from(number),
+                of: u64::from(pick.of),
+                rule,
+                faction: seat.map_or_else(|| FactionId::new(""), |seat| seat.faction.clone()),
+                held: seat
+                    .map(|seat| seat.technologies.iter().cloned().collect())
                     .unwrap_or_default(),
-            )
+            })
             .contextualized(DecisionContext::new(
                 pick.player.clone(),
                 DecisionSource::Content("starting_technology".to_owned()),
@@ -377,6 +397,11 @@ mod tests {
         let second = ask(&state, POK);
         assert_eq!(second.ids(), vec!["nm", "ps"]);
         assert_eq!(second.details["pick"], 2);
+        let hints: StartingTechHints = second.hint_fields().expect("the pick's facts");
+        assert_eq!((hints.pick, hints.of), (2, 2));
+        assert_eq!(hints.rule, StartingTechRule::Listed);
+        assert_eq!(hints.faction.as_str(), "argent");
+        assert!(hints.held.contains(&TechnologyId::new("st")));
         answer(&mut state, POK, "nm");
         assert!(owns(&state, "a", "st") && owns(&state, "a", "nm"));
         assert!(

@@ -240,6 +240,8 @@ export type { Spend } from "./Spend.ts";
 export type { SpenderStatus } from "./SpenderStatus.ts";
 export type { StagedSlot } from "./StagedSlot.ts";
 export type { StagedValue } from "./StagedValue.ts";
+export type { StartingTechHints } from "./StartingTechHints.ts";
+export type { StartingTechRule } from "./StartingTechRule.ts";
 export type { StartingUnits } from "./StartingUnits.ts";
 export type { StateUpdateMsg } from "./StateUpdateMsg.ts";
 export type { StopReason } from "./StopReason.ts";
