@@ -16,7 +16,7 @@
 //!   system with most of its own, and Trade's free replenish for nobody else.
 
 use ti4_engine::choice::{Choice, ChoiceOption, Observed};
-use ti4_engine::strategy_cards::SeatChoiceHints;
+use ti4_engine::strategy_cards::{AGENDA_CARD_KEY, AgendaCardHints, SeatChoiceHints};
 use ti4_model::id::{PlanetId, PlayerId, SystemId};
 
 use crate::backward::agenda::{AgendaBias, agenda_kind};
@@ -175,9 +175,11 @@ fn assimilate(choice: &Choice, seen: &Observed<'_>, me: &PlayerId) -> Option<usi
 
 // -- agenda phase ---------------------------------------------------------------------------------
 
-/// The agenda a vote or a Politics placement is about (`details.agenda.id`).
-fn agenda_of(choice: &Choice) -> Option<&str> {
-    choice.details.get("agenda")?.get("id")?.as_str()
+/// The agenda a vote or a Politics placement is about (the id of its [`AgendaCardHints`]).
+fn agenda_of(choice: &Choice) -> Option<String> {
+    choice
+        .hint::<AgendaCardHints>(AGENDA_CARD_KEY)
+        .map(|card| card.id)
 }
 
 /// Elections whose winner gains something.
@@ -349,6 +351,7 @@ fn cast_vote(
     bias: &AgendaBias,
 ) -> Option<usize> {
     let agenda = agenda_of(choice)?;
+    let agenda = agenda.as_str();
     let outcomes = outcome_ids(choice);
     let old = preferred_outcome(agenda, &outcomes, seen, me, bias);
     let tiebreak = choice
@@ -400,6 +403,7 @@ fn exhaust_for_vote(
         .trim()
         .to_owned();
     let agenda = agenda_of(choice)?;
+    let agenda = agenda.as_str();
     let tally = choice.hint_fields::<ti4_engine::vote::VoteTallyHints>();
     let all: Vec<&str> = tally
         .iter()
@@ -457,6 +461,7 @@ fn weakest_seat_option(choice: &Choice, seen: &Observed<'_>) -> Option<usize> {
 /// that harms it (an election of a rival for a card, a point for the leader) at the bottom.
 fn place_agenda(choice: &Choice, seen: &Observed<'_>, me: &PlayerId) -> Option<usize> {
     let agenda = agenda_of(choice)?;
+    let agenda = agenda.as_str();
     let mut good = GOOD_FOR_ELECTED.contains(&agenda)
         || GOOD_PLANET.contains(&agenda)
         || matches!(agenda, "mutiny" | "unconventional" | "incentive");
@@ -571,6 +576,14 @@ mod tests {
 
     fn seen(state: &ti4_model::state::GameState) -> Observed<'_> {
         Observed::new(state, ContentStore::embedded(), POK, None)
+    }
+
+    /// The printed agenda a vote carries, only its id: the rule bot reads no more of it.
+    fn agenda_card(id: &str) -> AgendaCardHints {
+        AgendaCardHints {
+            id: id.to_owned(),
+            ..AgendaCardHints::default()
+        }
     }
 
     fn with_subtype(mut choice: Choice, subtype: &str) -> Choice {
@@ -767,7 +780,7 @@ mod tests {
                     ChoiceOption::decline(),
                 ],
             )
-            .detailed("agenda", serde_json::json!({ "id": "minister_war" })),
+            .hinted(AGENDA_CARD_KEY, &agenda_card("minister_war")),
             "cast_vote",
         );
         let speaker = with_subtype(
@@ -806,7 +819,7 @@ mod tests {
                     ChoiceOption::decline(),
                 ],
             )
-            .detailed("agenda", serde_json::json!({ "id": "conventions" })),
+            .hinted(AGENDA_CARD_KEY, &agenda_card("conventions")),
             "cast_vote",
         );
         // Without the secret the seat abstains on an agenda it has no opinion on.

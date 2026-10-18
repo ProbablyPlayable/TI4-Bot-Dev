@@ -2176,8 +2176,13 @@ mod tests {
             })
             .collect();
         opts.push(ChoiceOption::decline());
-        let mut choice = Choice::new(me.clone(), "vote for which outcome", opts)
-            .detailed("agenda", serde_json::json!({ "id": agenda }));
+        let mut choice = Choice::new(me.clone(), "vote for which outcome", opts).hinted(
+            ti4_engine::strategy_cards::AGENDA_CARD_KEY,
+            &ti4_engine::strategy_cards::AgendaCardHints {
+                id: agenda.to_owned(),
+                ..Default::default()
+            },
+        );
         choice.context = Some(ti4_engine::decision_context::DecisionContext::new(
             me.clone(),
             ti4_engine::decision_context::DecisionSource::Rule("8.10".to_owned()),

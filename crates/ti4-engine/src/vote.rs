@@ -10,8 +10,6 @@
 use std::collections::BTreeMap;
 
 /// Key of the display-only `details` entry that names the agenda being voted on.
-const AGENDA_DETAIL: &str = "agenda";
-
 use ti4_content::ContentStore;
 use ti4_content::galaxy::all_planets;
 use ti4_model::content_types::{ContentType, SourceSet};
@@ -591,7 +589,7 @@ impl VoteWindow {
         self.pending_choice_bare(state, content, sources)
             .map(|choice| {
                 let agenda = crate::strategy_cards::agenda_details(content, &self.alias);
-                choice.detailed(AGENDA_DETAIL, agenda)
+                choice.hinted(crate::strategy_cards::AGENDA_CARD_KEY, &agenda)
             })
     }
 

@@ -6659,13 +6659,23 @@ fn cripple_defenses(context: &mut crate::timing::TimingContext<'_>, player: &Pla
 
 /// What the "repeal which law" question says: its one field is the top-level `laws` key of the
 /// details, written with [`Choice::hinted_fields`] (display only).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RepealLawHints {
-    /// Each law in play as printed (`strategy_cards::agenda_details`) with the `outcome` that
-    /// passed it, by law.
-    #[cfg_attr(feature = "ts", ts(type = "Record<string, Record<string, unknown>>"))]
-    pub laws: BTreeMap<String, serde_json::Value>,
+    /// Each law in play as printed with the outcome that passed it, by law.
+    pub laws: BTreeMap<String, RepealLawEntry>,
+}
+
+/// One law of [`RepealLawHints`] (display only): the card as printed, flattened into the
+/// entry, and the outcome that passed it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RepealLawEntry {
+    /// The law as printed (`strategy_cards::agenda_details`).
+    #[serde(flatten)]
+    pub card: crate::strategy_cards::AgendaCardHints,
+    /// The outcome that passed it, null when the state records none.
+    pub outcome: Option<String>,
 }
 
 /// Repeal Law: discard one law from play.
@@ -6675,13 +6685,14 @@ fn repeal_law(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
         .map(|alias| (alias.clone(), alias))
         .collect();
     // Display only: each law as printed, with the outcome that passed it.
-    let printed: BTreeMap<String, serde_json::Value> = laws
+    let printed: BTreeMap<String, RepealLawEntry> = laws
         .iter()
         .map(|(alias, _)| {
-            let mut card = crate::strategy_cards::agenda_details(context.content, alias);
-            let outcome = context.state.laws.get(alias);
-            card["outcome"] = serde_json::json!(outcome);
-            (alias.clone(), card)
+            let entry = RepealLawEntry {
+                card: crate::strategy_cards::agenda_details(context.content, alias),
+                outcome: context.state.laws.get(alias).cloned(),
+            };
+            (alias.clone(), entry)
         })
         .collect();
     let Some(chosen) = pick_detailed(
@@ -10562,7 +10573,8 @@ mod tests {
         assert_eq!(ask.details["laws"]["sanctions"]["name"], printed);
         assert_eq!(ask.details["laws"]["sanctions"]["outcome"], "for");
         let typed = ask.hint_fields::<RepealLawHints>().expect("typed");
-        assert_eq!(typed.laws["sanctions"]["outcome"], "for");
+        assert_eq!(typed.laws["sanctions"].outcome.as_deref(), Some("for"));
+        assert_eq!(typed.laws["sanctions"].card.name, printed);
         assert_eq!(ask.options.len(), 2, "ids and order are as they were");
     }
 

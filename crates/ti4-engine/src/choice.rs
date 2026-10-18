@@ -2708,10 +2708,13 @@ impl Table {
             .and_then(|context| context.trigger.as_ref())
             .and_then(|trigger| trigger.agenda.clone());
         if let Some(agenda) = trigger_agenda {
-            if !associated.details.contains_key("agenda") {
-                associated.details.insert(
-                    "agenda".to_owned(),
-                    crate::strategy_cards::agenda_details(seen.content, &agenda),
+            if !associated
+                .details
+                .contains_key(crate::strategy_cards::AGENDA_CARD_KEY)
+            {
+                associated = associated.hinted(
+                    crate::strategy_cards::AGENDA_CARD_KEY,
+                    &crate::strategy_cards::agenda_details(seen.content, &agenda),
                 );
             }
         }

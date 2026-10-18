@@ -2110,7 +2110,7 @@ fn politics_primary(
                 ChoiceOption::labelled("bottom", "agenda", "on the bottom"),
             ],
         )
-        .detailed("agenda", agenda_details(content, &agenda))
+        .hinted(AGENDA_CARD_KEY, &agenda_details(content, &agenda))
         .hinted_fields(&AgendaPlacementHints {
             agendas: looked[placed..].to_vec(),
         })
@@ -2232,8 +2232,33 @@ pub(crate) fn commodity_standing(
     }
 }
 
-/// Display only: the agenda card being placed, as printed.
-pub(crate) fn agenda_details(content: &ContentStore, alias: &str) -> serde_json::Value {
+/// The key of the details under which a question about an agenda carries that card as printed
+/// ([`AgendaCardHints`]): Politics' placements, every vote decision, Quash and Political Favor,
+/// and any decision raised by an agenda being revealed or resolved.
+pub const AGENDA_CARD_KEY: &str = "agenda";
+
+/// An agenda card as printed, under [`AGENDA_CARD_KEY`] of the details of a question about that
+/// agenda (display only), written with [`Choice::hinted`]. A field the content lacks is empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AgendaCardHints {
+    /// The agenda's content alias.
+    pub id: String,
+    /// Its printed name, or the alias when the content has none.
+    pub name: String,
+    /// Its type (law or directive).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// What its outcomes elect (e.g. "For/Against", a player, a planet).
+    pub target: String,
+    /// The first paragraph of its text.
+    pub text1: String,
+    /// The second paragraph of its text.
+    pub text2: String,
+}
+
+/// Display only: the agenda card `alias` as printed (see [`AgendaCardHints`]).
+pub(crate) fn agenda_details(content: &ContentStore, alias: &str) -> AgendaCardHints {
     let record = content.get(ContentType::Agendas, alias);
     let field = |key: &str| {
         record
@@ -2245,14 +2270,14 @@ pub(crate) fn agenda_details(content: &ContentStore, alias: &str) -> serde_json:
     let name = Some(field("name"))
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| alias.to_owned());
-    serde_json::json!({
-        "id": alias,
-        "name": name,
-        "type": field("type"),
-        "target": field("target"),
-        "text1": field("text1"),
-        "text2": field("text2"),
-    })
+    AgendaCardHints {
+        id: alias.to_owned(),
+        name,
+        kind: field("type"),
+        target: field("target"),
+        text1: field("text1"),
+        text2: field("text2"),
+    }
 }
 
 pub(crate) fn structure_options(
@@ -4164,6 +4189,11 @@ mod tests {
             .unwrap();
         assert!(placement.details["agenda"]["id"].is_string());
         assert!(placement.details["agenda"]["name"].is_string());
+        let card = placement
+            .hint::<AgendaCardHints>(AGENDA_CARD_KEY)
+            .expect("the agenda, read back");
+        assert!(placement.prompt.contains(&card.id));
+        assert!(!card.name.is_empty());
     }
 
     /// The speaker question says what comes after it, and the first agenda question has both

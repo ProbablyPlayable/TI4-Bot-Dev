@@ -83,6 +83,7 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::strategy_cards::PoliticsHints>();
     collect.visit::<ti4_engine::strategy_cards::SeatChoiceHints>();
     collect.visit::<ti4_engine::strategy_cards::AgendaPlacementHints>();
+    collect.visit::<ti4_engine::strategy_cards::AgendaCardHints>();
     collect.visit::<ti4_engine::strategy_cards::TradeReplenishHints>();
     collect.visit::<ti4_engine::strategy_cards::CommodityStanding>();
     collect.visit::<ti4_engine::strategy_cards::ImperialHints>();
@@ -97,6 +98,7 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::action_cards::ManipulateInvestmentsHints>();
     collect.visit::<ti4_engine::action_cards::LieInWaitHints>();
     collect.visit::<ti4_engine::action_cards::RepealLawHints>();
+    collect.visit::<ti4_engine::action_cards::RepealLawEntry>();
     collect.visit::<ti4_engine::transactions::TransactionHints>();
     collect.visit::<ti4_engine::phrases::PhraseHints>();
     collect.visit::<ti4_engine::game::TurnMenuHints>();

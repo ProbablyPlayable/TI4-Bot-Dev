@@ -6152,9 +6152,9 @@ impl<'a> Game<'a> {
             self.state.phase,
             self.state.round,
         ))
-        .detailed(
-            "agenda",
-            crate::strategy_cards::agenda_details(self.content, agenda),
+        .hinted(
+            crate::strategy_cards::AGENDA_CARD_KEY,
+            &crate::strategy_cards::agenda_details(self.content, agenda),
         );
         let answer = self
             .table
