@@ -16,6 +16,7 @@
 //!   system with most of its own, and Trade's free replenish for nobody else.
 
 use ti4_engine::choice::{Choice, ChoiceOption, Observed};
+use ti4_engine::strategy_cards::SeatChoiceHints;
 use ti4_model::id::{PlanetId, PlayerId, SystemId};
 
 use crate::backward::agenda::{AgendaBias, agenda_kind};
@@ -433,26 +434,21 @@ fn exhaust_for_vote(
 
 /// The option that names the seat itself (`details.seats`: name -> seat).
 fn own_seat_option(choice: &Choice, me: &PlayerId) -> Option<usize> {
-    let seats = choice.details.get("seats")?.as_object()?;
-    choice.options.iter().position(|o| {
-        seats
-            .get(&o.id)
-            .and_then(|seat| seat.as_str())
-            .is_some_and(|seat| seat == me.as_str())
-    })
+    let SeatChoiceHints { seats } = choice.hint_fields()?;
+    choice
+        .options
+        .iter()
+        .position(|o| seats.get(&o.id) == Some(me))
 }
 
 /// Already the speaker: the seat with fewest points gets the token (the least dangerous one).
 fn weakest_seat_option(choice: &Choice, seen: &Observed<'_>) -> Option<usize> {
-    let seats = choice.details.get("seats")?.as_object()?;
+    let SeatChoiceHints { seats } = choice.hint_fields()?;
     choice
         .options
         .iter()
         .enumerate()
-        .filter_map(|(i, o)| {
-            let seat = PlayerId::new(seats.get(&o.id)?.as_str()?);
-            Some((i, points(seen, &seat)))
-        })
+        .filter_map(|(i, o)| Some((i, points(seen, seats.get(&o.id)?))))
         .min_by_key(|&(i, p)| (p, i))
         .map(|(i, _)| i)
 }

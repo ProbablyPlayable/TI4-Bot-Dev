@@ -44,6 +44,26 @@ pub(crate) struct StructureStep {
     pub(crate) only_pds: bool,
 }
 
+/// Where a placement of a structure ability stands in its card's sequence, on the question of
+/// the placement: its fields are top-level keys of the details, `details.step`, `details.of`
+/// and `details.only_pds`, written with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StructureStepHints {
+    /// Which placement of the sequence this is, from 1. Left out for a lone placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub step: Option<u32>,
+    /// How many placements the sequence has. Left out for a lone placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub of: Option<u32>,
+    /// This placement places only a PDS. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(optional, as = "Option<bool>"))]
+    pub only_pds: bool,
+}
+
 /// A lone placement of any structure: Construction's secondary, a law or a relic.
 pub(crate) const ONE_STRUCTURE: [StructureStep; 1] = [StructureStep {
     step: None,
@@ -2043,7 +2063,7 @@ fn politics_primary(
                 .map(|(name, worded)| ChoiceOption::labelled(name, "speaker", worded.label()))
                 .collect(),
         )
-        .detailed("seats", seat_map(&named))
+        .hinted_fields(&seat_hints(&named))
         .phrased_options(&worded)
         .hinted_fields(&PoliticsHints {
             draws: POLITICS_DRAWS,
@@ -2135,13 +2155,24 @@ fn seat_phrases(
         .collect()
 }
 
-fn seat_map(named: &[(String, PlayerId)]) -> serde_json::Value {
-    serde_json::Value::Object(
-        named
+/// The seats of a question whose options are faction names, Politics' speaker question and
+/// Trade's question of the other seats: its field is a top-level key of the details,
+/// `details.seats`, written with [`Choice::hinted_fields`], so that a client or a bot can map
+/// an option back to its seat (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SeatChoiceHints {
+    /// The seat of each option, by the id of the option (the seat's faction name).
+    pub seats: BTreeMap<String, PlayerId>,
+}
+
+fn seat_hints(named: &[(String, PlayerId)]) -> SeatChoiceHints {
+    SeatChoiceHints {
+        seats: named
             .iter()
-            .map(|(name, seat)| (name.clone(), serde_json::Value::from(seat.as_str())))
+            .map(|(name, seat)| (name.clone(), seat.clone()))
             .collect(),
-    )
+    }
 }
 
 /// Each named seat's commodities now and at its printed limit, by the id of its option
@@ -2391,12 +2422,11 @@ pub(crate) fn place_structure_step(
             state.round,
         ),
     );
-    if let Some((step, of)) = step {
-        choice = choice.detailed("step", step).detailed("of", of);
-    }
-    if only_pds {
-        choice = choice.detailed("only_pds", true);
-    }
+    choice = choice.hinted_fields(&StructureStepHints {
+        step: step.map(|(step, _)| step),
+        of: step.map(|(_, of)| of),
+        only_pds,
+    });
     choice = choice.hinted(
         "structures",
         &structure_hints(state, content, sources, player, steps),
@@ -2894,7 +2924,7 @@ fn trade_primary(
                 )))
                 .collect(),
         )
-        .detailed("seats", seat_map(&named))
+        .hinted_fields(&seat_hints(&named))
         .phrased_options(&worded)
         .hinted_fields(&TradeReplenishHints {
             commodities: commodity_map(state, content, &named),
@@ -3124,6 +3154,16 @@ pub struct ImperialHints {
     pub secrets_max: usize,
 }
 
+/// Whether Imperial's primary scores Mecatol Rex's point, on the question of its public
+/// objective: its field is a top-level key of the details, `details.controls_mecatol`, written
+/// with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ImperialScoreHints {
+    /// The seat controls Mecatol Rex, so the primary also gains its victory point.
+    pub controls_mecatol: bool,
+}
+
 /// The secret objectives that `player` holds now against its limit.
 pub(crate) fn imperial_hints(
     state: &GameState,
@@ -3166,7 +3206,7 @@ fn imperial_primary(
                 .collect(),
         )
         .detailed("kind", "imperial")
-        .detailed("controls_mecatol", controls_mecatol)
+        .hinted_fields(&ImperialScoreHints { controls_mecatol })
         .hinted_fields(&imperial_hints(state, content, player))
         .contextualized(DecisionContext::new(
             player.clone(),
@@ -4113,6 +4153,11 @@ mod tests {
         let seats = speaker_ask.details["seats"].as_object().expect("seat map");
         assert_eq!(seats.len(), speaker_ask.options.len());
         assert!(seats.values().all(|seat| seat == "b"));
+        let hinted = speaker_ask
+            .hint_fields::<SeatChoiceHints>()
+            .expect("the seats, read back");
+        assert_eq!(hinted.seats.len(), speaker_ask.options.len());
+        assert!(hinted.seats.values().all(|seat| seat.as_str() == "b"));
         let placement = asked
             .iter()
             .find(|choice| choice.prompt.starts_with("place "))
@@ -4298,7 +4343,7 @@ mod tests {
             offered(first)
         );
         for (name, standing) in &told.commodities {
-            let seat = PlayerId::new(first.details["seats"][name].as_str().unwrap());
+            let seat = first.hint_fields::<SeatChoiceHints>().unwrap().seats[name].clone();
             assert_eq!(
                 *standing,
                 CommodityLimit {
@@ -6361,6 +6406,22 @@ mod tests {
         assert_eq!(placements[1].details["step"], 2);
         assert_eq!(placements[1].details["of"], 2);
         assert_eq!(placements[1].details["only_pds"], true);
+        assert_eq!(
+            placements[0].hint_fields::<StructureStepHints>(),
+            Some(StructureStepHints {
+                step: Some(1),
+                of: Some(2),
+                only_pds: false,
+            })
+        );
+        assert_eq!(
+            placements[1].hint_fields::<StructureStepHints>(),
+            Some(StructureStepHints {
+                step: Some(2),
+                of: Some(2),
+                only_pds: true,
+            })
+        );
         // The first placement tells both, as the engine's look-ahead reads them back.
         let hints = placements[0]
             .hint::<StructureHints>("structures")
@@ -6516,6 +6577,12 @@ mod tests {
 
         let with = imperial(true);
         assert_eq!(with.details["controls_mecatol"], true);
+        assert_eq!(
+            with.hint_fields::<ImperialScoreHints>(),
+            Some(ImperialScoreHints {
+                controls_mecatol: true
+            })
+        );
     }
 
     /// Game 8261fb3f (round 5): the Xxcha played Imperial with Push Boundaries and Unify the

@@ -73,14 +73,17 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::strategy_cards::ResearchPaymentHints>();
     collect.visit::<ti4_engine::strategy_cards::PurchaseHints>();
     collect.visit::<ti4_engine::strategy_cards::StructureHints>();
+    collect.visit::<ti4_engine::strategy_cards::StructureStepHints>();
     collect.visit::<ti4_engine::tokens::CommandTokenHints>();
     collect.visit::<ti4_engine::tokens::RedistributionHints>();
     collect.visit::<ti4_engine::strategy_cards::ReadyHints>();
     collect.visit::<ti4_engine::strategy_cards::PoliticsHints>();
+    collect.visit::<ti4_engine::strategy_cards::SeatChoiceHints>();
     collect.visit::<ti4_engine::strategy_cards::AgendaPlacementHints>();
     collect.visit::<ti4_engine::strategy_cards::TradeReplenishHints>();
     collect.visit::<ti4_engine::strategy_cards::CommodityStanding>();
     collect.visit::<ti4_engine::strategy_cards::ImperialHints>();
+    collect.visit::<ti4_engine::strategy_cards::ImperialScoreHints>();
     collect.visit::<ti4_engine::transactions::TransactionHints>();
     collect.visit::<ti4_engine::phrases::PhraseHints>();
     collect.visit::<ti4_engine::game::TurnMenuHints>();
