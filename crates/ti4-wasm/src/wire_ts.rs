@@ -113,6 +113,11 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::game::TurnMenuStrategyCard>();
     collect.visit::<ti4_engine::game::TurnMenuPartner>();
     collect.visit::<ti4_engine::action_cards::CulturalPlanetPreview>();
+    collect.visit::<ti4_engine::choice::OfferHints>();
+    collect.visit::<ti4_engine::choice::OfferCard>();
+    collect.visit::<ti4_engine::choice::OfferFact>();
+    collect.visit::<ti4_engine::choice::OfferFactValue>();
+    collect.visit::<ti4_engine::choice::OfferCaption>();
     collect.visit::<crate::host_session::HostSave>();
     let mut index = format!("{NOTE}\n");
     for name in collect.names.keys() {

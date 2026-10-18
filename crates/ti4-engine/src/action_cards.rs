@@ -6156,7 +6156,7 @@ pub fn place_units_choosing(
             })
             .collect();
         // Display only: each spot by its planet's name and system, with how many go there.
-        let mut captions: Vec<(String, serde_json::Value)> = options
+        let mut captions: Vec<(String, crate::choice::OfferCaption)> = options
             .iter()
             .zip(spots.iter().zip(&fits))
             .map(|(option, ((system, planet), &wanted))| {
@@ -6189,7 +6189,7 @@ pub fn place_units_choosing(
                 crate::choice::offer_caption("Place none", Some("Nothing is placed")),
             ));
         }
-        let caption_refs: Vec<(&str, serde_json::Value)> = captions
+        let caption_refs: Vec<(&str, crate::choice::OfferCaption)> = captions
             .iter()
             .map(|(id, caption)| (id.as_str(), caption.clone()))
             .collect();

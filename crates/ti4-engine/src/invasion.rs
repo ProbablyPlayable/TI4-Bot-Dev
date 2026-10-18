@@ -660,7 +660,7 @@ fn bombardment_target_question(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let captions: Vec<(&str, serde_json::Value)> = present
+    let captions: Vec<(&str, crate::choice::OfferCaption)> = present
         .iter()
         .map(|player| {
             (
@@ -2146,7 +2146,7 @@ pub fn ground_force_owners_for_test(
 
 /// Display only: a breakthrough as an offer-card header: its name and the first sentence of its
 /// printed text (the ability that is being offered).
-fn breakthrough_card(content: &ContentStore, card: &str) -> serde_json::Value {
+fn breakthrough_card(content: &ContentStore, card: &str) -> crate::choice::OfferCard {
     let record = content.get(ti4_model::content_types::ContentType::Breakthroughs, card);
     let field = |key: &str| record.as_ref().and_then(|record| record.text(key));
     let first_sentence = field("text").map(|text| match text.find(". ") {
@@ -5014,10 +5014,11 @@ mod tests {
     #[test]
     fn a_breakthrough_card_is_its_name_and_first_sentence() {
         let card = breakthrough_card(ContentStore::embedded(), "titansbt");
-        assert_eq!(card["title"], "Slumberstate Computing");
-        assert_eq!(card["tag"], "breakthrough");
+        assert_eq!(card.title, "Slumberstate Computing");
+        assert_eq!(card.tag, "breakthrough");
+        assert_eq!(card.window, None);
         assert_eq!(
-            card["text"],
+            card.text.as_deref().unwrap_or_default(),
             "When COALESCENCE results in a ground combat, if you commit no other units, you may choose for your units to coexist instead."
         );
     }
@@ -5919,18 +5920,21 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("offer")
         );
-        let captions = choice.details.get("captions").expect("captions");
-        assert_eq!(captions["b"]["hint"], "2 infantry, 1 mech on mecatolrex");
-        assert_eq!(captions["c"]["seat"], "c");
-        let facts = choice
-            .details
-            .get("facts")
-            .and_then(serde_json::Value::as_array)
-            .expect("facts");
-        assert!(
-            facts
-                .iter()
-                .any(|f| f["label"] == "Hits to assign" && f["value"] == "2")
+        let hints = choice
+            .hint_fields::<crate::choice::OfferHints>()
+            .expect("offer hints");
+        assert_eq!(
+            hints.captions["b"].hint.as_deref(),
+            Some("2 infantry, 1 mech on mecatolrex")
+        );
+        assert_eq!(hints.captions["c"].seat.as_deref(), Some("c"));
+        assert_eq!(
+            hints.facts,
+            [
+                crate::choice::offer_fact_planet("Planet", "mecatolrex", "18"),
+                crate::choice::offer_fact_seat("Bombarding", "a"),
+                crate::choice::offer_fact("Hits to assign", "2"),
+            ]
         );
     }
 

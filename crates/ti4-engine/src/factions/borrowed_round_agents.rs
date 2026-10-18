@@ -384,7 +384,7 @@ fn resolve_copy(
         return Ok(());
     };
     // Display only: each candidate by unit and place, with whose it is.
-    let captions: Vec<(String, serde_json::Value)> = plan
+    let captions: Vec<(String, crate::choice::OfferCaption)> = plan
         .candidates
         .iter()
         .map(|target| {

@@ -188,60 +188,226 @@ pub struct Choice {
     pub free_form: Option<String>,
 }
 
-/// Display only: the header of an offer card: what it is, its kind, when it applies and the
-/// printed or summarised effect. See [`Choice::offered`].
+/// Display only: the header of an offer card ([`Choice::offered`]): what it is, its kind, when
+/// it applies and the printed or summarised effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OfferCard {
+    /// What is offered: a card's name or a summary of the question.
+    pub title: String,
+    /// Its kind: `commander`, `faction ability`, `bombardment`, ...
+    pub tag: String,
+    /// When it applies (the printed ability window); null when the card names none.
+    pub window: Option<String>,
+    /// The printed or summarised effect; null when there is none.
+    pub text: Option<String>,
+}
+
+/// Display only: the value of a plain [`OfferFact`]: words, or a number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(untagged)]
+pub enum OfferFactValue {
+    /// Shown as written.
+    Text(String),
+    /// A count.
+    Number(i64),
+}
+
+impl From<&str> for OfferFactValue {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_owned())
+    }
+}
+
+impl From<String> for OfferFactValue {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<i32> for OfferFactValue {
+    fn from(number: i32) -> Self {
+        Self::Number(i64::from(number))
+    }
+}
+
+impl From<u64> for OfferFactValue {
+    fn from(number: u64) -> Self {
+        Self::Number(i64::try_from(number).unwrap_or(i64::MAX))
+    }
+}
+
+/// Display only: one labelled fact of an offer card ([`Choice::offered`]); its shape says how
+/// the client shows the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(untagged)]
+pub enum OfferFact {
+    /// A unit type, shown with its name and icon ([`offer_fact_unit`]).
+    Unit {
+        /// What the fact is.
+        label: String,
+        /// The unit type.
+        unit: String,
+    },
+    /// A planet, shown by its name with its system ([`offer_fact_planet`]).
+    Planet {
+        /// What the fact is.
+        label: String,
+        /// The planet.
+        planet: String,
+        /// Its system.
+        system: String,
+    },
+    /// A seat, shown by the player's name ([`offer_fact_seat`]).
+    Seat {
+        /// What the fact is.
+        label: String,
+        /// The seat (empty when nobody).
+        seat: String,
+    },
+    /// A technology, shown by its name ([`offer_fact_technology`]).
+    Technology {
+        /// What the fact is.
+        label: String,
+        /// The technology.
+        technology: String,
+    },
+    /// A number that changes, `from -> to` of at most `of` ([`offer_fact_change`]).
+    Change {
+        /// What the fact is.
+        label: String,
+        /// The number now.
+        from: i64,
+        /// The number after the answer.
+        to: i64,
+        /// Its maximum; null when it has none.
+        of: Option<i64>,
+    },
+    /// Shown as text ([`offer_fact`]).
+    Value {
+        /// What the fact is.
+        label: String,
+        /// The value.
+        value: OfferFactValue,
+    },
+}
+
+/// Display only: the button caption of one option of an offer card ([`Choice::offered`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OfferCaption {
+    /// The caption.
+    pub label: String,
+    /// What the answer does, under the caption; null when nothing is said.
+    pub hint: Option<String>,
+    /// The other seat whose unit the option is about ([`offer_caption_for_seat`]): the client
+    /// adds its name beside the hint. Absent for every other option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub seat: Option<String>,
+}
+
+/// Display only: an offer card's details ([`Choice::offered`]), top-level keys beside
+/// `kind: "offer"`: the header, the facts and a caption per option id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OfferHints {
+    /// What is asked.
+    pub card: OfferCard,
+    /// The labelled facts, in order.
+    pub facts: Vec<OfferFact>,
+    /// What each answer does, by option id (options without one have no entry).
+    pub captions: BTreeMap<String, OfferCaption>,
+}
+
+/// Display only: the header of an offer card. See [`Choice::offered`].
 #[must_use]
-pub fn offer_card(title: &str, tag: &str, window: Option<&str>, text: Option<&str>) -> Value {
-    serde_json::json!({ "title": title, "tag": tag, "window": window, "text": text })
+pub fn offer_card(title: &str, tag: &str, window: Option<&str>, text: Option<&str>) -> OfferCard {
+    OfferCard {
+        title: title.to_owned(),
+        tag: tag.to_owned(),
+        window: window.map(ToOwned::to_owned),
+        text: text.map(ToOwned::to_owned),
+    }
 }
 
 /// Display only: one labelled fact of an offer card, shown as text.
 #[must_use]
-pub fn offer_fact(label: &str, value: impl Into<Value>) -> Value {
-    serde_json::json!({ "label": label, "value": value.into() })
+pub fn offer_fact(label: &str, value: impl Into<OfferFactValue>) -> OfferFact {
+    OfferFact::Value {
+        label: label.to_owned(),
+        value: value.into(),
+    }
 }
 
 /// Display only: a fact whose value is a unit type (shown with its name and icon).
 #[must_use]
-pub fn offer_fact_unit(label: &str, unit: &str) -> Value {
-    serde_json::json!({ "label": label, "unit": unit })
+pub fn offer_fact_unit(label: &str, unit: &str) -> OfferFact {
+    OfferFact::Unit {
+        label: label.to_owned(),
+        unit: unit.to_owned(),
+    }
 }
 
 /// Display only: a fact whose value is a planet (shown by its name, with its system).
 #[must_use]
-pub fn offer_fact_planet(label: &str, planet: &str, system: &str) -> Value {
-    serde_json::json!({ "label": label, "planet": planet, "system": system })
+pub fn offer_fact_planet(label: &str, planet: &str, system: &str) -> OfferFact {
+    OfferFact::Planet {
+        label: label.to_owned(),
+        planet: planet.to_owned(),
+        system: system.to_owned(),
+    }
 }
 
 /// Display only: a fact whose value is a seat (shown by the player's name).
 #[must_use]
-pub fn offer_fact_seat(label: &str, seat: &str) -> Value {
-    serde_json::json!({ "label": label, "seat": seat })
+pub fn offer_fact_seat(label: &str, seat: &str) -> OfferFact {
+    OfferFact::Seat {
+        label: label.to_owned(),
+        seat: seat.to_owned(),
+    }
 }
 
 /// Display only: a fact whose value is a technology (shown by its name).
 #[must_use]
-pub fn offer_fact_technology(label: &str, technology: &str) -> Value {
-    serde_json::json!({ "label": label, "technology": technology })
+pub fn offer_fact_technology(label: &str, technology: &str) -> OfferFact {
+    OfferFact::Technology {
+        label: label.to_owned(),
+        technology: technology.to_owned(),
+    }
 }
 
 /// Display only: a number that changes, e.g. commodities `1 -> 2` of at most `of`.
 #[must_use]
-pub fn offer_fact_change(label: &str, from: i64, to: i64, of: Option<i64>) -> Value {
-    serde_json::json!({ "label": label, "from": from, "to": to, "of": of })
+pub fn offer_fact_change(label: &str, from: i64, to: i64, of: Option<i64>) -> OfferFact {
+    OfferFact::Change {
+        label: label.to_owned(),
+        from,
+        to,
+        of,
+    }
 }
 
 /// Display only: the button caption for an option and an optional hint under it.
 #[must_use]
-pub fn offer_caption(label: &str, hint: Option<&str>) -> Value {
-    serde_json::json!({ "label": label, "hint": hint })
+pub fn offer_caption(label: &str, hint: Option<&str>) -> OfferCaption {
+    OfferCaption {
+        label: label.to_owned(),
+        hint: hint.map(ToOwned::to_owned),
+        seat: None,
+    }
 }
 
 /// Display only: [`offer_caption`] for an option about another seat's unit: the client adds the
 /// seat's name beside the hint.
 #[must_use]
-pub fn offer_caption_for_seat(label: &str, hint: Option<&str>, seat: &str) -> Value {
-    serde_json::json!({ "label": label, "hint": hint, "seat": seat })
+pub fn offer_caption_for_seat(label: &str, hint: Option<&str>, seat: &str) -> OfferCaption {
+    OfferCaption {
+        seat: Some(seat.to_owned()),
+        ..offer_caption(label, hint)
+    }
 }
 
 impl Choice {
@@ -330,19 +496,26 @@ impl Choice {
     }
 
     /// Present the question as an offer card for clients (display only, like [`Choice::detailed`]):
-    /// `card` names what is asked (see [`offer_card`]), `facts` is a list of [`offer_fact`]s and
-    /// `captions` maps option ids to [`offer_caption`]s that say what each answer does. Option ids,
-    /// order and kinds are untouched, so decision records and replays are unaffected.
+    /// `kind: "offer"` and the [`OfferHints`]: `card` names what is asked (see [`offer_card`]),
+    /// `facts` is a list of [`OfferFact`]s and `captions` maps option ids to [`OfferCaption`]s that
+    /// say what each answer does. Option ids, order and kinds are untouched, so decision records
+    /// and replays are unaffected. [`Choice::hint_fields`] reads the hints back.
     #[must_use]
-    pub fn offered(self, card: Value, facts: Vec<Value>, captions: &[(&str, Value)]) -> Self {
-        let captions: serde_json::Map<String, Value> = captions
+    pub fn offered(
+        self,
+        card: OfferCard,
+        facts: Vec<OfferFact>,
+        captions: &[(&str, OfferCaption)],
+    ) -> Self {
+        let captions = captions
             .iter()
             .map(|(id, caption)| ((*id).to_owned(), caption.clone()))
             .collect();
-        self.detailed("kind", "offer")
-            .detailed("card", card)
-            .detailed("facts", Value::Array(facts))
-            .detailed("captions", Value::Object(captions))
+        self.detailed("kind", "offer").hinted_fields(&OfferHints {
+            card,
+            facts,
+            captions,
+        })
     }
 
     /// Attach producer-authored typed semantics to this decision.

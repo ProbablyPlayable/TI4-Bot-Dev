@@ -2785,12 +2785,12 @@ pub(crate) fn commodity_limit(state: &GameState, content: &ContentStore, player:
 
 /// Display only: a commander's printed card (name, ability window and text) as an offer-card
 /// header. See [`Choice::offered`].
-pub(crate) fn commander_card(content: &ContentStore, id: &str) -> serde_json::Value {
+pub(crate) fn commander_card(content: &ContentStore, id: &str) -> crate::choice::OfferCard {
     leader_card(content, id, "commander")
 }
 
 /// Display only: a leader's printed card (name, ability window and text) as an offer-card header.
-pub(crate) fn leader_card(content: &ContentStore, id: &str, tag: &str) -> serde_json::Value {
+pub(crate) fn leader_card(content: &ContentStore, id: &str, tag: &str) -> crate::choice::OfferCard {
     let record = content.get(ContentType::Leaders, id);
     let field = |key: &str| record.as_ref().and_then(|record| record.text(key));
     crate::choice::offer_card(
@@ -5237,6 +5237,31 @@ mod tests {
         assert_eq!(
             reduce.details["captions"]["decline"]["label"],
             "Pay in full"
+        );
+        // The same offers read back typed.
+        let hints = offer
+            .hint_fields::<crate::choice::OfferHints>()
+            .expect("offer hints");
+        assert_eq!(hints.card.tag, "commander");
+        assert_eq!(
+            hints.facts,
+            [
+                crate::choice::offer_fact("Commodities", format!("1 of {limit}")),
+                crate::choice::offer_fact("Trade goods", 2),
+            ]
+        );
+        assert_eq!(hints.captions["gain"].seat, None);
+        let reduced = reduce
+            .hint_fields::<crate::choice::OfferHints>()
+            .expect("reduce hints");
+        assert_eq!(
+            reduced.facts,
+            [crate::choice::offer_fact_change(
+                "Research cost (resources)",
+                3,
+                2,
+                None
+            )]
         );
         assert_eq!(
             offer

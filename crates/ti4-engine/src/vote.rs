@@ -742,9 +742,9 @@ impl VoteWindow {
                 .detailed("kind", "vote_trade_goods");
                 // The Hacan commander's card heads its offer; Executive Order's spender has none.
                 if rate == 2 {
-                    question = question.detailed(
+                    question = question.hinted(
                         "card",
-                        crate::strategy_cards::commander_card(content, "hacancommander"),
+                        &crate::strategy_cards::commander_card(content, "hacancommander"),
                     );
                 }
                 Some(
@@ -1807,6 +1807,10 @@ mod tests {
         assert_eq!(choice.details["goods"], 3);
         assert_eq!(choice.details["votes_per_good"], 2);
         assert_eq!(choice.details["card"]["title"], "Gila the Silvertongue");
+        let card = choice
+            .hint::<crate::choice::OfferCard>("card")
+            .expect("the commander's card");
+        assert_eq!(card.tag, "commander");
         let two = choice.options[1].clone();
         window.resolve(&mut state, content, POK, two).unwrap();
         assert_eq!(state.player(&players[0]).unwrap().trade_goods, 1);
