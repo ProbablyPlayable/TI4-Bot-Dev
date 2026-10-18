@@ -928,10 +928,7 @@ fn actor_inventory_facts(seen: &Observed<'_>, player: &PlayerId) -> Vec<(String,
                 .and_then(|goods| goods.parse().ok())
                 .unwrap_or(0);
             if goods > 0 {
-                facts.push((
-                    "actor-inventory:artuno-goods".to_owned(),
-                    f64::from(goods),
-                ));
+                facts.push(("actor-inventory:artuno-goods".to_owned(), f64::from(goods)));
             }
         }
         "titans" => {
@@ -942,7 +939,10 @@ fn actor_inventory_facts(seen: &Observed<'_>, player: &PlayerId) -> Vec<(String,
                 .filter(|(_, owner)| owner.starts_with(&own))
                 .count();
             if placed > 0 {
-                facts.push(("actor-inventory:sleepers-placed".to_owned(), count_value(placed)));
+                facts.push((
+                    "actor-inventory:sleepers-placed".to_owned(),
+                    count_value(placed),
+                ));
             }
         }
         "nekro" => {
@@ -8462,22 +8462,43 @@ mod tests {
             m.insert("nekro:token:a:Z".to_owned(), "sol,hacan".to_owned());
         };
         let none = facts_of(&state);
-        for name in ["mahact-pool-tokens", "artuno-goods", "sleepers-placed", "nekro-z-tokens"] {
+        for name in [
+            "mahact-pool-tokens",
+            "artuno-goods",
+            "sleepers-placed",
+            "nekro-z-tokens",
+        ] {
             assert_eq!(get(&none, &format!("actor-inventory:{name}")), None);
         }
         marks(&mut state, "mahact");
-        assert_eq!(get(&facts_of(&state), "actor-inventory:mahact-pool-tokens"), Some(3.0 / 8.0));
+        assert_eq!(
+            get(&facts_of(&state), "actor-inventory:mahact-pool-tokens"),
+            Some(3.0 / 8.0)
+        );
         marks(&mut state, "nomad");
-        assert_eq!(get(&facts_of(&state), "actor-inventory:artuno-goods"), Some(3.0));
+        assert_eq!(
+            get(&facts_of(&state), "actor-inventory:artuno-goods"),
+            Some(3.0)
+        );
         marks(&mut state, "titans");
-        assert_eq!(get(&facts_of(&state), "actor-inventory:sleepers-placed"), Some(1.0));
+        assert_eq!(
+            get(&facts_of(&state), "actor-inventory:sleepers-placed"),
+            Some(1.0)
+        );
         marks(&mut state, "nekro");
-        assert_eq!(get(&facts_of(&state), "actor-inventory:nekro-z-tokens"), Some(2.0 / 7.0));
+        assert_eq!(
+            get(&facts_of(&state), "actor-inventory:nekro-z-tokens"),
+            Some(2.0 / 7.0)
+        );
         marks(&mut state, "sol");
-        assert!(facts_of(&state).iter().all(|(n, _)| !n.contains("pool-tokens")
-            && !n.contains("artuno")
-            && !n.contains("sleepers")
-            && !n.contains("z-tokens")));
+        assert!(
+            facts_of(&state)
+                .iter()
+                .all(|(n, _)| !n.contains("pool-tokens")
+                    && !n.contains("artuno")
+                    && !n.contains("sleepers")
+                    && !n.contains("z-tokens"))
+        );
     }
 
     #[test]

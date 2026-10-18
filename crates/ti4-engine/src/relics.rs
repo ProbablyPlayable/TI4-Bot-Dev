@@ -184,7 +184,15 @@ pub(crate) fn grant_chosen_technology(
     let researching = relic == "enigmaticdevice"
         && state.rules_version >= ti4_model::state::RULES_ENIGMATIC_DEVICE;
     let Some(chosen) = ask_technology(
-        state, content, sources, table, galaxy, player, colour, relic, researching,
+        state,
+        content,
+        sources,
+        table,
+        galaxy,
+        player,
+        colour,
+        relic,
+        researching,
     ) else {
         return false;
     };
@@ -1778,7 +1786,12 @@ mod tests {
         let json = serde_json::to_value(&state).unwrap();
         assert!(json["relic_log"][0].get("victory_points").is_none());
         state.relic_log.clear();
-        assert!(serde_json::to_value(&state).unwrap().get("relic_log").is_none());
+        assert!(
+            serde_json::to_value(&state)
+                .unwrap()
+                .get("relic_log")
+                .is_none()
+        );
     }
 
     use ti4_model::content_types::DEFAULT as ALL_SOURCES;

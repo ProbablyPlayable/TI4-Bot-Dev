@@ -1401,7 +1401,9 @@ pub fn plan_vote(
         .map(|k| ballot.probabilities(Some(k), available as f64)[k]);
     if !conditional_agenda && margin < tuning::agenda_min_margin() {
         // No opinion: abstain and keep every planet.
-        log_vote(seen, me, agenda, round, second, &old, None, 0, available, margin, None, p_old);
+        log_vote(
+            seen, me, agenda, round, second, &old, None, 0, available, margin, None, p_old,
+        );
         return abstain.map(|index| Cast { index, votes: 0 });
     }
 
@@ -1459,7 +1461,9 @@ pub fn plan_vote(
         }
     }
     let Some(x) = best_choice.1 else {
-        log_vote(seen, me, agenda, round, second, &old, None, 0, available, margin, None, p_old);
+        log_vote(
+            seen, me, agenda, round, second, &old, None, 0, available, margin, None, p_old,
+        );
         return abstain.map(|index| Cast { index, votes: 0 });
     };
     // Never cast more than needed for the same probability: the smallest level within 1% of EV.
@@ -1616,12 +1620,19 @@ pub fn pick_planet(
             Some((row.first()?.as_str()?.to_owned(), row.get(1)?.as_f64()?))
         })
         .collect();
-    let cast = choice.details.get("votes_so_far").and_then(serde_json::Value::as_i64)?;
+    let cast = choice
+        .details
+        .get("votes_so_far")
+        .and_then(serde_json::Value::as_i64)?;
     let outcomes: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
     let x = outcomes.iter().position(|o| o == outcome)?;
     let tally: BTreeMap<String, f64> = rows.into_iter().collect();
     let refs: Vec<&str> = outcomes.iter().map(String::as_str).collect();
-    let verdict = if value { evaluate(agenda, &refs, seen, me)? } else { Verdict { scores: Vec::new() } };
+    let verdict = if value {
+        evaluate(agenda, &refs, seen, me)?
+    } else {
+        Verdict { scores: Vec::new() }
+    };
     if !value && old.is_none() {
         return None;
     }
@@ -1648,7 +1659,9 @@ pub fn pick_planet(
         } else {
             ballot.probabilities(Some(x), total as f64)
         };
-        let mut ev: f64 = (0..outcomes.len()).map(|o| p[o] * score_of(&outcomes[o])).sum();
+        let mut ev: f64 = (0..outcomes.len())
+            .map(|o| p[o] * score_of(&outcomes[o]))
+            .sum();
         if let Some(ctx) = &ctx
             && conditional_agenda
         {
@@ -1706,7 +1719,11 @@ pub fn pick_planet(
             "k": "planet", "agenda": agenda, "seat": me.as_str(), "outcome": outcome,
             "cast": cast, "target": target,
         });
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = f.write_all(format!("{line}\n").as_bytes());
         }
     }
@@ -1943,7 +1960,7 @@ pub fn rider_pick(
                 let slot = choice
                     .options
                     .iter()
-                    .position(|o| !o.is_decline() && rider_aliases(o).iter().any(|a| *a == alias));
+                    .position(|o| !o.is_decline() && rider_aliases(o).contains(&alias));
                 if slot.is_some() {
                     return slot;
                 }
@@ -2195,7 +2212,7 @@ mod tests {
         tuning::with(on(), || {
             let cast = plan_vote(&safe, &seen(&state), &me, "minister_policy", None).expect("cast");
             assert!(cast.votes <= 2, "safe: target {}", cast.votes);
-                let cast = plan_vote(&lost, &seen(&state), &me, "minister_policy", None).expect("cast");
+            let cast = plan_vote(&lost, &seen(&state), &me, "minister_policy", None).expect("cast");
             assert!(cast.votes <= 2, "lost: target {}", cast.votes);
         });
     }
@@ -2210,7 +2227,8 @@ mod tests {
             &[("a", 0.0), ("b", 0.0), ("c", 1.0), ("d", 0.0)],
         );
         tuning::with(on(), || {
-            let cast = plan_vote(&close, &seen(&state), &me, "minister_policy", None).expect("cast");
+            let cast =
+                plan_vote(&close, &seen(&state), &me, "minister_policy", None).expect("cast");
             assert_eq!(close.options[cast.index].id, "b");
         });
     }
@@ -2221,7 +2239,13 @@ mod tests {
         let me = PlayerId::new("b");
         let choice = vote(&me, "mutiny", &[("for", 12.0), ("against", 0.0)]);
         tuning::with(on(), || {
-            let cast = plan_vote(&choice, &seen(&state), &me, "mutiny", Some("for".to_owned()));
+            let cast = plan_vote(
+                &choice,
+                &seen(&state),
+                &me,
+                "mutiny",
+                Some("for".to_owned()),
+            );
             let cast = cast.expect("cast");
             assert_eq!(choice.options[cast.index].id, "for");
             assert!(cast.votes >= 1 && cast.votes <= 2, "{}", cast.votes);
@@ -2234,7 +2258,13 @@ mod tests {
         let me = PlayerId::new("b");
         let choice = vote(&me, "mutiny", &[("for", 0.0), ("against", 40.0)]);
         tuning::with(on(), || {
-            let cast = plan_vote(&choice, &seen(&state), &me, "mutiny", Some("for".to_owned()));
+            let cast = plan_vote(
+                &choice,
+                &seen(&state),
+                &me,
+                "mutiny",
+                Some("for".to_owned()),
+            );
             assert!(cast.is_none_or(|c| choice.options[c.index].id != "for"));
         });
     }
@@ -2293,9 +2323,15 @@ mod tests {
             );
             // The Technology Rider is worth nothing in this engine. (A card already played on
             // the agenda shows as the seat's prediction in the game state, which ends the play.)
-                assert!(
-                rider_decision(&seen(&state), &me, "incentive", 4, &["tech_rider".to_owned()])
-                    .is_none()
+            assert!(
+                rider_decision(
+                    &seen(&state),
+                    &me,
+                    "incentive",
+                    4,
+                    &["tech_rider".to_owned()]
+                )
+                .is_none()
             );
         });
     }

@@ -174,7 +174,12 @@ fn with_adjacent(
         let adjacency =
             crate::movement::PlayerAdjacency::new(state, content, sources, galaxy, player);
         for system in systems {
-            reach.extend(adjacency.neighbours(system.as_str()).into_iter().map(SystemId::new));
+            reach.extend(
+                adjacency
+                    .neighbours(system.as_str())
+                    .into_iter()
+                    .map(SystemId::new),
+            );
         }
     }
     reach
@@ -195,7 +200,14 @@ fn ingress_moves(
     if !state.fracture_in_play {
         return Vec::new();
     }
-    let mut targets = with_adjacent(state, content, sources, &occupied(state, player), galaxy, player);
+    let mut targets = with_adjacent(
+        state,
+        content,
+        sources,
+        &occupied(state, player),
+        galaxy,
+        player,
+    );
     targets.retain(|system| {
         !state.ingress_tokens.contains(system)
             && !crate::fracture::is_fracture_system(content, sources, system)

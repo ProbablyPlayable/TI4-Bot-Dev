@@ -119,7 +119,14 @@ fn amd_2_applies_to_each_cannon_shot_and_keeps_plasma_scorings_die() {
         state.rules_version = version;
         let system = ids[0].clone();
         put(&mut state, &system, "cruiser", &pid("a"), 1);
-        put_on_planet(&mut state, &system, &PlanetId::new("p"), "pds", &pid("b"), 1);
+        put_on_planet(
+            &mut state,
+            &system,
+            &PlanetId::new("p"),
+            "pds",
+            &pid("b"),
+            1,
+        );
         give(&mut state, "b", "ps");
         if owner {
             give(&mut state, "a", "amd");
@@ -130,7 +137,11 @@ fn amd_2_applies_to_each_cannon_shot_and_keeps_plasma_scorings_die() {
             .collect::<Vec<_>>()
     };
     let now = ti4_model::state::RULES_VERSION;
-    assert_eq!(shots_at(false, now), [("b".to_owned(), 2, 6)], "PDS with Plasma Scoring");
+    assert_eq!(
+        shots_at(false, now),
+        [("b".to_owned(), 2, 6)],
+        "PDS with Plasma Scoring"
+    );
     assert_eq!(
         shots_at(true, now),
         [("b".to_owned(), 2, 7)],

@@ -790,9 +790,7 @@ pub(crate) fn distinct_rival_home_reaches_count(position: &Position<'_>) -> Opti
         let Some(home) = home else {
             continue;
         };
-        let mut reach: std::collections::BTreeSet<String> = position
-            .adjacency()?
-            .neighbours(&home);
+        let mut reach: std::collections::BTreeSet<String> = position.adjacency()?.neighbours(&home);
         reach.insert(home);
         homes.push((seat.id.clone(), reach));
     }

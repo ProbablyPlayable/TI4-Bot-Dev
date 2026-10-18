@@ -6188,7 +6188,11 @@ mod tests {
             i32::try_from(TECHNOLOGY_SECONDARY_COST - i64::from(worth)).unwrap();
         assert!(
             crate::technology::specialties_spent_by_research(
-                &state, content, POK, &player, &technology
+                &state,
+                content,
+                POK,
+                &player,
+                &technology
             )
             .is_empty(),
             "Psychoarchaeology exhausts no specialty"
@@ -6211,14 +6215,15 @@ mod tests {
             "the specialty pays"
         );
         let seat = state.player(&player).unwrap();
-        assert!(seat.technologies.contains(&technology), "the research lands");
+        assert!(
+            seat.technologies.contains(&technology),
+            "the research lands"
+        );
         assert_eq!(seat.trade_goods, 0);
 
         // Without Psychoarchaeology the same research is not offered at version 22.
-        let (mut state, planet, technology) = specialty_research_holding(
-            ti4_model::state::RULES_TECH_PAYMENT_KEEPS_SPECIALTIES,
-            &[],
-        );
+        let (mut state, planet, technology) =
+            specialty_research_holding(ti4_model::state::RULES_TECH_PAYMENT_KEEPS_SPECIALTIES, &[]);
         let worth = ti4_content::galaxy::planet(content, planet.as_str(), POK)
             .expect("a planet")
             .resources();
@@ -6241,7 +6246,8 @@ mod tests {
             seat.technologies.clear();
             seat.technologies.insert(TechnologyId::new("aida"));
             if !ready {
-                seat.exhausted_technologies.insert(TechnologyId::new("aida"));
+                seat.exhausted_technologies
+                    .insert(TechnologyId::new("aida"));
             }
             seat.trade_goods = i32::try_from(TECHNOLOGY_SECONDARY_COST).unwrap();
         }
@@ -6277,7 +6283,10 @@ mod tests {
             "offered with the waiver"
         );
         let seat = state.player(&player).unwrap();
-        assert!(seat.technologies.contains(&technology), "the research lands");
+        assert!(
+            seat.technologies.contains(&technology),
+            "the research lands"
+        );
         assert!(
             seat.exhausted_technologies
                 .contains(&TechnologyId::new("aida")),

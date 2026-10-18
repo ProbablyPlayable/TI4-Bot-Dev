@@ -2237,7 +2237,10 @@ mod tests {
                     "Crimson starts with Resonance Generator"
                 );
             } else {
-                assert!(seat.breakthrough.is_none(), "{alias} starts without a breakthrough");
+                assert!(
+                    seat.breakthrough.is_none(),
+                    "{alias} starts without a breakthrough"
+                );
             }
         }
     }

@@ -1119,14 +1119,16 @@ impl<'a> Observed<'a> {
         if let Some(found) = self.adjacency.borrow().get(player) {
             return Some(found.clone());
         }
-        let built = std::sync::Arc::new(crate::movement::PlayerAdjacency::new(
-            self.state,
-            self.content,
-            self.sources,
-            galaxy,
-            player,
-        )
-        .into_owned());
+        let built = std::sync::Arc::new(
+            crate::movement::PlayerAdjacency::new(
+                self.state,
+                self.content,
+                self.sources,
+                galaxy,
+                player,
+            )
+            .into_owned(),
+        );
         self.adjacency
             .borrow_mut()
             .insert(player.clone(), built.clone());

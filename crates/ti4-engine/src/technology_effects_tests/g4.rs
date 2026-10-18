@@ -55,16 +55,6 @@ fn perform(state: &mut GameState, player: &str, id: &str, answers: &[&str]) -> b
     })
 }
 
-fn units_in(state: &GameState, system: &str, kind: &str) -> usize {
-    state.board.get(&SystemId::new(system)).map_or(0, |board| {
-        board
-            .units
-            .iter()
-            .filter(|u| u.type_id.as_str() == kind)
-            .count()
-    })
-}
-
 fn on_planet(state: &GameState, system: &str, planet: &str, kind: &str) -> usize {
     state
         .board
@@ -1094,7 +1084,7 @@ fn exile2_2_places_an_active_or_inactive_breach_up_to_two_systems_from_a_combat(
         SystemId::new(ids[0].as_str()),
         SystemId::new(ids[2].as_str()),
     );
-    let combat = vec![("system", serde_json::Value::from(fought.to_string()))];
+    let combat = [("system", serde_json::Value::from(fought.to_string()))];
     let run = |kind: &str, tech_unit: &str, answers: &[&str]| {
         let mut state = seated(&[("a", "crimson"), ("b", "sol"), ("c", "hacan")]);
         crate::fixtures::put(&mut state, &far, tech_unit, &pid("a"), 1);

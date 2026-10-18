@@ -9935,7 +9935,11 @@ mod tests {
     fn an_agenda_with_nothing_to_elect_is_just_dropped_below_rules_version_14() {
         let mut game = quash_game(0, &[]);
         game.state.rules_version = ti4_model::state::RULES_AGENDA_GRANT_REVEAL - 1;
-        assert!(game.reveal_agenda("classified").expect("revealed").is_none());
+        assert!(
+            game.reveal_agenda("classified")
+                .expect("revealed")
+                .is_none()
+        );
         assert_eq!(game.state.agenda_deck.len(), 2, "no card is drawn");
         assert!(game.state.agenda_log.is_empty(), "and nothing is listed");
     }
@@ -11663,9 +11667,11 @@ mod tests {
         }
 
         // The action phase: a Keleres frontier card gains two tokens, a tactic and a fleet one.
-        let (decider, explored) = crate::choice::Capturing::new(Box::new(
-            crate::choice::Scripted::new(["tactic_tokens", "fleet_tokens"]),
-        ));
+        let (decider, explored) =
+            crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new([
+                "tactic_tokens",
+                "fleet_tokens",
+            ])));
         let mut table = Table::with_default(Box::new(decider));
         let mut dice = crate::dice::Dice::new();
         let mut rng = crate::rng::GameRng::new(0);
@@ -11735,7 +11741,10 @@ mod tests {
             .iter()
             .filter(|event| event.starts_with("COMMAND_TOKEN_GAINED:"))
             .count();
-        assert_eq!(gained, 3, "only the status gain is announced by the status phase");
+        assert_eq!(
+            gained, 3,
+            "only the status gain is announced by the status phase"
+        );
     }
 
     /// A game from before `RULES_STATUS_GAIN` asks the pool of each gained token on its own
@@ -14442,7 +14451,10 @@ mod tests {
         };
         let (last, first) = play(ti4_model::state::RULES_FACTION_EFFECTS);
         assert_eq!(last, Some(ti4_model::state::LeaderStatus::Unlocked));
-        assert_eq!(first, None, "the seat that passed earlier has no such commander");
+        assert_eq!(
+            first, None,
+            "the seat that passed earlier has no such commander"
+        );
         let (old, _) = play(ti4_model::state::RULES_FACTION_EFFECTS - 1);
         assert_eq!(old, Some(ti4_model::state::LeaderStatus::Locked));
     }

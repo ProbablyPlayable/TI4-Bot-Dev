@@ -850,13 +850,13 @@ fn wing_transfer_timing(owner_name: &str, seat: &PlayerId) -> Vec<Ability> {
                 .neighbours(active.as_str())
                 .into_iter()
                 .map(SystemId::new)
-                    .filter(|system| {
-                        context
-                            .state
-                            .system_state(system)
-                            .command_tokens
-                            .contains(&mover)
-                    }),
+                .filter(|system| {
+                    context
+                        .state
+                        .system_state(system)
+                        .command_tokens
+                        .contains(&mover)
+                }),
             );
             if scope.len() > 1 {
                 migrate(

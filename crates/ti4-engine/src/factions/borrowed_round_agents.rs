@@ -190,7 +190,8 @@ pub fn has_owner_round_agent(state: &GameState) -> bool {
     state.rules_version >= ti4_model::state::RULES_FACTION_EFFECTS
         && state.players.iter().any(|seat| {
             seat.faction.as_str() == "sol"
-                && seat.leaders.get(&LeaderId::new(SOL_AGENT)) == Some(&ti4_model::state::LeaderStatus::Readied)
+                && seat.leaders.get(&LeaderId::new(SOL_AGENT))
+                    == Some(&ti4_model::state::LeaderStatus::Readied)
         })
 }
 
@@ -270,13 +271,11 @@ fn source_is_borrowable(
     if borrower == source_owner {
         // The owner's own agent (rules version 16), only while readied.
         return state.rules_version >= ti4_model::state::RULES_FACTION_EFFECTS
-            && state
-                .player(borrower)
-                .is_some_and(|seat| {
-                    seat.faction.as_str() == "sol"
-                        && seat.leaders.get(&LeaderId::new(source_agent))
-                            == Some(&ti4_model::state::LeaderStatus::Readied)
-                });
+            && state.player(borrower).is_some_and(|seat| {
+                seat.faction.as_str() == "sol"
+                    && seat.leaders.get(&LeaderId::new(source_agent))
+                        == Some(&ti4_model::state::LeaderStatus::Readied)
+            });
     }
     crate::factions::hooks_cards::borrowable_agents(state, content, borrower)
         .iter()
@@ -525,7 +524,11 @@ fn resolve_copy(
     crate::leaders::exhaust(
         context.state,
         borrower,
-        &LeaderId::new(if own_agent { source_agent } else { "yssarilagent" }),
+        &LeaderId::new(if own_agent {
+            source_agent
+        } else {
+            "yssarilagent"
+        }),
     );
     if borrower != &target.owner {
         crate::diplomacy::evaluate_event(

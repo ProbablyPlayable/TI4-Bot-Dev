@@ -3887,7 +3887,10 @@ fn upgrade_ship(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
 /// The roll is three faces on the ten-sided die, hits on 5 or higher, and the hits go through
 /// the combat engine's own absorption, so sustain damage and the owner's casualty choices are
 /// honoured exactly as in a real space-cannon exchange.
-pub(crate) fn experimental_battlestation(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
+pub(crate) fn experimental_battlestation(
+    context: &mut crate::timing::TimingContext<'_>,
+    player: &PlayerId,
+) {
     let Some(system) = context.state.active_system.clone() else {
         return;
     };
@@ -13834,9 +13837,12 @@ mod hidden_hands {
             state
                 .agenda_predictions
                 .insert(a.clone(), "FOR|lead_rider".to_owned());
-            let (decider, seen) = crate::choice::Capturing::new(Box::new(
-                crate::choice::Scripted::new(["strategic_tokens", "tactic_tokens", "fleet_tokens"]),
-            ));
+            let (decider, seen) =
+                crate::choice::Capturing::new(Box::new(crate::choice::Scripted::new([
+                    "strategic_tokens",
+                    "tactic_tokens",
+                    "fleet_tokens",
+                ])));
             let mut table = Table::with_default(Box::new(decider));
             let paid = resolve_predictions_asking(
                 &mut state,

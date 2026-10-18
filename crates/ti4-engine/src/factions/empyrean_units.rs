@@ -121,7 +121,13 @@ fn near(adjacency: Option<&PlayerAdjacency<'_>>, a: &SystemId, b: &SystemId) -> 
 /// `owner`'s adjacency on the map the context carries.
 fn adjacency_of<'g>(context: &TimingContext<'g>, owner: &PlayerId) -> Option<PlayerAdjacency<'g>> {
     context.galaxy.map(|galaxy| {
-        PlayerAdjacency::new(context.state, context.content, context.sources, galaxy, owner)
+        PlayerAdjacency::new(
+            context.state,
+            context.content,
+            context.sources,
+            galaxy,
+            owner,
+        )
     })
 }
 
@@ -182,15 +188,14 @@ fn dynamo_window(context: &TimingContext<'_>, owner: &PlayerId, event: &Event) -
         adjacency_of(context, owner).as_ref(),
         owner,
         &target.system,
-    )
-        && crate::payment::affordable(
-            context.state,
-            context.content,
-            context.sources,
-            owner,
-            DYNAMO_COST,
-            Spend::Influence,
-        ))
+    ) && crate::payment::affordable(
+        context.state,
+        context.content,
+        context.sources,
+        owner,
+        DYNAMO_COST,
+        Spend::Influence,
+    ))
     .then_some(target)
 }
 
@@ -600,10 +605,10 @@ mod tests {
     use std::sync::{Arc as Shared, Mutex};
 
     use super::*;
-    use ti4_content::galaxy::Galaxy;
     use crate::choice::{Decider, IllegalChoice, Scripted, Table};
     use crate::event::EventSequence;
     use serde_json::Value;
+    use ti4_content::galaxy::Galaxy;
     use ti4_model::content_types::DEFAULT;
 
     fn a() -> PlayerId {

@@ -480,7 +480,12 @@ fn near(
     let mut near = BTreeSet::new();
     near.insert(system.clone());
     if let Some(adjacency) = adjacency {
-        near.extend(adjacency.neighbours(system.as_str()).into_iter().map(SystemId::new));
+        near.extend(
+            adjacency
+                .neighbours(system.as_str())
+                .into_iter()
+                .map(SystemId::new),
+        );
     }
     near
 }

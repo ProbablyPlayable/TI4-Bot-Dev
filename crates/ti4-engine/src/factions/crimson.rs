@@ -2338,13 +2338,28 @@ mod adjacency_audit_tests {
         let ask = |state: &GameState| {
             (
                 crate::combat::eligible_retreats(
-                    state, content(), DEFAULT, &galaxy, &b(), &sys(&first),
+                    state,
+                    content(),
+                    DEFAULT,
+                    &galaxy,
+                    &b(),
+                    &sys(&first),
                 ),
                 crate::combat::skilled_retreat_destinations(
-                    state, content(), DEFAULT, &galaxy, &b(), &sys(&first),
+                    state,
+                    content(),
+                    DEFAULT,
+                    &galaxy,
+                    &b(),
+                    &sys(&first),
                 ),
                 crate::combat::det_retreat_destinations(
-                    state, content(), DEFAULT, &galaxy, &b(), &sys(&first),
+                    state,
+                    content(),
+                    DEFAULT,
+                    &galaxy,
+                    &b(),
+                    &sys(&first),
                 ),
             )
         };
@@ -2373,7 +2388,12 @@ mod adjacency_audit_tests {
         );
         let guns = |state: &GameState| {
             crate::combat::space_cannon_guns(
-                state, content(), DEFAULT, &sys(&first), &c(), Some(&galaxy),
+                state,
+                content(),
+                DEFAULT,
+                &sys(&first),
+                &c(),
+                Some(&galaxy),
             )
             .units
             .len()
@@ -2455,7 +2475,10 @@ mod adjacency_audit_tests {
         let anomaly = ti4_content::galaxy::all_systems(content(), DEFAULT)
             .iter()
             .find(|(id, system)| {
-                system.is_anomaly() && !system.is_hyperlane() && !homes.contains(*id) && **id != "18"
+                system.is_anomaly()
+                    && !system.is_hyperlane()
+                    && !homes.contains(*id)
+                    && **id != "18"
             })
             .map(|(id, _)| (*id).to_owned())
             .expect("an anomaly tile");
@@ -2551,37 +2574,42 @@ mod adjacency_audit_tests {
         let mut state = game();
         let planet = first_planet(&far);
         crate::fixtures::put_on_planet(&mut state, &sys(&far), &planet, "pds", &c(), 1);
-        let ban = |state: &mut GameState| {
-            let mut dice = crate::dice::Dice::new();
-            let mut rng = crate::rng::GameRng::new(0);
-            let mut table = crate::choice::Table::with_default(Box::new(
-                crate::choice::Scripted::new(Vec::<String>::new()),
-            ));
-            let mut ctx = crate::choice::Resolving {
-                content: content(),
-                sources: DEFAULT,
-                dice: &mut dice,
-                rng: &mut rng,
-                table: &mut table,
-                timing: None,
+        let ban =
+            |state: &mut GameState| {
+                let mut dice = crate::dice::Dice::new();
+                let mut rng = crate::rng::GameRng::new(0);
+                let mut table = crate::choice::Table::with_default(Box::new(
+                    crate::choice::Scripted::new(Vec::<String>::new()),
+                ));
+                let mut ctx = crate::choice::Resolving {
+                    content: content(),
+                    sources: DEFAULT,
+                    dice: &mut dice,
+                    rng: &mut rng,
+                    table: &mut table,
+                    timing: None,
+                };
+                crate::agenda_effects::resolve_with(
+                    state,
+                    &mut ctx,
+                    Some(&galaxy),
+                    "travel_ban",
+                    "Against",
+                    &crate::vote::Ballot::default(),
+                );
+                state
+                    .system_state(&sys(&far))
+                    .planet_units
+                    .get(&planet)
+                    .map_or(0, Vec::len)
             };
-            crate::agenda_effects::resolve_with(
-                state,
-                &mut ctx,
-                Some(&galaxy),
-                "travel_ban",
-                "Against",
-                &crate::vote::Ballot::default(),
-            );
-            state
-                .system_state(&sys(&far))
-                .planet_units
-                .get(&planet)
-                .map_or(0, Vec::len)
-        };
         assert_eq!(ban(&mut state.clone()), 1, "two systems from the wormhole");
         link(&mut state, &wormhole, &far);
-        assert_eq!(ban(&mut state), 0, "beside the wormhole system by breach link");
+        assert_eq!(
+            ban(&mut state),
+            0,
+            "beside the wormhole system by breach link"
+        );
     }
 
     #[test]
@@ -2597,8 +2625,7 @@ mod adjacency_audit_tests {
         crate::fixtures::put(&mut state, &sys(&far), "cruiser", &b(), 1);
         let count = |state: &GameState| {
             let player = b();
-            let mut position =
-                crate::objectives::Position::new(state, content(), DEFAULT, &player);
+            let mut position = crate::objectives::Position::new(state, content(), DEFAULT, &player);
             position.galaxy = Some(&galaxy);
             crate::objectives::ships_adjacent_to_mecatol_count(&position)
         };
@@ -2720,7 +2747,12 @@ mod adjacency_audit_tests {
             .find(|id| !galaxy.adjacent(far.as_str()).contains(id.as_str()))
             .expect("a ring-one system away from it")
             .clone();
-        (galaxy, crate::fixtures::seated_game(seats, DEFAULT), beside, far)
+        (
+            galaxy,
+            crate::fixtures::seated_game(seats, DEFAULT),
+            beside,
+            far,
+        )
     }
 
     #[test]
@@ -2728,10 +2760,25 @@ mod adjacency_audit_tests {
         let (galaxy, mut state, first, opposite) = world();
         crate::fixtures::put(&mut state, &sys(&first), "cruiser", &b(), 1);
         crate::fixtures::put(&mut state, &sys(&opposite), "cruiser", &c(), 1);
-        assert!(!crate::transactions::are_neighbours(&state, &galaxy, &b(), &c()));
+        assert!(!crate::transactions::are_neighbours(
+            &state,
+            &galaxy,
+            &b(),
+            &c()
+        ));
         link(&mut state, &first, &opposite);
-        assert!(crate::transactions::are_neighbours(&state, &galaxy, &b(), &c()));
-        assert!(crate::transactions::are_neighbours(&state, &galaxy, &c(), &b()));
+        assert!(crate::transactions::are_neighbours(
+            &state,
+            &galaxy,
+            &b(),
+            &c()
+        ));
+        assert!(crate::transactions::are_neighbours(
+            &state,
+            &galaxy,
+            &c(),
+            &b()
+        ));
     }
 
     #[test]
@@ -2758,9 +2805,19 @@ mod adjacency_audit_tests {
             mecatol_world(&[("a", "crimson"), ("b", "sol"), ("c", "hacan")]);
         crate::technology::grant(&mut state, &c(), &ti4_model::TechnologyId::new("iihq"));
         crate::fixtures::put(&mut state, &sys(&far), "cruiser", &b(), 1);
-        assert!(!crate::transactions::are_neighbours(&state, &galaxy, &b(), &c()));
+        assert!(!crate::transactions::are_neighbours(
+            &state,
+            &galaxy,
+            &b(),
+            &c()
+        ));
         link(&mut state, "18", &far);
-        assert!(crate::transactions::are_neighbours(&state, &galaxy, &b(), &c()));
+        assert!(crate::transactions::are_neighbours(
+            &state,
+            &galaxy,
+            &b(),
+            &c()
+        ));
     }
 
     #[test]
@@ -2773,7 +2830,12 @@ mod adjacency_audit_tests {
         }
         let targets = |state: &GameState| {
             crate::factions::argent::wing_transfer_targets(
-                state, content(), DEFAULT, &galaxy, &c(), &sys(&first),
+                state,
+                content(),
+                DEFAULT,
+                &galaxy,
+                &c(),
+                &sys(&first),
             )
             .contains(&sys(&opposite))
         };
@@ -2792,13 +2854,16 @@ mod adjacency_audit_tests {
                 .planet_control
                 .insert(first_planet(system), c());
         }
-        let available = std::collections::BTreeMap::from([(
-            (sys(&first), first_planet(&first)),
-            1_usize,
-        )]);
+        let available =
+            std::collections::BTreeMap::from([((sys(&first), first_planet(&first)), 1_usize)]);
         let shifts = |state: &GameState| {
             crate::factions::arborec::shifts(
-                state, content(), DEFAULT, Some(&galaxy), &c(), &available,
+                state,
+                content(),
+                DEFAULT,
+                Some(&galaxy),
+                &c(),
+                &available,
             )
             .len()
         };
@@ -2812,16 +2877,32 @@ mod adjacency_audit_tests {
         let (galaxy, mut state, first, opposite) =
             world_seated(&[("a", "crimson"), ("b", "sol"), ("c", "obsidian")]);
         crate::fixtures::put_on_planet(
-            &mut state, &sys(&opposite), &first_planet(&opposite), "infantry", &c(), 1,
+            &mut state,
+            &sys(&opposite),
+            &first_planet(&opposite),
+            "infantry",
+            &c(),
+            1,
         );
         crate::fixtures::put_on_planet(
-            &mut state, &sys(&first), &first_planet(&first), "infantry", &b(), 1,
+            &mut state,
+            &sys(&first),
+            &first_planet(&first),
+            "infantry",
+            &b(),
+            1,
         );
         let victims = |state: &GameState| {
-            crate::factions::obsidian::parasite_victims(state, content(), DEFAULT, Some(&galaxy), &c())
-                .iter()
-                .filter(|victim| victim.0.as_str() == first)
-                .count()
+            crate::factions::obsidian::parasite_victims(
+                state,
+                content(),
+                DEFAULT,
+                Some(&galaxy),
+                &c(),
+            )
+            .iter()
+            .filter(|victim| victim.0.as_str() == first)
+            .count()
         };
         assert_eq!(victims(&state), 0);
         link(&mut state, &first, &opposite);
@@ -2832,7 +2913,14 @@ mod adjacency_audit_tests {
     fn the_naalu_commander_unlocks_on_ground_forces_linked_to_mecatol() {
         let (galaxy, mut state, _beside, far) =
             mecatol_world(&[("a", "crimson"), ("b", "sol"), ("c", "naalu")]);
-        crate::fixtures::put_on_planet(&mut state, &sys(&far), &first_planet(&far), "infantry", &c(), 1);
+        crate::fixtures::put_on_planet(
+            &mut state,
+            &sys(&far),
+            &first_planet(&far),
+            "infantry",
+            &c(),
+            1,
+        );
         let unlocked = |state: &GameState| {
             crate::leaders::commander_unlocked(
                 state,
@@ -2854,7 +2942,10 @@ mod adjacency_audit_tests {
             mecatol_world(&[("a", "crimson"), ("b", "sol"), ("c", "hacan")]);
         // Sol's home is a ring-one system; Hacan holds a planet in ring two.
         state.player_mut(&b()).unwrap().home_system = Some(sys(&beside));
-        state.system_mut(&sys(&far)).planet_control.insert(first_planet(&far), c());
+        state
+            .system_mut(&sys(&far))
+            .planet_control
+            .insert(first_planet(&far), c());
         let rows = |state: &GameState| {
             let player = c();
             let mut position = crate::objectives::Position::new(state, content(), DEFAULT, &player);
@@ -2872,9 +2963,17 @@ mod adjacency_audit_tests {
         assert!(!intimidate);
         link(&mut state, &beside, &far);
         let (linked_homes, _) = rows(&state);
-        assert_eq!(linked_homes.zip(homes).map(|(after, before)| after - before), Some(1));
+        assert_eq!(
+            linked_homes
+                .zip(homes)
+                .map(|(after, before)| after - before),
+            Some(1)
+        );
         link(&mut state, "18", &far);
-        assert!(rows(&state).1, "Intimidate Council's ring includes the linked system");
+        assert!(
+            rows(&state).1,
+            "Intimidate Council's ring includes the linked system"
+        );
     }
 
     // -- per-player links: Quantum Entanglement (Ghost) and Lazax Gate Folding (Winnu) ---------
@@ -2896,8 +2995,14 @@ mod adjacency_audit_tests {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         let mut galaxy = Galaxy::build(content(), &refs, DEFAULT, 2).expect("a valid map");
         crate::seating::place_crimson_home(&mut galaxy, content(), DEFAULT).expect("home");
-        assert!(!galaxy.adjacent(&alpha).contains(beta.as_str()), "alpha and beta apart");
-        assert!(!galaxy.adjacent("18").contains(beta.as_str()), "beta is in ring two");
+        assert!(
+            !galaxy.adjacent(&alpha).contains(beta.as_str()),
+            "alpha and beta apart"
+        );
+        assert!(
+            !galaxy.adjacent("18").contains(beta.as_str()),
+            "beta is in ring two"
+        );
         let mut state = crate::fixtures::seated_game(seats, DEFAULT);
         for id in &ids {
             state.board.entry(SystemId::new(id.as_str())).or_default();
@@ -2938,8 +3043,18 @@ mod adjacency_audit_tests {
                 1,
             );
         }
-        crate::fixtures::put(&mut state, &sys(&beta), "cruiser", &ti4_model::id::PlayerId::new("a"), 1);
-        assert_eq!(guns(&state, &galaxy, &beta, "a"), 1, "only the Ghost's gun reaches");
+        crate::fixtures::put(
+            &mut state,
+            &sys(&beta),
+            "cruiser",
+            &ti4_model::id::PlayerId::new("a"),
+            1,
+        );
+        assert_eq!(
+            guns(&state, &galaxy, &beta, "a"),
+            1,
+            "only the Ghost's gun reaches"
+        );
         // The same board with no Ghost seated: two systems apart, nothing reaches.
         state.player_mut(&c()).unwrap().faction = ti4_model::id::FactionId::new("sol");
         assert_eq!(guns(&state, &galaxy, &beta, "a"), 0, "geometry alone");
@@ -2968,13 +3083,31 @@ mod adjacency_audit_tests {
                 1,
             );
         }
-        crate::fixtures::put(&mut state, &sys("18"), "cruiser", &ti4_model::id::PlayerId::new("a"), 1);
-        assert_eq!(guns(&state, &galaxy, "18", "a"), 0, "outside any tactical action");
+        crate::fixtures::put(
+            &mut state,
+            &sys("18"),
+            "cruiser",
+            &ti4_model::id::PlayerId::new("a"),
+            1,
+        );
+        assert_eq!(
+            guns(&state, &galaxy, "18", "a"),
+            0,
+            "outside any tactical action"
+        );
         state.active = Some(b());
         state.active_system = Some(sys("18"));
-        assert_eq!(guns(&state, &galaxy, "18", "a"), 0, "another player's action");
+        assert_eq!(
+            guns(&state, &galaxy, "18", "a"),
+            0,
+            "another player's action"
+        );
         state.active = Some(c());
-        assert_eq!(guns(&state, &galaxy, "18", "a"), 1, "only the Winnu's gun, in its own action");
+        assert_eq!(
+            guns(&state, &galaxy, "18", "a"),
+            1,
+            "only the Winnu's gun, in its own action"
+        );
 
         // Retreat from Mecatol's neighbour set: the Winnu may withdraw 18 -> beta, Sol may not.
         for (who, expected) in [(c(), true), (b(), false)] {

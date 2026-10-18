@@ -1353,10 +1353,11 @@ fn gravleash_maneuvers(
     {
         return;
     }
-    let kinds: std::collections::BTreeSet<String> = ships_of(state, content, sources, player, system)
-        .into_iter()
-        .map(|unit| unit.type_id.to_string())
-        .collect();
+    let kinds: std::collections::BTreeSet<String> =
+        ships_of(state, content, sources, player, system)
+            .into_iter()
+            .map(|unit| unit.type_id.to_string())
+            .collect();
     let bonus = i64::try_from(kinds.len()).unwrap_or(0);
     let chance = |hit_on: i64| (11 - hit_on).clamp(0, 10);
     let mut best: Option<(usize, i64)> = None;
@@ -2093,7 +2094,11 @@ fn reaching_guns_by(
         found.extend(
             standing
                 .filter(|unit| fires(&unit.owner))
-                .filter(|unit| reach.get(&unit.owner).is_some_and(|set| set.contains(neighbour)))
+                .filter(|unit| {
+                    reach
+                        .get(&unit.owner)
+                        .is_some_and(|set| set.contains(neighbour))
+                })
                 // Quietus: a gun in an active breach beside another player's Quietus has lost it.
                 .filter(|unit| !crate::factions::crimson::abilities_lost(state, &unit.owner, &here))
                 .filter(|unit| {
