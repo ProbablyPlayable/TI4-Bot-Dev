@@ -7,6 +7,8 @@
  * (`restart` in the reply) needs a new `Host`.
  */
 
+import type { HostSave } from "../wire/index.ts";
+
 export { hasJspi } from "./jspi.ts";
 
 /** The answer to a `progress` output: go on. */
@@ -54,44 +56,9 @@ export interface HostGame {
 
 /**
  * The save of a game (`save_state`, format 2); self-contained: `{resume: save}` plays it again
- * (README of `crates/ti4-wasm`, "Save and resume"). Another format is not read.
+ * (README of `crates/ti4-wasm`, "Save and resume"). The generated wire type.
  */
-export interface HostSave {
-  format: 2;
-  seed: number;
-  /** `setup::PLAYER_COUNTS`, 2 to 8. */
-  players: number;
-  /** The game, with the choices that were left open filled in. */
-  game: HostGame;
-  /** The table (`TableSetup`) the game was made from; none for a game of a fixed setup (`local`). */
-  table?: Record<string, unknown>;
-  scenario?: string;
-  /** The seats that the page plays at the start, as a mask (bit 0 is seat `a`). */
-  humans: number;
-  /** Every decision of the game, of every seat, in order. An undo cuts it. */
-  decisions: string[];
-  /** The page's answers among them. */
-  answers: string[];
-  /** The changes of the seats that the page plays: a decision index and a humans mask each. */
-  switches: unknown[];
-  redo: string[];
-  never: string[];
-  event_times: unknown[];
-  event_versions: unknown[];
-  version: number;
-  generation: number;
-  decisions_hash: string;
-  finished: boolean;
-  round: number | null;
-  phase: string | null;
-  engine: { build: string; content_digest: string };
-  /** The rule bot version the game plays (left out: a save from before the field, version 1). */
-  bot_version?: number;
-  /** The rules version the game plays (left out: version 0, the legacy rules). */
-  rules_version?: number;
-  /** What each seat staged and did not send (`ti4_host::staged`). */
-  staged?: Record<string, unknown>;
-}
+export type { HostSave };
 
 export interface HostEnd {
   finished: boolean;

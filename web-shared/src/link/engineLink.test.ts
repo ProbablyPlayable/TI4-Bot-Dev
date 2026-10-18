@@ -20,6 +20,7 @@ const save = (answers: string[] = []): HostSave => ({
   answers,
   switches: [],
   redo: [],
+  staged: {},
   never: [],
   event_times: [],
   event_versions: [],

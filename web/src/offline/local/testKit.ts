@@ -85,6 +85,7 @@ export const save = (answers: string[] = [], finished = false): HostSave => ({
   answers,
   switches: [],
   redo: [],
+  staged: {},
   never: [],
   event_times: [],
   event_versions: [],

@@ -19,6 +19,7 @@ const save = (answers: string[] = []): HostSave => ({
   answers,
   switches: [],
   redo: [],
+  staged: {},
   never: [],
   event_times: [],
   event_versions: [],
@@ -136,7 +137,11 @@ describe("HostRunner", () => {
       const host = new FakeHost(`h${hosts.length}`, (h, request) => {
         if (request.type === "save_state") {
           return envelope("command", {
-            save: { ...save(["a", "b", "c"]), never: ["Shields"], game: { setup: { seed: 7 } } },
+            save: {
+              ...save(["a", "b", "c"]),
+              never: ["Shields"],
+              game: { setup: { game_id: "off_test", seed: 7, players: 3 } },
+            },
           });
         }
         if (request.type === "history") {
@@ -167,7 +172,7 @@ describe("HostRunner", () => {
     await tick();
     expect(hosts).toHaveLength(2);
     expect(hosts[1].started).toEqual({
-      setup: { seed: 7 },
+      setup: { game_id: "off_test", seed: 7, players: 3 },
       resume: { ...restart, never: ["Shields"] },
     });
     // The page sees the reply, then the next question of the new run; never an end for the old run.
