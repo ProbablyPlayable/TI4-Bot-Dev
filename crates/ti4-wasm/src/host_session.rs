@@ -2043,6 +2043,7 @@ impl HostSession {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HostSave {
     /// [`crate::host_setup::SAVE_FORMAT`]: a save of another format is not read.
+    #[cfg_attr(feature = "ts", ts(type = "2"))]
     pub format: u64,
     pub seed: u64,
     pub players: usize,

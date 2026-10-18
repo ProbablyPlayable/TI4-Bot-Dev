@@ -15,7 +15,7 @@ export type HostSave = {
 /**
  * [`crate::host_setup::SAVE_FORMAT`]: a save of another format is not read.
  */
-format: number, seed: number, players: number, 
+format: 2, seed: number, players: number, 
 /**
  * The game as the host was given it, with the choices that were left open filled in (card
  * set, map, factions...): a save replays with it.

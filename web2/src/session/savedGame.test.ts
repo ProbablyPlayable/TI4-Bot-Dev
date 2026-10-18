@@ -41,6 +41,17 @@ const save = (change: Partial<HostSave> = {}): HostSave => ({
   answers: ["sol"],
   finished: false,
   generation: 2,
+  switches: [],
+  redo: [],
+  staged: {},
+  never: [],
+  event_times: [],
+  event_versions: [],
+  version: 1,
+  decisions_hash: "h",
+  round: 1,
+  phase: "action",
+  engine: { build: "b", content_digest: "c" },
   ...change,
 });
 
@@ -77,7 +88,9 @@ it("names the slot of a game by its address, and the address by the slot", () =>
 it("reads the game of a save: a fixed setup, a scenario, or a table", () => {
   expect(gameOfSave(save())).toEqual(game);
   expect(
-    gameOfSave(save({ game: { local: { seed: 42, players: 3, humans: 1, scenario: "x" } } })),
+    gameOfSave(
+      save({ game: { local: { seed: 42, players: 3, humans: 1, bots: [], scenario: "x" } } }),
+    ),
   ).toEqual({ ...game, scenario: "x" });
   expect(gameOfSave(save({ players: 4, game: { table } }))).toEqual({
     seed: 3,

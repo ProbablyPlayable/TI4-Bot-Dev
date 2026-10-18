@@ -15,7 +15,6 @@ import { inlinePort, workerPort } from "@ti4/shared/engine/port.ts";
 import type { HostPort, ModelFile } from "@ti4/shared/engine/protocol.ts";
 import { engineLink } from "@ti4/shared/link/engineLink.ts";
 import type { GameLink, HostCommand } from "@ti4/shared/link/link.ts";
-import type { HostSave as StoredSave } from "@ti4/shared/storage/index.ts";
 import { type MessageCore, messageTransport } from "./messageTransport";
 import type { LocalGame } from "./savedGame";
 import { SLOTS, type StagedSlot, sameStaged } from "./seatStore";
@@ -27,7 +26,6 @@ import type {
   OptionsRequest,
   ReactionModes,
   SeatStaged,
-  SeatSwitch,
   TableDraw,
   TableOptions,
   TablePreview,
@@ -47,13 +45,9 @@ interface Exports {
 
 /**
  * What the engine keeps of a game to play it again (`HostSession::save_state`, format 2, the save
- * of the save store): the game, the option id of every decision of every seat, in order
- * (`decisions`), the answers of the page among them, and the seat changes. The rest (the redo
- * list, the times of the events, the hash of the decisions) is given back as it was.
+ * of the save store): the generated wire type. web2 reads no save of an older engine.
  */
-export interface HostSave extends StoredSave {
-  switches?: SeatSwitch[];
-}
+export type HostSave = EngineSave;
 
 /** What a save keeps of the staged work of each seat. */
 type SavedStaged = Record<string, SeatStaged>;
@@ -309,7 +303,7 @@ export function createWasmTransport(
               ),
             },
           }),
-    ...(play.save ? { resume: play.save as unknown as EngineSave } : {}),
+    ...(play.save ? { resume: play.save } : {}),
     modes: { ...play.modes },
     stepping: pauses(),
     staged: true,
@@ -376,7 +370,7 @@ export function createWasmTransport(
   };
   link.subscribe((event) => {
     if (event.kind === "save") {
-      keep(event.save as unknown as HostSave);
+      keep(event.save);
     }
   });
 
@@ -485,7 +479,7 @@ export function createWasmTransport(
     // The save is kept after each write of the staged work.
     afterPut() {
       request({ type: "save_state" }).then(
-        (envelope) => envelope.save && keep(envelope.save as unknown as HostSave),
+        (envelope) => envelope.save && keep(envelope.save),
         () => undefined,
       );
     },
