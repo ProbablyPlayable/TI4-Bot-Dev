@@ -130,12 +130,6 @@ fn illegal(error: IllegalChoice) -> TimingError {
     TimingError::IllegalChoice(error)
 }
 
-fn owns_technology(state: &GameState, player: &PlayerId, alias: &str) -> bool {
-    state
-        .player(player)
-        .is_some_and(|seat| seat.technologies.contains(&TechnologyId::new(alias)))
-}
-
 fn technology_ready(state: &GameState, player: &PlayerId, alias: &str) -> bool {
     let id = TechnologyId::new(alias);
     state.player(player).is_some_and(|seat| {
@@ -913,7 +907,7 @@ fn null_reference(owner_name: &str, seat: &PlayerId) -> Ability {
             return false;
         };
         event.text("player") == Some(condition_owner.as_str())
-            && owns_technology(context.state, &condition_owner, NULL_REFERENCE)
+            && crate::technology::owns_technology(context.state, &condition_owner, NULL_REFERENCE)
             && ti4_content::units::catalogue(context.content, context.sources)
                 .get(unit)
                 .is_some_and(ti4_content::units::UnitType::is_ship)

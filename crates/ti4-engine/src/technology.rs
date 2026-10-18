@@ -87,7 +87,9 @@ pub fn owns_det(state: &GameState, player: &PlayerId) -> bool {
         .is_some_and(|seat| seat.technologies.contains(&TechnologyId::new("det")))
 }
 
-/// Whether this player holds the technology with this id.
+/// Whether this player holds the technology with this id: the owned set, which is what a generic
+/// technology reads. A faction technology's text, which Nekro may also hold through the Valefar
+/// Assimilator, is [`has_technology_text`].
 #[must_use]
 pub fn owns_technology(state: &GameState, player: &PlayerId, id: &str) -> bool {
     state
@@ -1212,6 +1214,33 @@ fn aida_waiver(
     )
 }
 
+/// The prerequisites `player` may ignore when researching `alias`, as one budget across the
+/// requirement rather than per colour, because each card says "ignore 1 prerequisite", not "one of
+/// each": a faction's waivers (Jol-Nar's Brilliant on anything, Analytical on anything that is not
+/// a unit upgrade), the Research Team laws (exhausted to ignore one prerequisite of their colour)
+/// and The Prophet's Tears. AI Development Algorithm is left to the caller: whether it is spent
+/// depends on the rest.
+fn prerequisite_waiver_budget(
+    state: &GameState,
+    content: &ContentStore,
+    sources: SourceSet,
+    player: &PlayerId,
+    alias: &TechnologyId,
+) -> usize {
+    let faction = crate::faction_abilities::waived_prerequisites(
+        state,
+        content,
+        sources,
+        player,
+        alias.as_str(),
+    );
+    let research_teams: usize = COLOURS
+        .iter()
+        .map(|colour| crate::laws::research_team_waivers(state, player, colour))
+        .sum();
+    faction + research_teams + crate::relics::prerequisite_waivers(state, player)
+}
+
 /// [`prerequisites_met`], optionally leaving out AI Development Algorithm's waiver.
 fn prerequisites_met_with(
     state: &GameState,
@@ -1223,16 +1252,7 @@ fn prerequisites_met_with(
 ) -> bool {
     let held = owned_colours(state, content, player);
     let specialties = specialties(state, content, sources, player);
-    // A faction may waive whole prerequisite slots — Jol-Nar's Brilliant on anything, Analytical
-    // on anything that is not a unit upgrade. Applied as a budget across the requirement rather
-    // than per colour, because the card says "ignore 1 prerequisite", not "one of each".
-    let mut waivable = crate::faction_abilities::waived_prerequisites(
-        state,
-        content,
-        sources,
-        player,
-        alias.as_str(),
-    );
+    let mut waivable = prerequisite_waiver_budget(state, content, sources, player, alias);
     // Synergy rule 2: when researching, a technology owned or a specialty controlled that matches
     // one colour of the synergy may be treated as either colour of it. Owned technologies and
     // specialties are pooled first, because the rule names both and treats them alike.
@@ -1248,16 +1268,6 @@ fn prerequisites_met_with(
             *holdings.entry(colour).or_insert(0) += count;
         }
     }
-    // Research Team laws attach to a planet and are exhausted to ignore one prerequisite of their
-    // colour. They add to the same waiver budget the faction abilities use, because both are
-    // "ignore a prerequisite" and the requirement is checked once.
-    for colour in COLOURS {
-        waivable += crate::laws::research_team_waivers(state, player, colour);
-    }
-    // The Prophet's Tears: exhaust to ignore one prerequisite. Same budget as the faction waivers
-    // and the Research Teams, for the same reason -- they are all "ignore a prerequisite" and the
-    // requirement is checked once.
-    waivable += crate::relics::prerequisite_waivers(state, player);
     if with_aida {
         waivable += aida_waiver(state, content, player, alias);
     }
@@ -1652,17 +1662,7 @@ fn specialty_planets(
         return Vec::new();
     }
     let held = owned_colours(state, content, player);
-    let mut waivable = crate::faction_abilities::waived_prerequisites(
-        state,
-        content,
-        sources,
-        player,
-        alias.as_str(),
-    );
-    for colour in COLOURS {
-        waivable += crate::laws::research_team_waivers(state, player, colour);
-    }
-    waivable += crate::relics::prerequisite_waivers(state, player);
+    let mut waivable = prerequisite_waiver_budget(state, content, sources, player, alias);
     // AI Development Algorithm: spent only when nothing else covers the prerequisites
     // (exhausted by `exhaust_specialties_for_research`).
     if aida_spent_by_research(state, content, sources, player, alias) {
