@@ -193,6 +193,7 @@ export type { ReactionFacts } from "./ReactionFacts.ts";
 export type { ReactionIntentStateMsg } from "./ReactionIntentStateMsg.ts";
 export type { ReactionMode } from "./ReactionMode.ts";
 export type { ReactionOffer } from "./ReactionOffer.ts";
+export type { ReactionTurnHints } from "./ReactionTurnHints.ts";
 export type { ReadyDetails } from "./ReadyDetails.ts";
 export type { ReadyHints } from "./ReadyHints.ts";
 export type { ReadyPlanet } from "./ReadyPlanet.ts";

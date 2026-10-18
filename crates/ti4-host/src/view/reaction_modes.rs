@@ -93,10 +93,8 @@ fn muted(choice: &Choice, mode: Option<&ReactionMode>) -> bool {
     match mode {
         Some(ReactionMode::Never) => true,
         Some(ReactionMode::OwnTurn) => choice
-            .details
-            .get(ti4_engine::timing::ACTIVE_DETAIL)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|active| active != choice.player.as_str()),
+            .hint_fields::<ti4_engine::timing::ReactionTurnHints>()
+            .is_some_and(|turn| turn.active != choice.player),
         Some(ReactionMode::Always) | None => false,
     }
 }
@@ -261,7 +259,9 @@ mod tests {
 
     /// A window of the action phase, in the turn of `active`.
     fn in_turn_of(active: &str, options: Vec<ChoiceOption>) -> Choice {
-        window(options).detailed(ti4_engine::timing::ACTIVE_DETAIL, active)
+        window(options).hinted_fields(&ti4_engine::timing::ReactionTurnHints {
+            active: PlayerId::new(active),
+        })
     }
 
     #[test]

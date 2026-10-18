@@ -152,9 +152,16 @@ pub struct Ability {
     pub option_payload: Option<OptionPayload>,
 }
 
-/// The key of [`Choice::details`] that names the active player of a reaction window in the
-/// action phase.
-pub const ACTIVE_DETAIL: &str = "active";
+/// Whose turn a reaction window of the action phase is in, for a seat that asked to be offered
+/// a reaction on its own turns only (`ti4_host::view::reaction_modes`): its field is a top-level
+/// key of the details, written with [`Choice::hinted_fields`] (display only). A window outside
+/// the action phase has none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReactionTurnHints {
+    /// The active player of the action phase.
+    pub active: PlayerId,
+}
 
 /// The label of a reaction option for the player: the printed name of the faction ability or the
 /// leader behind an ability id such as `ability:empyrean:aetherpassage:SYSTEM_ACTIVATED:after`
@@ -1262,9 +1269,10 @@ impl Resolver {
         // Whose turn it is, for a seat that asked to be offered a reaction on its own turns only
         // (`ti4_host::view::reaction_modes`). Display only, as every detail: not in a record or a replay.
         let choice = match &context.state.active {
-            Some(active) if context.state.phase == ti4_model::state::Phase::Action => {
-                choice.detailed(ACTIVE_DETAIL, active.to_string())
-            }
+            Some(active) if context.state.phase == ti4_model::state::Phase::Action => choice
+                .hinted_fields(&ReactionTurnHints {
+                    active: active.clone(),
+                }),
             _ => choice,
         };
         let choice = choice.contextualized(
@@ -2022,6 +2030,56 @@ mod tests {
             timing.emit(Event::new(1, "E", BTreeMap::new()), |_| {}),
             Err(TimingError::StatefulContextRequired(id)) if id == "stateful"
         ));
+    }
+
+    #[test]
+    fn a_reaction_window_of_the_action_phase_names_whose_turn_it_is() {
+        let seen_in = |phase: Phase| {
+            let (sol, letnev) = (player("sol"), player("letnev"));
+            let mut state = GameState::new(
+                &[sol.clone(), letnev.clone()],
+                &[],
+                BTreeMap::new(),
+                None,
+                1,
+            );
+            state.phase = phase;
+            state.active = Some(sol);
+            let (decider, seen) = crate::choice::Capturing::new(Box::new(AlwaysDecline));
+            let mut table = Table::with_default(Box::new(decider));
+            let mut dice = Dice::new();
+            let mut rng = GameRng::new(0);
+            let mut event_sequence = EventSequence::new();
+            let mut context = stateful_context(
+                &mut state,
+                &mut table,
+                &mut dice,
+                &mut rng,
+                &mut event_sequence,
+            );
+            let mut timing = resolver(&["sol", "letnev"], "sol");
+            timing.register([Ability::stateful(
+                "react",
+                letnev,
+                "E",
+                Relation::When,
+                Arc::new(|_, _, _| Ok(())),
+            )
+            .with_optional(true)]);
+            timing
+                .emit_with_context(&mut context, Event::new(1, "E", BTreeMap::new()), |_, _| {})
+                .unwrap();
+            let choice = seen.borrow()[0].clone();
+            choice.hint_fields::<ReactionTurnHints>()
+        };
+
+        assert_eq!(
+            seen_in(Phase::Action),
+            Some(ReactionTurnHints {
+                active: player("sol")
+            })
+        );
+        assert_eq!(seen_in(Phase::Status), None);
     }
 
     fn recording_ability(

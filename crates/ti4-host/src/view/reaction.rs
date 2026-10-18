@@ -251,8 +251,8 @@ pub fn project_reaction_facts(content: &ContentStore, choice: &Choice) -> Option
             .as_ref()
             .and_then(|context| context.trigger.clone()),
         own_turn_applies: choice
-            .details
-            .contains_key(ti4_engine::timing::ACTIVE_DETAIL),
+            .hint_fields::<ti4_engine::timing::ReactionTurnHints>()
+            .is_some(),
         offers: choice
             .options
             .iter()
