@@ -1115,6 +1115,17 @@ fn summit(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
     );
 }
 
+/// What Public Disgrace's "choose a different strategy card" question says: its fields are
+/// top-level keys of the details, written with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PublicDisgraceHints {
+    /// The strategy card that was taken away.
+    pub first: StrategyCardId,
+    /// The seat that played Public Disgrace.
+    pub played_by: PlayerId,
+}
+
 /// Political Stability: "When you would return your strategy card(s) during the status
 /// phase: Do not return your strategy card(s). You do not choose strategy cards during
 /// the next strategy phase."
@@ -1181,9 +1192,10 @@ fn public_disgrace(context: &mut crate::timing::TimingContext<'_>, player: &Play
         "choose a different strategy card",
         alternatives,
     )
-    // Display only: the card that was taken away, and who played Public Disgrace.
-    .detailed("first", first.as_str())
-    .detailed("played_by", player.as_str())
+    .hinted_fields(&PublicDisgraceHints {
+        first: first.clone(),
+        played_by: player.clone(),
+    })
     .contextualized(DecisionContext::new(
         picker.clone(),
         played_card_source("disgrace"),
@@ -3844,20 +3856,22 @@ fn upgrade_ship(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
         return; // no cruiser of the player's in the system (22.3)
     }
     // Display only: each cruiser on offer (the ids are indexes into the active system).
-    let cruisers: serde_json::Map<String, serde_json::Value> = options
+    let cruisers: BTreeMap<String, UnitPickEntry> = options
         .iter()
         .filter_map(|(id, _)| {
             let unit = units.get(id.parse::<usize>().ok()?)?;
             Some((
                 id.clone(),
-                serde_json::json!({
-                    "system": system.as_str(),
-                    "planet": serde_json::Value::Null,
-                    "unit": unit.type_id.as_str(),
-                    "owner": unit.owner.as_str(),
-                    "damaged": unit.sustained_damage,
-                    "cost": types.get(unit.type_id.as_str()).map_or(0.0, |kind| kind.cost()),
-                }),
+                UnitPickEntry {
+                    system: system.as_str().to_owned(),
+                    planet: None,
+                    unit: unit.type_id.as_str().to_owned(),
+                    owner: unit.owner.clone(),
+                    damaged: unit.sustained_damage,
+                    cost: types
+                        .get(unit.type_id.as_str())
+                        .map_or(0.0, |kind| kind.cost()),
+                },
             ))
         })
         .collect();
@@ -3867,7 +3881,7 @@ fn upgrade_ship(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
         "Upgrade: which cruiser becomes a dreadnought",
         "cruiser",
         &options,
-        &[("units", serde_json::Value::Object(cruisers))],
+        &UnitPickHints { units: cruisers },
     ) else {
         return;
     };
@@ -4682,33 +4696,60 @@ pub(crate) fn exploration_probe(context: &mut crate::timing::TimingContext<'_>, 
     );
 }
 
+/// What a unit question of [`pick_detailed`] says of its options (Upgrade, Refit Troops, Scuttle,
+/// Lucky Shot): its one field is the top-level `units` key of the details, written with
+/// [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UnitPickHints {
+    /// Each unit option by option id.
+    pub units: BTreeMap<String, UnitPickEntry>,
+}
+
+/// One unit option of a [`UnitPickHints`] (display only).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UnitPickEntry {
+    /// The system the unit is in.
+    pub system: String,
+    /// The planet it stands on; `null` for a unit in the space area.
+    pub planet: Option<String>,
+    /// Its unit type.
+    pub unit: String,
+    /// The seat that owns it.
+    pub owner: PlayerId,
+    /// Whether it has sustained damage.
+    pub damaged: bool,
+    /// Its printed cost.
+    pub cost: f64,
+}
+
 /// Display only: what each unit option of Refit Troops or Scuttle stands for, keyed by option id
 /// (`system|index` or `system|planet|index`): where it is, its type, whether it is damaged and its
 /// printed cost, so a client can name the unit and say what the card does to it.
 fn unit_pick_details(
     found: &[(String, String, ti4_model::units::Unit)],
     cost_of: &dyn Fn(&str) -> f64,
-) -> serde_json::Value {
-    serde_json::Value::Object(
-        found
-            .iter()
-            .map(|(id, _, unit)| {
-                let parts: Vec<&str> = id.split('|').collect();
-                let planet = (parts.len() == 3).then(|| parts[1]);
-                (
-                    id.clone(),
-                    serde_json::json!({
-                        "system": parts.first(),
-                        "planet": planet,
-                        "unit": unit.type_id.as_str(),
-                        "owner": unit.owner.as_str(),
-                        "damaged": unit.sustained_damage,
-                        "cost": cost_of(unit.type_id.as_str()),
-                    }),
-                )
-            })
-            .collect(),
-    )
+) -> UnitPickHints {
+    let units = found
+        .iter()
+        .map(|(id, _, unit)| {
+            let parts: Vec<&str> = id.split('|').collect();
+            let planet = (parts.len() == 3).then(|| parts[1].to_owned());
+            (
+                id.clone(),
+                UnitPickEntry {
+                    system: parts.first().copied().unwrap_or_default().to_owned(),
+                    planet,
+                    unit: unit.type_id.as_str().to_owned(),
+                    owner: unit.owner.clone(),
+                    damaged: unit.sustained_damage,
+                    cost: cost_of(unit.type_id.as_str()),
+                },
+            )
+        })
+        .collect();
+    UnitPickHints { units }
 }
 
 /// Refit Troops: "Choose 1 or 2 of your infantry on the game board. Replace each of those
@@ -4793,7 +4834,7 @@ fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
             "Refit Troops: which infantry to replace",
             "infantry",
             &options,
-            &[("units", units.clone())],
+            &units,
         ) else {
             return;
         };
@@ -4818,7 +4859,7 @@ fn refit_troops(context: &mut crate::timing::TimingContext<'_>, player: &PlayerI
                 "Refit Troops: another infantry or stop",
                 "infantry",
                 &rest,
-                &[("units", units)],
+                &units,
             ) else {
                 return;
             };
@@ -4933,7 +4974,7 @@ fn scuttle(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
             "Scuttle: which ship to scuttle",
             "ship",
             &options,
-            &[("units", units.clone())],
+            &units,
         ) else {
             return;
         };
@@ -4957,7 +4998,7 @@ fn scuttle(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
             "Scuttle: another ship or stop",
             "ship",
             &rest,
-            &[("units", units)],
+            &units,
         ) else {
             return;
         };
@@ -5481,6 +5522,16 @@ type StrategyAbility = fn(
     &str,
 ) -> Result<crate::strategy_cards::Ability, crate::choice::IllegalChoice>;
 
+/// What the strategy card question of a card that performs another card's ability says (e.g.
+/// Overrule's pick): its one field is the top-level `holders` key of the details, written
+/// with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StrategyCardHoldersHints {
+    /// The seat that holds each card on offer, by card; `null` for a card no seat has chosen.
+    pub holders: BTreeMap<String, Option<PlayerId>>,
+}
+
 #[allow(clippy::match_same_arms)]
 fn perform_strategy_card(
     context: &mut crate::timing::TimingContext<'_>,
@@ -5490,7 +5541,7 @@ fn perform_strategy_card(
 ) {
     let mut options: Vec<(String, String)> = Vec::new();
     // Display only: which seat holds each card on offer (`null` for an unchosen one).
-    let mut holders = serde_json::Map::new();
+    let mut holders: BTreeMap<String, Option<PlayerId>> = BTreeMap::new();
     for other in &context.state.seating_order {
         if other == player {
             continue;
@@ -5502,7 +5553,7 @@ fn perform_strategy_card(
             if seat.exhausted_strategy_cards.contains(card) {
                 continue; // an exhausted card cannot be performed
             }
-            holders.insert(card.to_string(), serde_json::json!(other.as_str()));
+            holders.insert(card.to_string(), Some(other.clone()));
             options.push((
                 card.to_string(),
                 format!(
@@ -5515,7 +5566,7 @@ fn perform_strategy_card(
         }
     }
     for card in &context.state.unclaimed_strategy_cards {
-        holders.insert(card.to_string(), serde_json::Value::Null);
+        holders.insert(card.to_string(), None);
         options.push((
             card.to_string(),
             crate::strategy_cards::card_name(context.content, card.as_str())
@@ -5531,7 +5582,7 @@ fn perform_strategy_card(
         prompt,
         "strategy card",
         &options,
-        &[("holders", serde_json::Value::Object(holders))],
+        &StrategyCardHoldersHints { holders },
     ) else {
         return;
     };
@@ -5596,51 +5647,59 @@ fn pick(
     kind: &str,
     options: &[(String, String)],
 ) -> Option<String> {
-    pick_detailed(context, player, prompt, kind, options, &[])
+    pick_detailed(
+        context,
+        player,
+        prompt,
+        kind,
+        options,
+        &serde_json::Map::new(),
+    )
 }
 
 /// [`pick`] with display-only facts for clients (see `Choice::details`): never read by the engine.
+/// `details` is a hints struct whose fields become top-level keys of the details
+/// ([`Choice::hinted_fields`]).
 fn pick_detailed(
     context: &mut crate::timing::TimingContext<'_>,
     player: &PlayerId,
     prompt: &str,
     kind: &str,
     options: &[(String, String)],
-    details: &[(&str, serde_json::Value)],
+    details: &impl serde::Serialize,
 ) -> Option<String> {
     match options {
         [] => None,
         [(only, _)] => Some(only.clone()),
         many => {
-            let choice = crate::choice::Choice::new(
-                player.clone(),
-                prompt,
-                many.iter()
-                    .map(|(id, label)| {
-                        let option =
-                            crate::choice::ChoiceOption::labelled(id.clone(), kind, label.clone());
-                        // Display only: the system an option stands in, so a client can mark it
-                        // on the map. Ids, kinds and order are untouched.
-                        let option = match option_system(kind, id, details) {
-                            Some(system) => option.with("system", system),
-                            None => option,
-                        };
-                        if kind == "planet" {
-                            locate_planet_option(
-                                context.state,
-                                context.content,
-                                context.sources,
-                                option,
-                            )
-                        } else {
-                            option
-                        }
-                    })
-                    .collect(),
-            );
-            let choice = details.iter().fold(choice, |choice, (key, value)| {
-                choice.detailed(key, value.clone())
-            });
+            let mut choice = crate::choice::Choice::new(player.clone(), prompt, Vec::new())
+                .hinted_fields(details);
+            let units = choice
+                .hint_fields::<UnitPickHints>()
+                .map(|hints| hints.units);
+            choice.options = many
+                .iter()
+                .map(|(id, label)| {
+                    let option =
+                        crate::choice::ChoiceOption::labelled(id.clone(), kind, label.clone());
+                    // Display only: the system an option stands in, so a client can mark it
+                    // on the map. Ids, kinds and order are untouched.
+                    let option = match option_system(kind, id, units.as_ref()) {
+                        Some(system) => option.with("system", system),
+                        None => option,
+                    };
+                    if kind == "planet" {
+                        locate_planet_option(
+                            context.state,
+                            context.content,
+                            context.sources,
+                            option,
+                        )
+                    } else {
+                        option
+                    }
+                })
+                .collect();
             let action_card = active_action_card();
             let source = action_card.as_ref().map_or_else(
                 || DecisionSource::Rule("2".to_owned()),
@@ -5663,18 +5722,18 @@ fn pick_detailed(
 }
 
 /// The system a unit or system option of [`pick_detailed`] stands in, if it can say: a unit's
-/// `details.units` entry names it, and a system-valued kind is its own id.
-fn option_system(kind: &str, id: &str, details: &[(&str, serde_json::Value)]) -> Option<String> {
+/// [`UnitPickHints`] entry names it, and a system-valued kind is its own id.
+fn option_system(
+    kind: &str,
+    id: &str,
+    units: Option<&BTreeMap<String, UnitPickEntry>>,
+) -> Option<String> {
     if matches!(kind, "rescue_from" | "space dock") {
         return Some(id.to_owned());
     }
-    details
-        .iter()
-        .find(|(key, _)| *key == "units")
-        .and_then(|(_, units)| units.get(id))
-        .and_then(|unit| unit.get("system"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
+    units
+        .and_then(|units| units.get(id))
+        .map(|unit| unit.system.clone())
 }
 
 /// A `planet` option of [`pick`] with the `planet`/`system` payload a map UI locates it by. Its
@@ -6331,6 +6390,19 @@ fn frontline_deployment(context: &mut crate::timing::TimingContext<'_>, player: 
     }
 }
 
+/// What a placement question of Manipulate Investments says: its fields are top-level keys of the
+/// details, written with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ManipulateInvestmentsHints {
+    /// Which trade good this placement is (1-based).
+    pub step: usize,
+    /// The trade goods placed in all.
+    pub of: usize,
+    /// The different strategy cards still owed a trade good.
+    pub distinct_owed: usize,
+}
+
 /// Manipulate Investments: five trade goods onto strategy cards, across at least three of them.
 ///
 /// > Place a total of 5 trade goods from the supply on strategy cards of your choice. You must
@@ -6403,11 +6475,11 @@ fn manipulate_investments(context: &mut crate::timing::TimingContext<'_>, player
             "Manipulate Investments: place a trade good on which strategy card",
             "strategy_card",
             &offer,
-            &[
-                ("step", (placed + 1).into()),
-                ("of", TOKENS.into()),
-                ("distinct_owed", owed.into()),
-            ],
+            &ManipulateInvestmentsHints {
+                step: placed + 1,
+                of: TOKENS,
+                distinct_owed: owed,
+            },
         ) else {
             return;
         };
@@ -6418,6 +6490,17 @@ fn manipulate_investments(context: &mut crate::timing::TimingContext<'_>, player
             .or_insert(0) += 1;
         used.insert(chosen);
     }
+}
+
+/// What Lie in Wait's "take which action card" question says: its fields are top-level keys of
+/// the details, written with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct LieInWaitHints {
+    /// The seat whose hand the card is taken from.
+    pub from: PlayerId,
+    /// The wording of the options (`details.phrases`, see [`crate::phrases::PHRASES_KEY`]).
+    pub phrases: crate::phrases::PhraseHints,
 }
 
 /// Lie in Wait: take one action card from each of two neighbours who have traded.
@@ -6463,13 +6546,10 @@ fn lie_in_wait(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId
             "Lie in Wait: take which action card",
             "action_card",
             &hand,
-            &[
-                ("from", serde_json::json!(victim.as_str())),
-                (
-                    crate::phrases::PHRASES_KEY,
-                    serde_json::to_value(&phrases).unwrap_or_default(),
-                ),
-            ],
+            &LieInWaitHints {
+                from: victim.clone(),
+                phrases,
+            },
         ) else {
             continue;
         };
@@ -6577,6 +6657,17 @@ fn cripple_defenses(context: &mut crate::timing::TimingContext<'_>, player: &Pla
     }
 }
 
+/// What the "repeal which law" question says: its one field is the top-level `laws` key of the
+/// details, written with [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RepealLawHints {
+    /// Each law in play as printed (`strategy_cards::agenda_details`) with the `outcome` that
+    /// passed it, by law.
+    #[cfg_attr(feature = "ts", ts(type = "Record<string, Record<string, unknown>>"))]
+    pub laws: BTreeMap<String, serde_json::Value>,
+}
+
 /// Repeal Law: discard one law from play.
 fn repeal_law(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId) {
     let laws: Vec<(String, String)> = crate::laws::in_play(context.state)
@@ -6584,7 +6675,7 @@ fn repeal_law(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
         .map(|alias| (alias.clone(), alias))
         .collect();
     // Display only: each law as printed, with the outcome that passed it.
-    let printed: serde_json::Map<String, serde_json::Value> = laws
+    let printed: BTreeMap<String, serde_json::Value> = laws
         .iter()
         .map(|(alias, _)| {
             let mut card = crate::strategy_cards::agenda_details(context.content, alias);
@@ -6599,7 +6690,7 @@ fn repeal_law(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
         "repeal which law",
         "repeal",
         &laws,
-        &[("laws", serde_json::Value::Object(printed))],
+        &RepealLawHints { laws: printed },
     ) else {
         return;
     };
@@ -7259,7 +7350,7 @@ fn lucky_shot(context: &mut crate::timing::TimingContext<'_>, player: &PlayerId)
         "Lucky Shot: destroy which ship",
         "ship",
         &targets,
-        &[("units", units)],
+        &units,
     ) else {
         return;
     };
@@ -10269,6 +10360,14 @@ mod tests {
         assert_eq!(first.details["step"], 1);
         assert_eq!(first.details["of"], 5);
         assert_eq!(first.details["distinct_owed"], 3);
+        assert_eq!(
+            first.hint_fields::<ManipulateInvestmentsHints>(),
+            Some(ManipulateInvestmentsHints {
+                step: 1,
+                of: 5,
+                distinct_owed: 3
+            })
+        );
     }
 
     /// Lie in Wait takes one card from each of two neighbours who traded, and counts a
@@ -10302,6 +10401,9 @@ mod tests {
             );
             assert_eq!(phrase.refs["victim"], crate::phrases::Subject::seat(&b));
         }
+        let typed = choice.hint_fields::<LieInWaitHints>().expect("typed");
+        assert_eq!(typed.from, b);
+        assert_eq!(typed.phrases, hints);
     }
 
     #[test]
@@ -10459,6 +10561,8 @@ mod tests {
             .to_owned();
         assert_eq!(ask.details["laws"]["sanctions"]["name"], printed);
         assert_eq!(ask.details["laws"]["sanctions"]["outcome"], "for");
+        let typed = ask.hint_fields::<RepealLawHints>().expect("typed");
+        assert_eq!(typed.laws["sanctions"]["outcome"], "for");
         assert_eq!(ask.options.len(), 2, "ids and order are as they were");
     }
 
@@ -10482,6 +10586,34 @@ mod tests {
         assert_eq!(ask.details["units"][first]["owner"], "b");
         assert_eq!(ask.details["units"][first]["system"], system.as_str());
         assert!(ask.details["units"][first]["unit"].is_string());
+        let typed = ask.hint_fields::<UnitPickHints>().expect("typed");
+        assert_eq!(typed.units[first].owner, rival);
+        assert_eq!(typed.units[first].system, system.as_str());
+        assert_eq!(typed.units[first].planet, None);
+    }
+
+    #[test]
+    fn public_disgrace_question_names_the_card_taken_and_who_played_it() {
+        let player = PlayerId::new("a");
+        let picker = PlayerId::new("b");
+        let mut state = crate::fixtures::game(&["a", "b"]);
+        let taken = StrategyCardId::new("pok5trade");
+        state.unclaimed_strategy_cards = vec![StrategyCardId::new("pok6warfare")];
+        state.player_mut(&picker).unwrap().strategy_cards = vec![taken.clone()];
+        state.last_strategy_choice = Some((picker.clone(), taken.clone()));
+
+        let seen = resolve_card_capturing(&mut state, "disgrace", &player, &["pok6warfare"]);
+
+        let ask = seen.borrow()[0].clone();
+        assert_eq!(ask.details["first"], "pok5trade");
+        assert_eq!(ask.details["played_by"], "a");
+        assert_eq!(
+            ask.hint_fields::<PublicDisgraceHints>(),
+            Some(PublicDisgraceHints {
+                first: taken,
+                played_by: player
+            })
+        );
     }
 
     #[test]
@@ -10505,6 +10637,11 @@ mod tests {
         let ask = seen.borrow()[0].clone();
         assert_eq!(ask.details["holders"]["pok5trade"], "b");
         assert!(ask.details["holders"]["pok6warfare"].is_null());
+        let typed = ask
+            .hint_fields::<StrategyCardHoldersHints>()
+            .expect("typed");
+        assert_eq!(typed.holders["pok5trade"], Some(other));
+        assert_eq!(typed.holders["pok6warfare"], None);
     }
 
     #[test]
@@ -12132,6 +12269,9 @@ mod tests {
         assert_eq!(first.details["units"][&id]["system"], system.as_str());
         assert_eq!(first.details["units"][&id]["damaged"], false);
         assert_eq!(first.details["units"][&id]["cost"], 2.0);
+        let typed = first.hint_fields::<UnitPickHints>().expect("typed");
+        assert_eq!(typed.units[&id].unit, "cruiser");
+        assert!(!typed.units[&id].damaged);
     }
 
     #[test]
