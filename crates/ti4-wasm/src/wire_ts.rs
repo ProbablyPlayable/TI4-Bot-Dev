@@ -83,6 +83,12 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::strategy_cards::ImperialHints>();
     collect.visit::<ti4_engine::transactions::TransactionHints>();
     collect.visit::<ti4_engine::phrases::PhraseHints>();
+    collect.visit::<ti4_engine::game::TurnMenuHints>();
+    collect.visit::<ti4_engine::game::TurnMenuCardEffect>();
+    collect.visit::<ti4_engine::game::TurnMenuTokens>();
+    collect.visit::<ti4_engine::game::TurnMenuStrategyCard>();
+    collect.visit::<ti4_engine::game::TurnMenuPartner>();
+    collect.visit::<ti4_engine::action_cards::CulturalPlanetPreview>();
     collect.visit::<crate::host_session::HostSave>();
     let mut index = format!("{NOTE}\n");
     for name in collect.names.keys() {

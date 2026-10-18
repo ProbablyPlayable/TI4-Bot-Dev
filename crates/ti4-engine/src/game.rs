@@ -1267,6 +1267,85 @@ impl<'a> GameSnapshot<'a> {
     }
 }
 
+/// The facts of the persistent action bar (display only, top-level keys of the details of a
+/// `kind: "turn_menu"` question, an action-phase turn or the close of one); see
+/// `Game::with_turn_menu`. Never read by the engine.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TurnMenuHints {
+    /// What a held action card's play would touch, keyed by the option that plays it.
+    pub action_card_effects: BTreeMap<String, TurnMenuCardEffect>,
+    /// Whether the turn is closing (its action is taken; only free options and the end remain).
+    pub closing: bool,
+    /// The actions taken this turn.
+    pub actions_taken: u8,
+    /// The seat's command-token pools.
+    pub tokens: TurnMenuTokens,
+    /// Every strategy card the seat holds, in its order.
+    pub strategy_cards: Vec<TurnMenuStrategyCard>,
+    /// Every other seat, in seating order, with whether a transaction can be opened now.
+    pub partners: Vec<TurnMenuPartner>,
+}
+
+/// What a held action card's play would touch (display only, in
+/// [`TurnMenuHints::action_card_effects`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnMenuCardEffect {
+    /// Economic Initiative: the cultural planets it readies.
+    ReadyCultural {
+        /// The cultural planets the seat controls, with whether each is exhausted.
+        planets: Vec<crate::action_cards::CulturalPlanetPreview>,
+    },
+}
+
+/// The command-token pools of the turn menu (display only, [`TurnMenuHints::tokens`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TurnMenuTokens {
+    /// The tokens in the tactic pool.
+    pub tactic: i32,
+    /// The tokens in the fleet pool.
+    pub fleet: i32,
+    /// The tokens in the strategy pool.
+    pub strategy: i32,
+}
+
+/// A strategy card the seat holds (display only, in [`TurnMenuHints::strategy_cards`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TurnMenuStrategyCard {
+    /// The card's id.
+    pub card: String,
+    /// Whether its strategic action is spent.
+    pub used: bool,
+    /// The option that plays its strategic action, or null when none does now.
+    pub option: Option<String>,
+}
+
+/// Another seat in the turn menu (display only, in [`TurnMenuHints::partners`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TurnMenuPartner {
+    /// The seat.
+    pub seat: String,
+    /// Its faction.
+    pub faction: String,
+    /// Whether a transaction with it can be opened now.
+    pub available: bool,
+    /// Whether the two are neighbours (in contact for a transaction).
+    pub in_contact: bool,
+    /// Why no transaction can be opened, or null when one can.
+    pub reason: Option<String>,
+    /// Its trade goods.
+    pub trade_goods: i32,
+    /// Its commodities.
+    pub commodities: i32,
+    /// The promissory notes it holds.
+    pub promissory_notes: usize,
+}
+
 impl<'a> Game<'a> {
     /// Copy everything this game needs to continue identically, as plain data.
     ///
@@ -2350,12 +2429,11 @@ impl<'a> Game<'a> {
     /// opened right now and, when not, why. The client cannot rebuild the "why" for a partner
     /// that is simply absent from the options. Never read by the engine.
     fn with_turn_menu(&self, choice: Choice, closing: bool) -> Choice {
-        use serde_json::json;
         let player = choice.player.clone();
         let Some(seat) = self.state.player(&player) else {
             return choice;
         };
-        let cards: Vec<serde_json::Value> = seat
+        let cards: Vec<TurnMenuStrategyCard> = seat
             .strategy_cards
             .iter()
             .map(|card| {
@@ -2377,11 +2455,11 @@ impl<'a> Game<'a> {
                             .flatten()
                     })
                     .map(|option| option.id.clone());
-                json!({
-                    "card": card.as_str(),
-                    "used": seat.exhausted_strategy_cards.contains(card),
-                    "option": option,
-                })
+                TurnMenuStrategyCard {
+                    card: card.as_str().to_owned(),
+                    used: seat.exhausted_strategy_cards.contains(card),
+                    option,
+                }
             })
             .collect();
         let offered = |other: &PlayerId| {
@@ -2391,7 +2469,7 @@ impl<'a> Game<'a> {
             })
         };
         let already = self.state.transacted_with(&player);
-        let partners: Vec<serde_json::Value> = self
+        let partners: Vec<TurnMenuPartner> = self
             .state
             .seating_order
             .iter()
@@ -2419,25 +2497,25 @@ impl<'a> Game<'a> {
                 } else {
                     Some("Not available now")
                 };
-                Some(json!({
-                    "seat": other.as_str(),
-                    "faction": theirs.faction.as_str(),
-                    "available": available,
-                    "in_contact": neighbour,
-                    "reason": reason,
-                    "trade_goods": theirs.trade_goods,
-                    "commodities": theirs.commodities,
-                    "promissory_notes": self
+                Some(TurnMenuPartner {
+                    seat: other.as_str().to_owned(),
+                    faction: theirs.faction.as_str().to_owned(),
+                    available,
+                    in_contact: neighbour,
+                    reason: reason.map(str::to_owned),
+                    trade_goods: theirs.trade_goods,
+                    commodities: theirs.commodities,
+                    promissory_notes: self
                         .state
                         .promissory_notes
                         .values()
                         .filter(|holder| *holder == other)
                         .count(),
-                }))
+                })
             })
             .collect();
         // Display only: what a card's play would touch, keyed by the option that plays it.
-        let mut card_effects = serde_json::Map::new();
+        let mut card_effects = BTreeMap::new();
         for option in &choice.options {
             let Some(alias) = option
                 .id
@@ -2450,32 +2528,31 @@ impl<'a> Game<'a> {
             if alias.as_str() == "economic_initiative" {
                 card_effects.insert(
                     option.id.clone(),
-                    json!({
-                        "kind": "ready_cultural",
-                        "planets": crate::action_cards::cultural_planets_preview(
-                            &self.state, self.content, self.sources, &player),
-                    }),
+                    TurnMenuCardEffect::ReadyCultural {
+                        planets: crate::action_cards::cultural_planets_preview(
+                            &self.state,
+                            self.content,
+                            self.sources,
+                            &player,
+                        ),
+                    },
                 );
             }
         }
         choice
-            .detailed(
-                "action_card_effects",
-                serde_json::Value::Object(card_effects),
-            )
             .detailed("kind", "turn_menu")
-            .detailed("closing", closing)
-            .detailed("actions_taken", self.actions_this_turn)
-            .detailed(
-                "tokens",
-                json!({
-                    "tactic": seat.tokens(TokenPool::Tactic),
-                    "fleet": seat.tokens(TokenPool::Fleet),
-                    "strategy": seat.tokens(TokenPool::Strategic),
-                }),
-            )
-            .detailed("strategy_cards", cards)
-            .detailed("partners", partners)
+            .hinted_fields(&TurnMenuHints {
+                action_card_effects: card_effects,
+                closing,
+                actions_taken: self.actions_this_turn,
+                tokens: TurnMenuTokens {
+                    tactic: seat.tokens(TokenPool::Tactic),
+                    fleet: seat.tokens(TokenPool::Fleet),
+                    strategy: seat.tokens(TokenPool::Strategic),
+                },
+                strategy_cards: cards,
+                partners,
+            })
     }
 
     /// Whether an action-phase option leaves the turn's action untouched: a contact, a trade, a
@@ -9505,6 +9582,16 @@ mod tests {
         let choice = game.legal_options().unwrap();
         assert_eq!(choice.details["kind"], "turn_menu");
         assert_eq!(choice.details["closing"], false);
+        let hints = choice
+            .hint_fields::<TurnMenuHints>()
+            .expect("the turn menu's facts");
+        assert!(!hints.closing);
+        assert_eq!(hints.partners.len(), 1);
+        assert_eq!(hints.partners[0].seat, "b");
+        assert_eq!(
+            hints.tokens.fleet,
+            game.state.player(&PlayerId::new("a")).unwrap().fleet_tokens
+        );
         let tokens = &choice.details["tokens"];
         let seat = game.state.player(&PlayerId::new("a")).unwrap();
         assert_eq!(tokens["tactic"], seat.tactic_tokens);
@@ -9528,6 +9615,29 @@ mod tests {
                 "a missing partner says why"
             );
         }
+    }
+
+    #[test]
+    fn the_turn_menu_previews_economic_initiative_under_its_play_option() {
+        let (mut state, galaxy, _) = tactical_fixture();
+        state.player_mut(&PlayerId::new("a")).unwrap().action_cards =
+            vec![ti4_model::id::ActionCardId::new("economic_initiative")];
+        let game = Game::new(state, ContentStore::embedded()).with_galaxy(galaxy);
+
+        let choice = game.legal_options().unwrap();
+        let play = format!("{}0", crate::action_cards::PLAY_PREFIX);
+        assert!(choice.ids().contains(&play.as_str()), "{:?}", choice.ids());
+        let hints = choice
+            .hint_fields::<TurnMenuHints>()
+            .expect("the turn menu's facts");
+        assert!(matches!(
+            hints.action_card_effects.get(&play),
+            Some(TurnMenuCardEffect::ReadyCultural { .. })
+        ));
+        assert_eq!(
+            choice.details["action_card_effects"][&play]["kind"],
+            "ready_cultural"
+        );
     }
 
     #[test]

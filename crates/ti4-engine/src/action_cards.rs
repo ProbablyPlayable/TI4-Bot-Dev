@@ -4184,6 +4184,22 @@ fn harness_energy(context: &mut crate::timing::TimingContext<'_>, player: &Playe
     crate::promissory::trade_agreement_on_replenish(context.state, player);
 }
 
+/// A cultural planet that Economic Initiative would ready (display only, in
+/// [`crate::game::TurnMenuCardEffect::ReadyCultural`] of the turn menu).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CulturalPlanetPreview {
+    /// The planet's id.
+    pub id: String,
+    /// Its printed name (the id when the corpus has none).
+    pub name: String,
+    /// Always `"cultural"`.
+    #[serde(rename = "trait")]
+    pub planet_trait: String,
+    /// Whether it is exhausted now (so whether the card will change it).
+    pub exhausted: bool,
+}
+
 /// Display only: the cultural planets `player` controls, which Economic Initiative readies, with
 /// whether each is exhausted now (so whether the card will actually change it). Never read by the
 /// engine; shown beside the card in the turn menu.
@@ -4193,7 +4209,7 @@ pub fn cultural_planets_preview(
     content: &ContentStore,
     sources: SourceSet,
     player: &PlayerId,
-) -> Vec<serde_json::Value> {
+) -> Vec<CulturalPlanetPreview> {
     state
         .controlled_planets(player)
         .into_iter()
@@ -4202,13 +4218,11 @@ pub fn cultural_planets_preview(
             record
                 .planet_type()
                 .is_some_and(|kind| kind.eq_ignore_ascii_case("cultural"))
-                .then(|| {
-                    serde_json::json!({
-                        "id": planet.as_str(),
-                        "name": record.name().unwrap_or_else(|| planet.as_str()),
-                        "trait": "cultural",
-                        "exhausted": state.exhausted_planets.contains(planet),
-                    })
+                .then(|| CulturalPlanetPreview {
+                    id: planet.as_str().to_owned(),
+                    name: record.name().unwrap_or_else(|| planet.as_str()).to_owned(),
+                    planet_trait: "cultural".to_owned(),
+                    exhausted: state.exhausted_planets.contains(planet),
                 })
         })
         .collect()
@@ -11743,16 +11757,14 @@ mod tests {
         state
             .system_mut(&system)
             .set_control(planet.clone(), player.clone());
-        assert_eq!(
-            cultural_planets_preview(&state, store, POK, &player)[0]["exhausted"],
-            false
-        );
+        assert!(!cultural_planets_preview(&state, store, POK, &player)[0].exhausted);
         state.exhausted_planets.insert(planet);
         let preview = cultural_planets_preview(&state, store, POK, &player);
         assert_eq!(preview.len(), 1);
-        assert_eq!(preview[0]["id"], cultural.as_str());
-        assert_eq!(preview[0]["exhausted"], true);
-        assert_eq!(preview[0]["trait"], "cultural");
+        assert_eq!(preview[0].id, cultural);
+        assert!(preview[0].exhausted);
+        let json = serde_json::to_value(&preview[0]).unwrap();
+        assert_eq!(json["trait"], "cultural");
     }
 
     #[test]
