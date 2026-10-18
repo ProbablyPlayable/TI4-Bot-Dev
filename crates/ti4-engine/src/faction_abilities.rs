@@ -811,14 +811,70 @@ pub fn ground_combat_round_ended(
 }
 
 /// Display only: a faction ability as printed (its name, when it can be used and what it does).
-fn ability_card(content: &ContentStore, id: &str) -> serde_json::Value {
+fn ability_card(content: &ContentStore, id: &str) -> FactionAbilityCard {
     let record = content.get(ContentType::Abilities, id);
-    let field = |key: &str| record.as_ref().and_then(|record| record.text(key));
-    serde_json::json!({
-        "name": field("name"),
-        "window": field("window"),
-        "effect": field("windowEffect"),
-    })
+    let field = |key: &str| {
+        record
+            .as_ref()
+            .and_then(|record| record.text(key))
+            .map(str::to_owned)
+    };
+    FactionAbilityCard {
+        name: field("name"),
+        window: field("window"),
+        effect: field("windowEffect"),
+    }
+}
+
+/// The printed faction ability an offer is about (display only, `details.ability` of the
+/// Munitions Reserves questions, inside [`MunitionsOfferHints`]). A text the content lacks is
+/// `null`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct FactionAbilityCard {
+    /// The ability's printed name.
+    pub name: Option<String>,
+    /// When it may be used (the content's `window`).
+    pub window: Option<String>,
+    /// What it does in that window (the content's `windowEffect`).
+    pub effect: Option<String>,
+}
+
+/// The facts of a Munitions Reserves question, before or after the roll (display only, top-level
+/// keys of the details, written with [`crate::choice::Choice::hinted_fields`]): the printed
+/// ability and its cost against the trade goods held.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MunitionsOfferHints {
+    /// The printed Munitions Reserves.
+    pub ability: FactionAbilityCard,
+    /// The trade goods it costs and those held.
+    pub cost: MunitionsCost,
+}
+
+/// The cost of Munitions Reserves against the trade goods held (display only, `details.cost`
+/// inside [`MunitionsOfferHints`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MunitionsCost {
+    /// The trade goods spent ([`MUNITIONS_COST`]).
+    pub trade_goods: i32,
+    /// The trade goods the seat can spend now.
+    pub have: i32,
+}
+
+/// The staged roll of a Munitions Reserves question asked after the fleet rolled (rules version
+/// 2; display only, top-level keys of the details, written with
+/// [`crate::choice::Choice::hinted_fields`] next to [`MunitionsOfferHints`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MunitionsRollHints {
+    /// Every staged die, as [`crate::combat::staged_dice_view`] shows it (the view the combat
+    /// reroll questions share).
+    #[cfg_attr(feature = "ts", ts(type = "Array<Record<string, unknown>>"))]
+    pub dice: Vec<serde_json::Value>,
+    /// How many of those dice miss.
+    pub misses: usize,
 }
 
 /// The cost of Munitions Reserves, paid at each combat round's opening window.
@@ -893,11 +949,13 @@ fn munitions_offer(
         ],
     )
     .detailed("kind", "ability_offer")
-    .detailed("ability", ability_card(content, "munitions"))
-    .detailed(
-        "cost",
-        serde_json::json!({ "trade_goods": MUNITIONS_COST, "have": held }),
-    )
+    .hinted_fields(&MunitionsOfferHints {
+        ability: ability_card(content, "munitions"),
+        cost: MunitionsCost {
+            trade_goods: MUNITIONS_COST,
+            have: held,
+        },
+    })
     .contextualized(DecisionContext::new(
         player.clone(),
         DecisionSource::FactionAbility("munitions".to_owned()),
@@ -1008,13 +1066,17 @@ fn munitions_roll_offer(
         options,
     )
     .detailed("kind", "ability_offer")
-    .detailed("ability", ability_card(content, "munitions"))
-    .detailed(
-        "cost",
-        serde_json::json!({ "trade_goods": MUNITIONS_COST, "have": held }),
-    )
-    .detailed("dice", dice.to_vec())
-    .detailed("misses", misses.len())
+    .hinted_fields(&MunitionsOfferHints {
+        ability: ability_card(content, "munitions"),
+        cost: MunitionsCost {
+            trade_goods: MUNITIONS_COST,
+            have: held,
+        },
+    })
+    .hinted_fields(&MunitionsRollHints {
+        dice: dice.to_vec(),
+        misses: misses.len(),
+    })
     .contextualized(DecisionContext::new(
         player.clone(),
         DecisionSource::FactionAbility("munitions".to_owned()),
@@ -2036,6 +2098,17 @@ mod tests {
         );
         assert_eq!(ask[0].details["cost"]["trade_goods"], 2);
         assert_eq!(ask[0].details["cost"]["have"], 5);
+        let hints = ask[0]
+            .hint_fields::<MunitionsOfferHints>()
+            .expect("the offer is typed");
+        assert_eq!(hints.ability.name.as_deref(), Some("Munitions Reserves"));
+        assert_eq!(
+            hints.cost,
+            MunitionsCost {
+                trade_goods: 2,
+                have: 5
+            }
+        );
     }
 
     #[test]

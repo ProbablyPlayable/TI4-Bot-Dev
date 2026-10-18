@@ -85,11 +85,8 @@ pub fn pick_with(
         // worth it for two or more misses -- about one hit regained on average -- and a chosen
         // die is always a re-roll, the question only asks about misses.
         "munitions_reserves_reroll" if choice.details.contains_key("dice") => {
-            let misses = choice
-                .details
-                .get("misses")
-                .and_then(serde_json::Value::as_u64);
-            if misses.is_some_and(|misses| misses >= 2) {
+            let roll = choice.hint_fields::<ti4_engine::faction_abilities::MunitionsRollHints>();
+            if roll.is_some_and(|roll| roll.misses >= 2) {
                 choice.options.iter().position(|o| o.id == "munitions")
             } else {
                 choice.options.iter().position(ChoiceOption::is_decline)
@@ -653,7 +650,7 @@ mod tests {
     fn munitions_reserves_is_bought_for_two_or_more_misses_and_re_rolls_them_all() {
         let state = game(&["a", "b"]);
         let me = PlayerId::new("a");
-        let offer = |misses: u64| {
+        let offer = |misses: usize| {
             with_subtype(
                 Choice::new(
                     me.clone(),
@@ -664,8 +661,12 @@ mod tests {
                         ChoiceOption::decline(),
                     ],
                 )
-                .detailed("dice", serde_json::json!([]))
-                .detailed("misses", misses),
+                .hinted_fields(
+                    &ti4_engine::faction_abilities::MunitionsRollHints {
+                        dice: Vec::new(),
+                        misses,
+                    },
+                ),
                 "munitions_reserves_reroll",
             )
         };

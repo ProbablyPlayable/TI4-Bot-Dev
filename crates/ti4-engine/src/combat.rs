@@ -7900,6 +7900,10 @@ mod tests {
             .map(|die| die["face"].as_i64().unwrap())
             .collect();
         assert_eq!(faces, vec![1, 1, 10]);
+        let roll = offer
+            .hint_fields::<crate::faction_abilities::MunitionsRollHints>()
+            .expect("the roll is typed");
+        assert_eq!((roll.dice.len(), roll.misses), (3, 2));
         assert_eq!(
             state.player(&attacker()).unwrap().trade_goods,
             2,
