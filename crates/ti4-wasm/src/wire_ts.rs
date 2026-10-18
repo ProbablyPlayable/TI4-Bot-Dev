@@ -66,6 +66,8 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::fleet::FleetSupplyHints>();
     collect.visit::<ti4_engine::production::CapacityHints>();
     collect.visit::<ti4_engine::vote::VoteTallyHints>();
+    collect.visit::<ti4_engine::vote::VoteTradeGoodsHints>();
+    collect.visit::<ti4_engine::vote::PredictiveVotesHints>();
     // ts-rs inlines a flattened struct, so the shared part is a root of its own.
     collect.visit::<ti4_engine::strategy_cards::PaymentHints>();
     collect.visit::<ti4_engine::strategy_cards::ResearchPaymentHints>();

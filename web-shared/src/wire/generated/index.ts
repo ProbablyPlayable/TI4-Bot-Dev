@@ -160,6 +160,7 @@ export type { PoliticsHints } from "./PoliticsHints.ts";
 export type { PongMsg } from "./PongMsg.ts";
 export type { PoolOptions } from "./PoolOptions.ts";
 export type { PoolsChange } from "./PoolsChange.ts";
+export type { PredictiveVotesHints } from "./PredictiveVotesHints.ts";
 export type { PreviewRefusal } from "./PreviewRefusal.ts";
 export type { PreviewResult } from "./PreviewResult.ts";
 export type { PrintedCard } from "./PrintedCard.ts";
@@ -278,6 +279,7 @@ export type { Unloadable } from "./Unloadable.ts";
 export type { UnloadableCargo } from "./UnloadableCargo.ts";
 export type { ViewerRole } from "./ViewerRole.ts";
 export type { VoteTallyHints } from "./VoteTallyHints.ts";
+export type { VoteTradeGoodsHints } from "./VoteTradeGoodsHints.ts";
 export type { WithheldStructure } from "./WithheldStructure.ts";
 
 /** `ti4_host::protocol::PROTOCOL_VERSION`: the version of the messages of this build. */

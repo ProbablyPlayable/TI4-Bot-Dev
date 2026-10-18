@@ -27,6 +27,33 @@ pub const FOR: &str = "for";
 /// The other one.
 pub const AGAINST: &str = "against";
 
+/// Display only, on the question to spend trade goods for votes (Hacan commander, Executive Order's
+/// spender), written by [`Choice::hinted_fields`] next to `details.kind` = `vote_trade_goods`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VoteTradeGoodsHints {
+    /// The outcome the votes go to.
+    pub outcome: String,
+    /// The votes cast for it so far.
+    pub votes: i64,
+    /// The trade goods the seat may spend.
+    pub goods: i64,
+    /// The votes each trade good adds: 2 with the Hacan commander, 1 for the spender.
+    pub votes_per_good: i64,
+}
+
+/// Display only, on Predictive Intelligence's question, written by [`Choice::hinted_fields`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PredictiveVotesHints {
+    /// The outcome the votes go to.
+    pub outcome: String,
+    /// The votes cast for it so far.
+    pub votes: i64,
+    /// The votes the card adds (3).
+    pub votes_added: i64,
+}
+
 /// Display / decider view only, on the planet question of a vote (`details.tally` and
 /// `details.votes_so_far`, written by [`Choice::hinted_fields`]): the ledger before this seat's
 /// votes, in the outcome order of the cast question, and the votes the seat has cast so far.
@@ -709,35 +736,41 @@ impl VoteWindow {
                     })
                     .collect();
                 options.push(ChoiceOption::decline());
-                Some(
-                    Choice::new(
-                        player.clone(),
-                        format!("spend trade goods for votes on {outcome}"),
-                        options,
-                    )
-                    .detailed("kind", "vote_trade_goods")
-                    .detailed(
+                let mut question = Choice::new(
+                    player.clone(),
+                    format!("spend trade goods for votes on {outcome}"),
+                    options,
+                )
+                .detailed("kind", "vote_trade_goods");
+                // The Hacan commander's card heads its offer; Executive Order's spender has none.
+                if rate == 2 {
+                    question = question.detailed(
                         "card",
                         crate::strategy_cards::commander_card(content, "hacancommander"),
-                    )
-                    .detailed("outcome", outcome.as_str())
-                    .detailed("votes", *votes)
-                    .detailed("goods", i64::from(goods))
-                    .detailed("votes_per_good", 2)
-                    .contextualized(DecisionContext::new(
-                        player.clone(),
-                        DecisionSource::Content(
-                            if rate == 2 {
-                                "hacancommander"
-                            } else {
-                                "executiveorder"
-                            }
-                            .to_owned(),
-                        ),
-                        "vote_spend_trade_goods",
-                        state.phase,
-                        state.round,
-                    )),
+                    );
+                }
+                Some(
+                    question
+                        .hinted_fields(&VoteTradeGoodsHints {
+                            outcome: outcome.clone(),
+                            votes: *votes,
+                            goods: i64::from(goods),
+                            votes_per_good: rate,
+                        })
+                        .contextualized(DecisionContext::new(
+                            player.clone(),
+                            DecisionSource::Content(
+                                if rate == 2 {
+                                    "hacancommander"
+                                } else {
+                                    "executiveorder"
+                                }
+                                .to_owned(),
+                            ),
+                            "vote_spend_trade_goods",
+                            state.phase,
+                            state.round,
+                        )),
                 )
             }
             Stage::Recombine(index) => {
@@ -832,9 +865,11 @@ impl VoteWindow {
                         format!("Predictive Intelligence: 3 more votes for {outcome}"),
                         vec![option, ChoiceOption::decline()],
                     )
-                    .detailed("outcome", outcome.as_str())
-                    .detailed("votes", *votes)
-                    .detailed("votes_added", PREDICTIVE_VOTES)
+                    .hinted_fields(&PredictiveVotesHints {
+                        outcome: outcome.clone(),
+                        votes: *votes,
+                        votes_added: PREDICTIVE_VOTES,
+                    })
                     .contextualized(DecisionContext::new(
                         player.clone(),
                         DecisionSource::Content("pi".to_owned()),
@@ -1709,6 +1744,36 @@ mod tests {
             window.ballot.counts.get(FOR).copied(),
             Some(first_influence + second_influence + 2)
         );
+    }
+
+    #[test]
+    fn the_executive_order_spender_is_shown_one_vote_per_trade_good_without_a_commander_card() {
+        let (mut state, players) = game(&["a"]);
+        let (first, _, _second, _) = give_two_voting_planets(&mut state, &players[0]);
+        state.player_mut(&players[0]).unwrap().trade_goods = 2;
+        let content = ContentStore::embedded();
+        let mut window =
+            VoteWindow::new(&state, "x", for_against()).with_spender(players[0].clone());
+        window.open(&state, content, POK);
+        let option = pick(&window, &state, FOR);
+        window.resolve(&mut state, content, POK, option).unwrap();
+        let option = pick(&window, &state, first.as_str());
+        window.resolve(&mut state, content, POK, option).unwrap();
+        let decline = window
+            .pending_choice(&state, content, POK)
+            .and_then(|choice| choice.options.into_iter().find(ChoiceOption::is_decline))
+            .expect("decline the second planet");
+        window.resolve(&mut state, content, POK, decline).unwrap();
+        let choice = window
+            .pending_choice(&state, content, POK)
+            .expect("the spender is asked how many trade goods");
+        assert_eq!(choice.details["kind"], "vote_trade_goods");
+        let hints = choice
+            .hint_fields::<VoteTradeGoodsHints>()
+            .expect("trade goods hints");
+        assert_eq!(hints.votes_per_good, 1);
+        assert_eq!(hints.goods, 2);
+        assert!(!choice.details.contains_key("card"));
     }
 
     #[test]
