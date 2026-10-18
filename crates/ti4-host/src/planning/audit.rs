@@ -262,9 +262,14 @@ pub fn audit_secondary_offer(
     primary: &PlayerId,
     card: &StrategyCardId,
 ) -> Result<Vec<String>, StopReason> {
-    let detail = |key: &str| choice.details.get(key).and_then(serde_json::Value::as_str);
-    if detail("kind") == Some("strategy_secondary")
-        && (detail("card") != Some(card.as_str()) || detail("played_by") != Some(primary.as_str()))
+    if choice
+        .details
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("strategy_secondary")
+        && choice
+            .hint_fields::<ti4_engine::strategy::StrategySecondaryHints>()
+            .is_none_or(|asked| &asked.card != card || &asked.played_by != primary)
     {
         return Err(StopReason::UnsupportedOffer);
     }

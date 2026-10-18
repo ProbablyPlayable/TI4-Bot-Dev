@@ -447,7 +447,9 @@ impl Force {
                     );
                     return yes.then(|| "yes".into());
                 }
-                let costs = c.details.get("costs_token").and_then(Value::as_bool) == Some(true);
+                let costs = c
+                    .hint_fields::<ti4_engine::strategy::StrategySecondaryHints>()
+                    .is_some_and(|secondary| secondary.costs_token);
                 if costs && proposed.id == "yes" && sol.strategic_tokens <= 1 {
                     return Some("no".into());
                 }

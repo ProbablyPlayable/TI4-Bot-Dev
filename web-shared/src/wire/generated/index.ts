@@ -246,6 +246,7 @@ export type { StopReason } from "./StopReason.ts";
 export type { StrategyCard } from "./StrategyCard.ts";
 export type { StrategyCardId } from "./StrategyCardId.ts";
 export type { StrategyCardRecord } from "./StrategyCardRecord.ts";
+export type { StrategySecondaryHints } from "./StrategySecondaryHints.ts";
 export type { StructureHints } from "./StructureHints.ts";
 export type { StructurePlacement } from "./StructurePlacement.ts";
 export type { StructureSpot } from "./StructureSpot.ts";

@@ -84,6 +84,22 @@ pub enum SecondaryBlocker {
     Other,
 }
 
+/// What a follower's secondary question (`details.kind == "strategy_secondary"`) says of the
+/// strategic action: its fields are top-level keys of the details, written with
+/// [`Choice::hinted_fields`] (display only).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StrategySecondaryHints {
+    /// The strategy card whose secondary is asked.
+    pub card: StrategyCardId,
+    /// The seat that played the card (the primary).
+    pub played_by: PlayerId,
+    /// The strategy tokens that the follower has now.
+    pub tokens_left: i32,
+    /// Following costs the follower a strategy token.
+    pub costs_token: bool,
+}
+
 /// The follower's secondary question with the facts a client needs to present it: which card
 /// was played, by whom, and how many strategy tokens the follower has left.
 fn secondary_choice(
@@ -171,10 +187,12 @@ fn secondary_choice(
     }
     question
         .detailed("kind", "strategy_secondary")
-        .detailed("card", card.as_str())
-        .detailed("played_by", primary.as_str())
-        .detailed("tokens_left", tokens_left)
-        .detailed("costs_token", costs_token)
+        .hinted_fields(&StrategySecondaryHints {
+            card: card.clone(),
+            played_by: primary.clone(),
+            tokens_left,
+            costs_token,
+        })
 }
 
 fn secondary_question(
@@ -1175,6 +1193,15 @@ mod tests {
         assert_eq!(choice.details["played_by"], "a");
         assert_eq!(choice.details["tokens_left"], 3);
         assert_eq!(choice.details["costs_token"], true);
+        assert_eq!(
+            choice.hint_fields::<StrategySecondaryHints>(),
+            Some(StrategySecondaryHints {
+                card: card.clone(),
+                played_by: PlayerId::new("a"),
+                tokens_left: 3,
+                costs_token: true,
+            })
+        );
         // The context says which card's secondary this is, so that a log can tell the follow.
         let context = choice
             .context

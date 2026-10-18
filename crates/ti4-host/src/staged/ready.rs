@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use ti4_engine::choice::Choice;
+use ti4_engine::strategy::StrategySecondaryHints;
 use ti4_model::id::PlayerId;
 
 use super::{SeatStaged, SecondaryDraft};
@@ -26,11 +27,15 @@ use crate::protocol::staged::StagedSlot;
 /// The game asks `seat` its secondary of a strategic action with `choice`: the primary and the
 /// card, as the question names them.
 #[must_use]
-pub fn asked<'a>(choice: &'a Choice, seat: &PlayerId) -> Option<(&'a str, &'a str)> {
-    let detail = |key: &str| choice.details.get(key).and_then(serde_json::Value::as_str);
-    (&choice.player == seat && detail("kind") == Some("strategy_secondary"))
-        .then(|| detail("played_by").zip(detail("card")))
-        .flatten()
+pub fn asked(choice: &Choice, seat: &PlayerId) -> Option<StrategySecondaryHints> {
+    (&choice.player == seat
+        && choice
+            .details
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("strategy_secondary"))
+    .then(|| choice.hint_fields::<StrategySecondaryHints>())
+    .flatten()
 }
 
 /// The ready draft of a seat, with the revision of its slot and the value as it is kept.
@@ -60,15 +65,15 @@ pub fn ready_draft(
     choice: &Choice,
     round: u32,
 ) -> Option<Ready> {
-    let (primary, card) = asked(choice, seat)?;
+    let asked = asked(choice, seat)?;
     let slot = seats.get(seat)?.slots.get(&StagedSlot::Secondary)?;
     let value = slot.value.clone()?;
     let draft = SecondaryDraft::of(&value)?;
     (draft.ready
         && !draft.answers.is_empty()
         && draft.round == round
-        && draft.primary.as_str() == primary
-        && draft.card.as_str() == card)
+        && draft.primary == asked.played_by
+        && draft.card == asked.card)
         .then_some(Ready {
             revision: slot.revision,
             draft,
@@ -122,7 +127,13 @@ mod tests {
             "player": seat,
             "prompt": "Follow?",
             "options": [],
-            "details": { "kind": kind, "played_by": "b", "card": "leadership" },
+            "details": {
+                "kind": kind,
+                "played_by": "b",
+                "card": "leadership",
+                "tokens_left": 2,
+                "costs_token": true,
+            },
         }))
         .expect("a choice")
     }

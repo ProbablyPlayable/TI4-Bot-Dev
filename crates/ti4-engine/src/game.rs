@@ -15606,9 +15606,8 @@ mod tests {
                 choice.player.to_string(),
                 choice.prompt.clone(),
                 choice
-                    .details
-                    .get("costs_token")
-                    .and_then(serde_json::Value::as_bool),
+                    .hint_fields::<crate::strategy::StrategySecondaryHints>()
+                    .map(|secondary| secondary.costs_token),
             ));
             choice
                 .options
