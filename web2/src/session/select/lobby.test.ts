@@ -700,7 +700,11 @@ it("a table in the page is single player: no tab to join from, no name to change
   expect(view.rows[1].sign).toEqual({ kind: "rule", word: "Rule bot: played by the page" });
   expect(view.rows[1].editor).not.toBeNull();
   expect(view.rows[1].remove?.intent).toEqual({ type: "remove", player: "b" });
-  expect(view.rows[2].buttons.map((button) => button.label)).toEqual(["Rule bot", "Random"]);
+  // The open seat has no tab to join from; the bots of the page are the choice under the seats.
+  expect(view.rows[2].buttons).toEqual([]);
+  expect(view.bots?.options.map((option) => option.label)).toEqual(["Rule bot", "Random"]);
+  expect(view.bots?.sign).toEqual({ kind: "rule", word: "Rule bot: played by the page" });
+  expect(view.bots?.add.intent).toEqual({ type: "addBot", kind: "smart" });
   expect(view.setup.find((row) => row.id === "wait")?.help[0].text).toMatch(
     /^A seat that the page plays waits/,
   );
