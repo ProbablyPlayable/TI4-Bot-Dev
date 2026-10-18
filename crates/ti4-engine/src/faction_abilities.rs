@@ -871,8 +871,7 @@ pub struct MunitionsCost {
 pub struct MunitionsRollHints {
     /// Every staged die, as [`crate::combat::staged_dice_view`] shows it (the view the combat
     /// reroll questions share).
-    #[cfg_attr(feature = "ts", ts(type = "Array<Record<string, unknown>>"))]
-    pub dice: Vec<serde_json::Value>,
+    pub dice: Vec<crate::combat::StagedDie>,
     /// How many of those dice miss.
     pub misses: usize,
 }
@@ -1026,7 +1025,7 @@ fn munitions_roll_offer(
     state: &mut GameState,
     ctx: &mut crate::choice::Resolving<'_>,
     player: &PlayerId,
-    dice: &[serde_json::Value],
+    dice: &[crate::combat::StagedDie],
     misses: &[(usize, usize)],
 ) -> Vec<(usize, usize)> {
     let (content, sources) = (ctx.content, ctx.sources);

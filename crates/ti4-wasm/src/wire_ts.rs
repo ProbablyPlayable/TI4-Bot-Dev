@@ -102,6 +102,8 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::faction_abilities::MunitionsOfferHints>();
     collect.visit::<ti4_engine::faction_abilities::MunitionsCost>();
     collect.visit::<ti4_engine::faction_abilities::MunitionsRollHints>();
+    collect.visit::<ti4_engine::combat::StagedDie>();
+    collect.visit::<ti4_engine::combat::RerollDiceHints>();
     collect.visit::<ti4_engine::game::TurnMenuCardEffect>();
     collect.visit::<ti4_engine::game::TurnMenuTokens>();
     collect.visit::<ti4_engine::game::TurnMenuStrategyCard>();

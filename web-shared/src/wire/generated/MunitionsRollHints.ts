@@ -1,4 +1,5 @@
 // Generated from the Rust types by `cargo wire-web` (ti4_wasm::wire_ts). Do not edit.
+import type { StagedDie } from "./StagedDie.ts";
 
 /**
  * The staged roll of a Munitions Reserves question asked after the fleet rolled (rules version
@@ -10,7 +11,7 @@ export type MunitionsRollHints = {
  * Every staged die, as [`crate::combat::staged_dice_view`] shows it (the view the combat
  * reroll questions share).
  */
-dice: Array<Record<string, unknown>>, 
+dice: Array<StagedDie>, 
 /**
  * How many of those dice miss.
  */

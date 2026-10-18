@@ -469,26 +469,60 @@ fn reroll_munitions_misses(
 // opens the window, and then recomputes the hits from whatever faces remain when the
 // window closes.
 
+/// Display only: one staged die of a reroll window, as [`staged_dice_view`] lists it (the `dice`
+/// of a die-by-die reroll question, [`RerollDiceHints`], and of a Munitions Reserves question,
+/// [`crate::faction_abilities::MunitionsRollHints`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StagedDie {
+    /// The unit type that made the roll this die belongs to.
+    pub unit: String,
+    /// The roll entry's position in the staged set.
+    pub unit_index: usize,
+    /// The die's position within its roll entry.
+    pub die: usize,
+    /// The face the die shows now.
+    pub face: u32,
+    /// The adjustment sitting on this die (Thalnos's +1), 0 when none.
+    pub bonus: i8,
+    /// The value the roll hits on; `null` for a roll that is not a hit roll.
+    pub hits_on: Option<u32>,
+    /// Whether some reroll already replaced this die.
+    pub rerolled: bool,
+}
+
+/// The details of a die-by-die reroll question ([`choose_reroll_dice`]; display only, top-level
+/// keys of the details, written with [`Choice::hinted_fields`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RerollDiceHints {
+    /// The whole staged roll, as [`staged_dice_view`] shows it.
+    pub dice: Vec<StagedDie>,
+    /// The position in `dice` of the die this question is about.
+    pub current: usize,
+}
+
 /// Display only: the whole staged roll, one entry per die in the order the dice are asked about,
 /// so a client can show every die and which one a question is about.
 #[must_use]
-pub fn staged_dice_view(set: &RerollSet) -> Vec<serde_json::Value> {
+pub fn staged_dice_view(set: &RerollSet) -> Vec<StagedDie> {
     set.rolls
         .iter()
         .enumerate()
         .flat_map(|(unit, entry)| {
-            entry.faces.iter().enumerate().map(move |(die, face)| {
-                let bonus = entry.deltas.get(&die).copied().unwrap_or(0);
-                serde_json::json!({
-                    "unit": entry.unit,
-                    "unit_index": unit,
-                    "die": die,
-                    "face": face,
-                    "bonus": bonus,
-                    "hits_on": entry.hits_on,
-                    "rerolled": entry.rerolled.contains(&die),
+            entry
+                .faces
+                .iter()
+                .enumerate()
+                .map(move |(die, face)| StagedDie {
+                    unit: entry.unit.clone(),
+                    unit_index: unit,
+                    die,
+                    face: *face,
+                    bonus: entry.deltas.get(&die).copied().unwrap_or(0),
+                    hits_on: entry.hits_on,
+                    rerolled: entry.rerolled.contains(&die),
                 })
-            })
         })
         .collect()
 }
@@ -590,8 +624,10 @@ pub fn choose_reroll_dice(
                 format!("reroll die {} of {}", die + 1, entry.unit),
                 vec![reroll, decline],
             )
-            .detailed("dice", dice.clone())
-            .detailed("current", asked)
+            .hinted_fields(&RerollDiceHints {
+                dice: dice.clone(),
+                current: asked,
+            })
             .contextualized(context);
             asked += 1;
             let Ok(answer) = table.ask_seeing(&choice, &observed) else {
@@ -7905,6 +7941,10 @@ mod tests {
             .expect("the roll is typed");
         assert_eq!((roll.dice.len(), roll.misses), (3, 2));
         assert_eq!(
+            roll.dice.iter().map(|die| die.face).collect::<Vec<_>>(),
+            vec![1, 1, 10]
+        );
+        assert_eq!(
             state.player(&attacker()).unwrap().trade_goods,
             2,
             "2 trade goods paid"
@@ -9144,6 +9184,27 @@ mod tests {
             assert_eq!(dice[1]["face"], 9);
             assert_eq!(dice[1]["hits_on"], 8);
             assert_eq!(dice[2]["unit"], "mech");
+            let hints = choice
+                .hint_fields::<RerollDiceHints>()
+                .expect("the reroll details are typed");
+            assert_eq!(hints.current, index);
+            assert_eq!(hints.dice.len(), 3);
+            assert_eq!(
+                (
+                    hints.dice[1].face,
+                    hints.dice[1].hits_on,
+                    hints.dice[1].bonus
+                ),
+                (9, Some(8), 0)
+            );
+            assert_eq!(
+                (
+                    hints.dice[2].unit.as_str(),
+                    hints.dice[2].unit_index,
+                    hints.dice[2].die
+                ),
+                ("mech", 1, 0)
+            );
         }
     }
 
