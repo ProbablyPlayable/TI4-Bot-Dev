@@ -3231,14 +3231,9 @@ impl Window for ProductionWindow {
                 ));
                 // Display only (`Choice::details`): ships charged against the fleet pool in this
                 // system and the pool's limit (LRR 37), so a client can show the room left.
-                let standing = crate::fleet::standing(
-                    state,
-                    content,
-                    sources,
-                    &self.player,
-                    &self.system,
-                    None,
-                );
+                let counts =
+                    crate::fleet::counts(state, content, sources, &self.player, &self.system);
+                let standing = counts.standing();
                 let fleet_supply = crate::fleet::FleetSupplyHints::of(
                     state,
                     content,
@@ -3246,42 +3241,12 @@ impl Window for ProductionWindow {
                     &standing,
                     true,
                 );
-                // Display only: this system's capacity today (LRR 16). `unused_support` is the
-                // space dock fighter support not yet used by fighters here, which excuses queued
-                // fighters (never ground forces) before they take capacity.
-                let types = catalogue(content, sources);
-                let fighters_here: i64 = state
-                    .board
-                    .get(&self.system)
-                    .map(|board| {
-                        board
-                            .units_of(&self.player)
-                            .iter()
-                            .filter_map(|unit| types.get(unit.type_id.as_str()))
-                            .filter(|kind| kind.is_fighter())
-                            .map(UnitType::capacity_cost)
-                            .sum()
-                    })
-                    .unwrap_or(0);
-                let support: i64 = state
-                    .board
-                    .get(&self.system)
-                    .map(|board| {
-                        board
-                            .planet_units
-                            .values()
-                            .flatten()
-                            .filter(|unit| unit.owner == self.player)
-                            .filter_map(|unit| types.get(unit.type_id.as_str()))
-                            .map(UnitType::fighter_support)
-                            .sum()
-                    })
-                    .unwrap_or(0);
+                // Display only: this system's capacity today (LRR 16), from the same counts.
                 let capacity = CapacityHints {
                     transport: standing.transport,
                     consumed: standing.consumed,
-                    fighters: fighters_here,
-                    unused_support: (support - fighters_here).max(0),
+                    fighters: counts.fighters,
+                    unused_support: (counts.fighter_support - counts.fighters).max(0),
                 };
                 // Display only: every kind that is not offered, with why, so a client can keep
                 // its row and say so.
