@@ -66,6 +66,7 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_engine::fleet::FleetSupplyHints>();
     collect.visit::<ti4_engine::fleet::RemoveExcessHints>();
     collect.visit::<ti4_engine::production::CapacityHints>();
+    collect.visit::<ti4_engine::production::ProduceOneNotOffered>();
     collect.visit::<ti4_engine::vote::VoteTallyHints>();
     collect.visit::<ti4_engine::vote::VoteTradeGoodsHints>();
     collect.visit::<ti4_engine::vote::PredictiveVotesHints>();

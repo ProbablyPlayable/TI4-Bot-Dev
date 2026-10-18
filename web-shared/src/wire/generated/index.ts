@@ -173,6 +173,7 @@ export type { PredictiveVotesHints } from "./PredictiveVotesHints.ts";
 export type { PreviewRefusal } from "./PreviewRefusal.ts";
 export type { PreviewResult } from "./PreviewResult.ts";
 export type { PrintedCard } from "./PrintedCard.ts";
+export type { ProduceOneNotOffered } from "./ProduceOneNotOffered.ts";
 export type { ProductionFacts } from "./ProductionFacts.ts";
 export type { PromissoryNoteRecord } from "./PromissoryNoteRecord.ts";
 export type { ProtocolErrorMsg } from "./ProtocolErrorMsg.ts";

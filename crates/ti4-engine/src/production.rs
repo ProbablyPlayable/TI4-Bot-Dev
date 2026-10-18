@@ -1376,7 +1376,7 @@ fn produce_one_from(
     // Units the player could build in general but not here, with the first thing in the way. Shown
     // beside the question (`details.not_offered`) so a short list is not a mystery; it never
     // changes the options or their ids.
-    let mut not_offered: Vec<serde_json::Value> = Vec::new();
+    let mut not_offered: Vec<ProduceOneNotOffered> = Vec::new();
     let candidates: Vec<(String, i64)> = buildable_for(state, content, sources, player)
         .into_iter()
         .filter_map(|id| {
@@ -1417,7 +1417,7 @@ fn produce_one_from(
             match blocked {
                 None => Some((id, cost)),
                 Some(reason) => {
-                    not_offered.push(serde_json::json!({ "unit": id, "reason": reason }));
+                    not_offered.push(ProduceOneNotOffered { unit: id, reason });
                     None
                 }
             }
@@ -1447,7 +1447,7 @@ fn produce_one_from(
     };
     let mut choice = Choice::new(player.clone(), prompt, options);
     if !not_offered.is_empty() {
-        choice = choice.detailed("not_offered", serde_json::Value::Array(not_offered));
+        choice = choice.hinted(NOT_OFFERED_KEY, &not_offered);
     }
     if let Some((alias, _)) = source {
         choice = choice.contextualized(
@@ -2207,6 +2207,22 @@ pub struct WithheldUnit {
     /// generic unit when it has none ([`Withheld::Technology`]).
     pub unit: String,
     pub reason: Withheld,
+}
+
+/// The key of the details of a single-unit production question (Freelancers and the other
+/// "produce 1 unit" abilities) under which a list of [`ProduceOneNotOffered`] is written
+/// ([`Choice::hinted`]).
+pub const NOT_OFFERED_KEY: &str = "not_offered";
+
+/// A unit that a single-unit production question does not offer, with the first thing in the
+/// way, display only (`details.not_offered` of the question of `produce_one_from`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProduceOneNotOffered {
+    /// The unit the seat could build in general but not here.
+    pub unit: String,
+    /// Why not, in words (its cost, no place, a full fleet supply or no reinforcements).
+    pub reason: String,
 }
 
 /// What [`ProductionWindow::screen`] found for a unit that is offered.

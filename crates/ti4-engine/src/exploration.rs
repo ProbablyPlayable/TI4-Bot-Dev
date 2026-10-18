@@ -2741,14 +2741,13 @@ mod tests {
             .iter()
             .find(|choice| choice.options.iter().any(|o| o.kind == "produce"))
             .expect("Freelancers asked which unit to produce");
-        let missing = ask
-            .details
-            .get("not_offered")
-            .and_then(|value| value.as_array())
+        let missing: Vec<crate::production::ProduceOneNotOffered> = ask
+            .hint(crate::production::NOT_OFFERED_KEY)
             .expect("some unit is out of reach, so the reasons are listed");
+        assert!(!missing.is_empty());
         for entry in missing {
-            let unit = entry["unit"].as_str().expect("unit id");
-            assert!(entry["reason"].as_str().is_some_and(|r| !r.is_empty()));
+            let unit = entry.unit.as_str();
+            assert!(!entry.reason.is_empty());
             assert!(
                 !ask.options
                     .iter()
