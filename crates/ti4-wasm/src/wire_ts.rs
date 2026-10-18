@@ -64,6 +64,7 @@ pub fn files() -> BTreeMap<String, String> {
     collect.visit::<ti4_calc::odds::GroundOddsResponse>();
     collect.visit::<ti4_engine::fleet::Standing>();
     collect.visit::<ti4_engine::fleet::FleetSupplyHints>();
+    collect.visit::<ti4_engine::fleet::RemoveExcessHints>();
     collect.visit::<ti4_engine::production::CapacityHints>();
     collect.visit::<ti4_engine::vote::VoteTallyHints>();
     collect.visit::<ti4_engine::vote::VoteTradeGoodsHints>();

@@ -198,6 +198,7 @@ export type { RefusalCode } from "./RefusalCode.ts";
 export type { RejectionReason } from "./RejectionReason.ts";
 export type { RelicId } from "./RelicId.ts";
 export type { RelicRecord } from "./RelicRecord.ts";
+export type { RemoveExcessHints } from "./RemoveExcessHints.ts";
 export type { ResearchFacts } from "./ResearchFacts.ts";
 export type { ResearchPaymentHints } from "./ResearchPaymentHints.ts";
 export type { ResearchSpecialty } from "./ResearchSpecialty.ts";

@@ -172,6 +172,26 @@ const fn is_zero(count: &i64) -> bool {
     *count == 0
 }
 
+/// Where the seat stands in the system of a remove-excess question (display only, top-level
+/// keys of its details, [`REMOVE_EXCESS_SUBTYPE`]), so a client can say "7 ships against a fleet
+/// supply of 6".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RemoveExcessHints {
+    /// What the seat is over: `fleet supply` (37) or `capacity` (16).
+    pub reason: String,
+    /// The system the unit is removed from.
+    pub system: String,
+    /// Ships charged against the fleet supply ([`Standing::fleet_charged`]).
+    pub fleet_charged: i64,
+    /// The fleet supply ([`Standing::fleet_limit`]).
+    pub fleet_limit: i64,
+    /// Capacity consumed in the space area ([`Standing::consumed`]).
+    pub capacity_consumed: i64,
+    /// Capacity the ships present provide ([`Standing::transport`]).
+    pub capacity_transport: i64,
+}
+
 /// Fleet supply and transport for one seat in one system, optionally with a unit not yet placed.
 ///
 /// The one arithmetic behind every answer in this module. [`over_supply`], [`over_capacity`] and
@@ -744,12 +764,14 @@ fn remove_one(
         format!("remove a unit: over {reason} in {system}"),
         options,
     )
-    .detailed("reason", reason)
-    .detailed("system", system.to_string())
-    .detailed("fleet_charged", standing.fleet_charged)
-    .detailed("fleet_limit", standing.fleet_limit)
-    .detailed("capacity_consumed", standing.consumed)
-    .detailed("capacity_transport", standing.transport)
+    .hinted_fields(&RemoveExcessHints {
+        reason: reason.to_owned(),
+        system: system.to_string(),
+        fleet_charged: standing.fleet_charged,
+        fleet_limit: standing.fleet_limit,
+        capacity_consumed: standing.consumed,
+        capacity_transport: standing.transport,
+    })
     .contextualized(
         DecisionContext::new(
             player.clone(),
@@ -1208,6 +1230,13 @@ mod tests {
         .unwrap();
         let first = seen.lock().unwrap().clone().expect("asked");
         // The first question: four ships against a pool of two.
+        let hints = first
+            .hint_fields::<RemoveExcessHints>()
+            .expect("typed remove-excess details");
+        assert_eq!(hints.reason, "fleet supply");
+        assert_eq!(hints.system, system.to_string());
+        assert_eq!(hints.fleet_limit, 2);
+        assert!(hints.fleet_charged >= 3);
         assert_eq!(
             first.details.get("reason").and_then(|v| v.as_str()),
             Some("fleet supply")
